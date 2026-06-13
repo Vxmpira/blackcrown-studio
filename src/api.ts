@@ -87,3 +87,34 @@ export async function getConfig(): Promise<StudioConfig | null> {
     return null;
   }
 }
+
+export async function getBrief(): Promise<string> {
+  const r = await fetch(`${BASE}/api/brief`);
+  if (!r.ok) return "";
+  const j = await r.json();
+  return j.brief ?? "";
+}
+
+export async function saveBrief(brief: string): Promise<string> {
+  const r = await fetch(`${BASE}/api/brief`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brief }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Save failed (${r.status})`);
+  }
+  const j = await r.json();
+  return j.brief ?? brief;
+}
+
+export async function resetBrief(): Promise<string> {
+  const r = await fetch(`${BASE}/api/brief`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reset: true }),
+  });
+  const j = await r.json();
+  return j.brief ?? "";
+}

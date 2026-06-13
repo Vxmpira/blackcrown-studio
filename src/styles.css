@@ -356,3 +356,23 @@ a { color: inherit; }
 .sv.good { color: var(--pink); }
 .sv.bad { color: var(--pink-soft); }
 .shint { margin-top: 12px; font-size: 12.5px; color: var(--mute); line-height: 1.6; }
+
+/* ===== Marketing brief editor ===== */
+.brief-group { margin-bottom: 18px; }
+.brief-box {
+  width: 100%;
+  min-height: 340px;
+  resize: vertical;
+  background: var(--vanta);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 16px 18px;
+  color: var(--bone);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin-top: 14px;
+}
+.brief-box:focus { outline: none; border-color: var(--pink); }
+.brief-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+.brief-actions .btn { width: auto; padding: 11px 22px; }

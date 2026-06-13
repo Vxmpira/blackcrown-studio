@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { getConfig, type StudioConfig } from "../api";
+import {
+  getConfig,
+  getBrief,
+  saveBrief,
+  resetBrief,
+  type StudioConfig,
+} from "../api";
 
 const Row: React.FC<{ k: string; ok?: boolean; value: React.ReactNode }> = ({
   k,
@@ -18,12 +24,42 @@ export const Settings: React.FC = () => {
   const [cfg, setCfg] = useState<StudioConfig | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  const [brief, setBrief] = useState("");
+  const [briefLoaded, setBriefLoaded] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
   useEffect(() => {
     getConfig().then((c) => {
       setCfg(c);
       setLoaded(true);
     });
+    getBrief().then((b) => {
+      setBrief(b);
+      setBriefLoaded(true);
+    });
   }, []);
+
+  const onSave = async () => {
+    setSaveState("saving");
+    setSaveMsg(null);
+    try {
+      const saved = await saveBrief(brief);
+      setBrief(saved);
+      setSaveState("saved");
+      window.setTimeout(() => setSaveState("idle"), 1600);
+    } catch (e) {
+      setSaveState("error");
+      setSaveMsg(e instanceof Error ? e.message : "Could not save.");
+    }
+  };
+
+  const onReset = async () => {
+    const def = await resetBrief();
+    setBrief(def);
+    setSaveState("saved");
+    window.setTimeout(() => setSaveState("idle"), 1600);
+  };
 
   return (
     <>
@@ -31,9 +67,46 @@ export const Settings: React.FC = () => {
         <span className="eyebrow">Settings</span>
         <h1>Configuration</h1>
         <p>
-          Read-only status of your render and generation setup. Keys live in the
-          .env file on your server and are never shown here.
+          Coach your generator and check your setup. Keys live in the .env file
+          on your server and are never shown here.
         </p>
+      </div>
+
+      <div className="sgroup brief-group">
+        <div className="sgroup-h">Marketing brief</div>
+        <p className="shint">
+          This is the script your AI follows. It is your head of growth in
+          writing: voice, audience, and ad strategy. Edit it, save, and every
+          new ad reflects the change. The technical output rules are locked
+          separately, so editing here can never break exports.
+        </p>
+        {!briefLoaded ? (
+          <div className="soon-panel">Loading brief...</div>
+        ) : (
+          <>
+            <textarea
+              className="brief-box"
+              value={brief}
+              onChange={(e) => setBrief(e.target.value)}
+              spellCheck={false}
+            />
+            <div className="brief-actions">
+              <button className="btn" onClick={onSave} disabled={saveState === "saving"}>
+                {saveState === "saving"
+                  ? "Saving..."
+                  : saveState === "saved"
+                  ? "Saved"
+                  : "Save brief"}
+              </button>
+              <button className="mini" onClick={onReset}>
+                Restore default
+              </button>
+              {saveState === "error" && saveMsg ? (
+                <span className="gen-error">{saveMsg}</span>
+              ) : null}
+            </div>
+          </>
+        )}
       </div>
 
       {!loaded ? (
