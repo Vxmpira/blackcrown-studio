@@ -1,7 +1,10 @@
 import React, { useState } from "react";
 import { Sidebar, type TabId } from "./components/Sidebar";
 import { AdStudio } from "./views/AdStudio";
-import { Dashboard, SoonPanel } from "./views/Dashboard";
+import { Content } from "./views/Content";
+import { Stats } from "./views/Stats";
+import { Settings } from "./views/Settings";
+import { Dashboard } from "./views/Dashboard";
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<TabId>("ad-studio");
@@ -12,8 +15,9 @@ export const App: React.FC = () => {
       <main className="main">
         {tab === "dashboard" ? <Dashboard /> : null}
         {tab === "ad-studio" ? <AdStudio /> : null}
-        {tab === "content" ? <SoonPanel label="Content" /> : null}
-        {tab === "settings" ? <SoonPanel label="Settings" /> : null}
+        {tab === "content" ? <Content /> : null}
+        {tab === "stats" ? <Stats /> : null}
+        {tab === "settings" ? <Settings /> : null}
       </main>
     </div>
   );

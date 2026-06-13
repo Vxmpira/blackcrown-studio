@@ -1,24 +1,35 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Player } from "@remotion/player";
-import { ads, adDuration } from "../remotion/data";
+import { ads as staticAds, adDuration, type Ad } from "../remotion/data";
 import { BlackCrownAd } from "../remotion/BlackCrownAd";
 import { FPS, W, H } from "../remotion/brand";
-import { startRender, getProgress } from "../api";
+import { startRender, getProgress, listGeneratedAds, generateAd } from "../api";
+import { GenerateBar } from "../components/GenerateBar";
 
 type Phase = "idle" | "rendering" | "done" | "error";
 
 export const AdStudio: React.FC = () => {
-  const [selectedId, setSelectedId] = useState(ads[0].id);
+  const [genAds, setGenAds] = useState<Ad[]>([]);
+  const allAds = useMemo(() => [...staticAds, ...genAds], [genAds]);
+
+  const [selectedId, setSelectedId] = useState(staticAds[0].id);
   const ad = useMemo(
-    () => ads.find((a) => a.id === selectedId) ?? ads[0],
-    [selectedId]
+    () => allAds.find((a) => a.id === selectedId) ?? allAds[0],
+    [allAds, selectedId]
   );
+
+  const [genBusy, setGenBusy] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
   const [output, setOutput] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+
+  useEffect(() => {
+    listGeneratedAds().then(setGenAds);
+  }, []);
 
   const reset = () => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -27,11 +38,29 @@ export const AdStudio: React.FC = () => {
     setError(null);
   };
 
+  const onGenerate = async (topic: string) => {
+    setGenBusy(true);
+    setGenError(null);
+    try {
+      const fresh = await generateAd(topic);
+      setGenAds((prev) => [...prev, fresh]);
+      setSelectedId(fresh.id);
+      reset();
+      setPhase("idle");
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Could not generate an ad.");
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
   const onExport = async () => {
     reset();
     setPhase("rendering");
     try {
-      const { renderId, bucketName } = await startRender(ad.id, { ad });
+      // Always render through the generic "ad" composition, passing this ad's
+      // data. That is why generated ads export without any redeploy.
+      const { renderId, bucketName } = await startRender("ad", { ad });
       const poll = async () => {
         try {
           const p = await getProgress(renderId, bucketName);
@@ -57,7 +86,7 @@ export const AdStudio: React.FC = () => {
       setError(
         e instanceof Error
           ? e.message
-          : "Render service not reachable. Start it with npm run server and finish the AWS setup in RUNBOOK.md."
+          : "Render service not reachable. Start it with npm run server."
       );
       setPhase("error");
     }
@@ -67,16 +96,18 @@ export const AdStudio: React.FC = () => {
     <>
       <div className="page-head">
         <span className="eyebrow">Ad Studio</span>
-        <h1>Preview and export</h1>
+        <h1>Generate, preview, export</h1>
         <p>
-          Pick an ad to preview it live, then export to render it on your AWS and
-          get a download link. Edit the copy and scenes in src/remotion/data.ts.
+          Tap a topic to have Claude write a fresh on-brand ad, preview it live,
+          then export to render it on your AWS and get a download link.
         </p>
       </div>
 
+      <GenerateBar busy={genBusy} error={genError} onGenerate={onGenerate} />
+
       <div className="studio">
         <div className="ad-list">
-          {ads.map((a) => (
+          {allAds.map((a) => (
             <button
               key={a.id}
               className={`ad-pill${a.id === selectedId ? " active" : ""}`}
@@ -86,7 +117,10 @@ export const AdStudio: React.FC = () => {
                 setPhase("idle");
               }}
             >
-              <div className="id">{a.id}</div>
+              <div className="id">
+                {a.id}
+                {a.generated ? <span className="ai-badge">AI</span> : null}
+              </div>
               <div className="meta">
                 {(adDuration(a) / FPS).toFixed(1)}s · {a.scenes.length} scenes
               </div>
@@ -97,6 +131,7 @@ export const AdStudio: React.FC = () => {
         <div className="stage">
           <div className="player-frame">
             <Player
+              key={ad.id}
               component={BlackCrownAd}
               inputProps={{ ad }}
               durationInFrames={adDuration(ad)}
@@ -114,11 +149,7 @@ export const AdStudio: React.FC = () => {
             <div className="cap">{ad.caption}</div>
             <div className="tags">{ad.hashtags.join("  ")}</div>
 
-            <button
-              className="btn"
-              onClick={onExport}
-              disabled={phase === "rendering"}
-            >
+            <button className="btn" onClick={onExport} disabled={phase === "rendering"}>
               {phase === "rendering" ? "Rendering..." : "Render & export"}
             </button>
 
@@ -130,18 +161,14 @@ export const AdStudio: React.FC = () => {
                   </div>
                 ) : null}
                 {phase === "rendering" ? (
-                  <div className="status">
-                    Rendering on AWS · {Math.round(progress * 100)}%
-                  </div>
+                  <div className="status">Rendering on AWS · {Math.round(progress * 100)}%</div>
                 ) : null}
                 {phase === "done" && output ? (
                   <a className="dl" href={output} target="_blank" rel="noopener">
                     Download MP4
                   </a>
                 ) : null}
-                {phase === "error" ? (
-                  <div className="status err">{error}</div>
-                ) : null}
+                {phase === "error" ? <div className="status err">{error}</div> : null}
               </div>
             ) : null}
           </div>

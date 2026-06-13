@@ -1,8 +1,12 @@
-// Small render service. The admin page calls this; this calls your AWS.
-// AWS keys are read from .env and never leave your machine.
+// Small render + generation service. The admin page calls this; this calls
+// your AWS for rendering and the Anthropic API for writing new ads.
+// All keys are read from .env and never leave your machine.
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { renderMediaOnLambda, getRenderProgress } from "@remotion/lambda/client";
 
 dotenv.config();
@@ -10,6 +14,9 @@ dotenv.config();
 const region = process.env.REMOTION_AWS_REGION;
 const functionName = process.env.REMOTION_LAMBDA_FUNCTION_NAME;
 const serveUrl = process.env.REMOTION_SERVE_URL;
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LIB_PATH = path.join(__dirname, "studio-ads.json");
 
 const app = express();
 app.use(cors());
@@ -29,6 +36,19 @@ function assertConfigured() {
   }
 }
 
+// ----- generated-ad library (persisted to disk) ---------------------------
+function loadGenerated() {
+  try {
+    return JSON.parse(fs.readFileSync(LIB_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+}
+function saveGenerated(list) {
+  fs.writeFileSync(LIB_PATH, JSON.stringify(list, null, 2));
+}
+
+// ----- render --------------------------------------------------------------
 app.post("/api/render", async (req, res) => {
   try {
     assertConfigured();
@@ -41,6 +61,7 @@ app.post("/api/render", async (req, res) => {
       composition: compositionId,
       inputProps: inputProps ?? {},
       codec: "h264",
+      framesPerLambda: 200,
       privacy: "public",
     });
     res.json({ renderId, bucketName });
@@ -72,7 +93,171 @@ app.get("/api/progress", async (req, res) => {
   }
 });
 
+// ----- ad library ----------------------------------------------------------
+app.get("/api/ads", (_req, res) => {
+  res.json({ ads: loadGenerated() });
+});
+
+app.delete("/api/ads/:id", (req, res) => {
+  const list = loadGenerated().filter((a) => a.id !== req.params.id);
+  saveGenerated(list);
+  res.json({ ok: true });
+});
+
+// ----- config (non-secret status for the Settings tab) ---------------------
+app.get("/api/config", (_req, res) => {
+  res.json({
+    region: region ?? null,
+    functionName: functionName ?? null,
+    serveUrlSet: Boolean(serveUrl),
+    awsKeysSet: Boolean(
+      process.env.REMOTION_AWS_ACCESS_KEY_ID &&
+        process.env.REMOTION_AWS_SECRET_ACCESS_KEY
+    ),
+    anthropicKeySet: Boolean(process.env.ANTHROPIC_API_KEY),
+    framesPerLambda: 200,
+    generatedCount: loadGenerated().length,
+  });
+});
+
+// ----- AI ad generation ----------------------------------------------------
+const SYSTEM_PROMPT = `You are the in-house copywriter for BlackCrown, a house of tools for independent operators in trading, AI, and commerce. You write scripts for short, faceless, vertical (9:16) text-only video ads.
+
+BRAND VOICE: confident, direct, a little defiant. Short punchy lines. You speak to traders and solo founders who would rather own the outcome than wait on it. Signature idea: "A crown isn't handed down. It's built." Never corporate, never hypey.
+
+THE THREE PRODUCTS you can feature:
+- Korvus Industries: a real-time market news and intel terminal for traders.
+- BlackCrown Intelligence: a personal AI tuned to how the user thinks.
+- The Collective: a private network (Discord) for independent operators.
+You can also write a brand-level ad about BlackCrown as a whole.
+
+HARD RULES:
+- Never use em dashes or en dashes anywhere. Use periods or commas.
+- Each on-screen line must be SHORT so it fits the frame: aim for 18 characters or fewer per line, never more than 24.
+- 3 or 4 scenes. Each scene has 1 or 2 lines. Build to a payoff.
+- Mark at most one or two key words per ad with accent (neon pink) by setting "accent": true on that segment.
+- A line is an array of segments. To accent only one word, split the line into segments, e.g. [{"t":"You "},{"t":"build","accent":true},{"t":" it."}].
+- durationInFrames is at 30fps: use 50 to 60 per scene.
+- caption is the post text (not shown in the video): 1 to 3 sentences, end with "Link in bio."
+- hashtags: 4 to 5 items, each starting with #, and always include "#BlackCrown".
+
+Return ONLY a single JSON object, no markdown, no backticks, in exactly this shape:
+{"scenes":[{"eyebrow":"optional short label","lines":[[{"t":"text","accent":false}]],"durationInFrames":54}],"cta":"blackcrownvxj.com","caption":"...","hashtags":["#BlackCrown"]}`;
+
+function stripDashes(s) {
+  return String(s).replace(/\s*[\u2014\u2013]\s*/g, ", ");
+}
+
+function slugify(s) {
+  return (
+    String(s || "ad")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24) || "ad"
+  );
+}
+
+function validateAd(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("model returned no ad object");
+  const scenes = Array.isArray(raw.scenes) ? raw.scenes.slice(0, 4) : [];
+  if (scenes.length < 2) throw new Error("ad needs at least 2 scenes");
+  const cleanScenes = scenes.map((sc) => {
+    const lines = (Array.isArray(sc.lines) ? sc.lines : []).slice(0, 2).map((line) => {
+      const segs = (Array.isArray(line) ? line : [{ t: String(line) }])
+        .slice(0, 4)
+        .map((seg) => ({
+          t: stripDashes(seg && seg.t != null ? seg.t : ""),
+          ...(seg && seg.accent ? { accent: true } : {}),
+        }))
+        .filter((seg) => seg.t.length > 0);
+      return segs.length ? segs : [{ t: " " }];
+    });
+    let d = Number(sc.durationInFrames);
+    if (!Number.isFinite(d)) d = 54;
+    d = Math.max(45, Math.min(70, Math.round(d)));
+    const out = { lines: lines.length ? lines : [[{ t: " " }]], durationInFrames: d };
+    if (sc.eyebrow) out.eyebrow = stripDashes(sc.eyebrow).slice(0, 28);
+    return out;
+  });
+  let hashtags = Array.isArray(raw.hashtags) ? raw.hashtags : [];
+  hashtags = hashtags
+    .map((h) => String(h).trim())
+    .map((h) => (h.startsWith("#") ? h : "#" + h.replace(/^#*/, "")))
+    .filter(Boolean)
+    .slice(0, 6);
+  if (!hashtags.some((h) => h.toLowerCase() === "#blackcrown")) hashtags.push("#BlackCrown");
+  return {
+    scenes: cleanScenes,
+    cta: raw.cta ? stripDashes(raw.cta).slice(0, 40) : "blackcrownvxj.com",
+    caption: stripDashes(raw.caption || "Built for independent operators. Link in bio."),
+    hashtags,
+  };
+}
+
+app.post("/api/generate", async (req, res) => {
+  try {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) {
+      throw new Error(
+        "ANTHROPIC_API_KEY is not set in .env. Add it (from console.anthropic.com) and restart the service."
+      );
+    }
+    const topic = String(req.body?.topic || "the BlackCrown brand as a whole").slice(0, 200);
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1500,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `Write one new ad about: ${topic}. Make it distinct from a generic template. Return only the JSON object.`,
+          },
+        ],
+      }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Anthropic API error (${r.status}): ${t.slice(0, 200)}`);
+    }
+    const data = await r.json();
+    const text = (data.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .trim()
+      .replace(/^```(json)?/i, "")
+      .replace(/```$/i, "")
+      .trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("could not parse the model's JSON");
+      parsed = JSON.parse(m[0]);
+    }
+    const ad = validateAd(parsed);
+    const base = slugify(topic);
+    ad.id = `${base}-${Date.now().toString(36).slice(-4)}`;
+    ad.generated = true;
+    const list = loadGenerated();
+    list.push(ad);
+    saveGenerated(list);
+    res.json({ ad });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "generate error" });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`BlackCrown render service on http://localhost:${PORT}`);
+  console.log(`BlackCrown render + generation service on http://localhost:${PORT}`);
 });

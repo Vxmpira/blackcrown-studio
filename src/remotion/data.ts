@@ -20,6 +20,7 @@ export type Ad = {
   cta?: string; // closing pill, defaults to the site
   caption: string; // copy for the post itself (not rendered)
   hashtags: string[];
+  generated?: boolean; // true if written by the AI generator
 };
 
 export const adDuration = (ad: Ad): number =>

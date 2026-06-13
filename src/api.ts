@@ -1,3 +1,5 @@
+import type { Ad } from "./remotion/data";
+
 const BASE = (import.meta.env.VITE_RENDER_API as string) || "";
 
 export type RenderStart = { renderId: string; bucketName: string };
@@ -35,4 +37,53 @@ export async function getProgress(
   );
   if (!r.ok) throw new Error(`Progress check failed (${r.status})`);
   return r.json();
+}
+
+export async function listGeneratedAds(): Promise<Ad[]> {
+  try {
+    const r = await fetch(`${BASE}/api/ads`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j.ads) ? j.ads : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function generateAd(topic: string): Promise<Ad> {
+  const r = await fetch(`${BASE}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Generation failed (${r.status})`);
+  }
+  const j = await r.json();
+  return j.ad as Ad;
+}
+
+export async function deleteAd(id: string): Promise<void> {
+  await fetch(`${BASE}/api/ads/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export type StudioConfig = {
+  region: string | null;
+  functionName: string | null;
+  serveUrlSet: boolean;
+  awsKeysSet: boolean;
+  anthropicKeySet: boolean;
+  framesPerLambda: number;
+  generatedCount: number;
+};
+
+export async function getConfig(): Promise<StudioConfig | null> {
+  try {
+    const r = await fetch(`${BASE}/api/config`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
 }
