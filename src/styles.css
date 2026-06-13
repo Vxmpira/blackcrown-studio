@@ -376,3 +376,21 @@ a { color: inherit; }
 .brief-box:focus { outline: none; border-color: var(--pink); }
 .brief-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
 .brief-actions .btn { width: auto; padding: 11px 22px; }
+
+/* ===== Stats sparkline ===== */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 120px;
+  margin-top: 6px;
+}
+.spark-col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.spark-bar {
+  width: 100%;
+  background: linear-gradient(180deg, var(--pink), var(--pink-deep, #c81e73));
+  border-radius: 4px 4px 0 0;
+  box-shadow: var(--glow-pink);
+  min-height: 3px;
+  transition: height 0.3s;
+}

@@ -18,6 +18,7 @@ const serveUrl = process.env.REMOTION_SERVE_URL;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LIB_PATH = path.join(__dirname, "studio-ads.json");
 const BRIEF_PATH = path.join(__dirname, "marketing-brief.md");
+const STATS_PATH = path.join(__dirname, "studio-stats.json");
 
 const app = express();
 app.use(cors());
@@ -196,6 +197,74 @@ app.get("/api/config", (_req, res) => {
     framesPerLambda: 200,
     generatedCount: loadGenerated().length,
   });
+});
+
+// ----- first-party analytics (visits + product click-throughs) ------------
+function loadStats() {
+  try {
+    return JSON.parse(fs.readFileSync(STATS_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function saveStats(s) {
+  fs.writeFileSync(STATS_PATH, JSON.stringify(s));
+}
+function dayKey(offset = 0) {
+  return new Date(Date.now() - offset * 864e5).toISOString().slice(0, 10);
+}
+
+// Public beacon. The sites call this on each visit and each product click.
+// It must stay outside the admin login (handled in nginx).
+app.get("/api/track", (req, res) => {
+  try {
+    const e = String(req.query.e || "").slice(0, 16);
+    const k = String(req.query.k || "")
+      .slice(0, 32)
+      .replace(/[^a-z0-9_-]/gi, "");
+    if ((e === "visit" || e === "click") && k) {
+      const s = loadStats();
+      const d = dayKey();
+      s[d] = s[d] || {};
+      s[d][e] = s[d][e] || {};
+      s[d][e][k] = (s[d][e][k] || 0) + 1;
+      const cutoff = dayKey(120);
+      for (const day of Object.keys(s)) if (day < cutoff) delete s[day];
+      saveStats(s);
+    }
+  } catch {
+    // never let tracking break a page load
+  }
+  res.set("Content-Type", "image/gif");
+  res.set("Cache-Control", "no-store");
+  res.end(
+    Buffer.from("R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==", "base64")
+  );
+});
+
+// Read totals (behind the admin login via nginx).
+app.get("/api/stats", (_req, res) => {
+  const s = loadStats();
+  const days = Object.keys(s).sort();
+  const windowSum = (n) => {
+    const since = dayKey(n - 1);
+    const out = { visit: {}, click: {} };
+    for (const day of days) {
+      if (day < since) continue;
+      for (const e of ["visit", "click"]) {
+        const obj = (s[day] && s[day][e]) || {};
+        for (const k of Object.keys(obj)) out[e][k] = (out[e][k] || 0) + obj[k];
+      }
+    }
+    return out;
+  };
+  const series = [];
+  for (let i = 13; i >= 0; i--) {
+    const day = dayKey(i);
+    const v = (s[day] && s[day].visit) || {};
+    series.push({ day, visits: Object.values(v).reduce((a, b) => a + b, 0) });
+  }
+  res.json({ w7: windowSum(7), w30: windowSum(30), series });
 });
 
 // ----- AI ad generation ----------------------------------------------------

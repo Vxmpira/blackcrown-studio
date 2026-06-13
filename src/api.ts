@@ -118,3 +118,23 @@ export async function resetBrief(): Promise<string> {
   const j = await r.json();
   return j.brief ?? "";
 }
+
+export type StatBuckets = {
+  visit: Record<string, number>;
+  click: Record<string, number>;
+};
+export type StatsData = {
+  w7: StatBuckets;
+  w30: StatBuckets;
+  series: { day: string; visits: number }[];
+};
+
+export async function getStats(): Promise<StatsData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/stats`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
