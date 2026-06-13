@@ -40,7 +40,8 @@ function assertConfigured() {
 // ----- generated-ad library (persisted to disk) ---------------------------
 function loadGenerated() {
   try {
-    return JSON.parse(fs.readFileSync(LIB_PATH, "utf8"));
+    const list = JSON.parse(fs.readFileSync(LIB_PATH, "utf8"));
+    return Array.isArray(list) ? list.map(normalizeAdSpacing) : [];
   } catch {
     return [];
   }
@@ -69,6 +70,8 @@ VARY THE HOOK every time so the feed never feels templated. Rotate between a que
 
 VOICE: confident, direct, a little defiant. The signature idea is that a crown is not handed down, it is built. Sound like a sharp operator talking to a peer, never like a brand talking down to a customer.
 
+PUNCTUATION: never use em dashes or en dashes, not in the lines and not in the caption. Use a period or a comma instead. This is a hard brand rule, no exceptions.
+
 THE CAPTION is your distribution engine. Write it to earn saves and shares, speak to one person, and end with a clear nudge to the link in bio.
 
 PRODUCTS you can feature:
@@ -78,7 +81,8 @@ PRODUCTS you can feature:
 You can also write a brand-level ad about BlackCrown as a whole.`;
 
 const OUTPUT_RULES = `OUTPUT RULES (these are fixed, follow them exactly):
-- Never use em dashes or en dashes anywhere. Use periods or commas.
+- Never use em dashes or en dashes ( the long dash characters ) anywhere, in the lines or the caption. Use a period or a comma instead.
+- Spacing: every line must read as natural words separated by single spaces. When you split a line into segments to accent a word, keep the spaces inside the segments, for example [{"t":"Others "},{"t":"were","accent":true},{"t":" already in."}] so the words never run together.
 - Each on-screen line must be SHORT so it fits the frame: aim for 18 characters or fewer per line, never more than 24.
 - 3 or 4 scenes. Each scene has 1 or 2 lines.
 - Mark at most one or two key words per ad with accent (neon pink) by setting "accent": true on that segment.
@@ -205,8 +209,41 @@ function slugify(s) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 24) || "ad"
+      .slice(0, 24)
+      .replace(/-+$/g, "") || "ad"
   );
+}
+
+// Guarantees natural spacing between segments. If one segment ends in a word
+// character and the next begins with one, a single space is inserted, so a
+// line split for accent coloring can never render words glued together.
+function fixSpacing(segs) {
+  for (let i = 0; i < segs.length - 1; i++) {
+    const a = segs[i] && segs[i].t ? segs[i].t : "";
+    const b = segs[i + 1] && segs[i + 1].t ? segs[i + 1].t : "";
+    if (!a || !b) continue;
+    const wordA = /[A-Za-z0-9]/.test(a[a.length - 1]);
+    const wordB = /[A-Za-z0-9]/.test(b[0]);
+    if (wordA && wordB) {
+      segs[i] = { ...segs[i], t: a + " " };
+    }
+  }
+  return segs;
+}
+
+function normalizeAdSpacing(ad) {
+  if (!ad || !Array.isArray(ad.scenes)) return ad;
+  return {
+    ...ad,
+    scenes: ad.scenes.map((sc) => ({
+      ...sc,
+      lines: Array.isArray(sc.lines)
+        ? sc.lines.map((line) =>
+            Array.isArray(line) ? fixSpacing(line.map((s) => ({ ...s }))) : line
+          )
+        : sc.lines,
+    })),
+  };
 }
 
 function validateAd(raw) {
@@ -222,7 +259,7 @@ function validateAd(raw) {
           ...(seg && seg.accent ? { accent: true } : {}),
         }))
         .filter((seg) => seg.t.length > 0);
-      return segs.length ? segs : [{ t: " " }];
+      return segs.length ? fixSpacing(segs) : [{ t: " " }];
     });
     let d = Number(sc.durationInFrames);
     if (!Number.isFinite(d)) d = 54;
