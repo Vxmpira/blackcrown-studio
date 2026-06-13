@@ -1,4 +1,4 @@
-const BASE = (import.meta.env.VITE_RENDER_API as string) || "http://localhost:3001";
+const BASE = (import.meta.env.VITE_RENDER_API as string) || "";
 
 export type RenderStart = { renderId: string; bucketName: string };
 export type RenderProgress = {

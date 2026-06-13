@@ -55,24 +55,29 @@ export const SceneCard: React.FC<{ scene: Scene }> = ({ scene }) => {
       style={{
         justifyContent: "center",
         alignItems: "flex-start",
-        padding: "0 110px",
+        padding: "0 80px",
       }}
     >
-      <div>
+      <div style={{ width: "100%" }}>
         {scene.eyebrow ? <Eyebrow>{scene.eyebrow}</Eyebrow> : null}
         {scene.lines.map((line, li) => (
           <Reveal key={li} delay={(scene.eyebrow ? 8 : 0) + li * 7}>
-            <div style={{ display: "flex", flexWrap: "wrap" }}>
+            <div
+              style={{
+                fontFamily: display,
+                fontWeight: 700,
+                fontSize: 92,
+                lineHeight: 1.08,
+                letterSpacing: "-0.02em",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "break-word",
+                marginBottom: 6,
+              }}
+            >
               {line.map((seg, si) => (
                 <span
                   key={si}
                   style={{
-                    fontFamily: display,
-                    fontWeight: 700,
-                    fontSize: 104,
-                    lineHeight: 1.04,
-                    letterSpacing: "-0.02em",
-                    whiteSpace: "pre",
                     color: seg.accent ? BRAND.pink : BRAND.white,
                     textShadow: seg.accent ? BRAND.glowPink : BRAND.glowWhite,
                   }}
