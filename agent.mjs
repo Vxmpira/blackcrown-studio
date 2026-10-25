@@ -222,7 +222,67 @@ export function discordMode() {
   return "none";
 }
 
-async function discordSend(content) {
+// branded embeds: the first **HEADER** line becomes the card title, the
+// body renders as the description, the house color bars the left edge,
+// and the agent signs the footer. Deliveries carry their art in the card.
+export function buildEmbeds(content, color, signature, opts = {}) {
+  const text = String(content).trim();
+  const m = text.match(/^\*\*([^\n]+?)\*\*(\s*·\s*([^\n]*))?\n*/);
+  let title = null;
+  let rest = text;
+  if (m) {
+    title = (m[1] + (m[3] ? " · " + m[3] : "")).replace(/\*\*/g, "").trim().slice(0, 256);
+    rest = text.slice(m[0].length);
+  }
+  const parts = [];
+  let body = rest.length ? rest : text;
+  if (!body.trim()) body = " ";
+  while (body.length > 3900) {
+    parts.push(body.slice(0, 3900));
+    body = body.slice(3900);
+  }
+  parts.push(body);
+  return parts.slice(0, 10).map((d, i) => ({
+    title: i === 0 && title ? title : undefined,
+    description: d.trim() || undefined,
+    color,
+    footer: { text: `BLACKCROWNVXJ LLC · ${signature}` },
+    timestamp: i === parts.length - 1 ? new Date().toISOString() : undefined,
+    image: i === 0 && opts.image ? { url: opts.image } : undefined,
+  }));
+}
+
+async function discordSend(content, opts = {}) {
+  const payload = {
+    content: opts.link ? String(opts.link).slice(0, 1900) : "",
+    embeds: buildEmbeds(content, 0xff2d95, "Corvid, SEO desk", opts),
+  };
+  try {
+    if (BOT_TOKEN && CHANNEL_ID) {
+      const r = await fetch(`https://discord.com/api/v10/channels/${CHANNEL_ID}/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bot ${BOT_TOKEN}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(`discord ${r.status}`);
+    } else if (WEBHOOK_URL) {
+      const r = await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, username: `${AGENT_NAME} (BlackCrown SEO)` }),
+      });
+      if (!r.ok) throw new Error(`webhook ${r.status}`);
+    } else {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    log("error", `Discord embed send failed (${e.message || e}), falling back to plain text`);
+  }
+  // plain fallback so a bad embed never silences the agent
   const chunks = [];
   let rest = String(content);
   while (rest.length) {
@@ -911,7 +971,7 @@ async function executeCreative(p) {
   const lines = [
     `**CORVID // DELIVERY** · #${p.number} ${p.page}`,
     `${good.length}/${slides.length} slides rendered, swipe order:`,
-    ...good.map((u, i) => `${i + 1}. ${u}`),
+    ...good.map((u, i) => `${i + 1}. [slide ${i + 1}](${u})`),
     ``,
     `**CAPTION**`,
     p.caption || "(no caption stored)",
@@ -920,7 +980,7 @@ async function executeCreative(p) {
   ];
   const after = await bloomCredits(true);
   if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
-  await discordSend(lines.join("\n"));
+  await discordSend(lines.join("\n"), { image: good[0] });
   log("render", `#${p.number} delivered ${good.length}/${slides.length} slides`);
 }
 
@@ -992,8 +1052,7 @@ async function executeVideo(p) {
     saveState();
     const lines = [
       `**CORVID // DELIVERY** · #${p.number} ${p.page}`,
-      `Video ready${p.target ? `, selling ${p.target}` : ""}:`,
-      url,
+      `Video ready${p.target ? `, selling ${p.target}` : ""}, player above.`,
       ``,
       `**CAPTION**`,
       p.caption || "(no caption stored)",
@@ -1002,7 +1061,7 @@ async function executeVideo(p) {
     ];
     const after = await bloomCredits(true);
     if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
-    await discordSend(lines.join("\n"));
+    await discordSend(lines.join("\n"), { link: url });
     log("render", `#${p.number} video delivered`);
   } catch (e) {
     log("error", `#${p.number} video render failed: ${e.message || e}`);

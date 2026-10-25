@@ -7,7 +7,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import { fileProposals, parseModelJson, addTask as corvidAddTask } from "./agent.mjs";
+import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -172,8 +172,26 @@ function ensureVault(key) {
 // ---------------------------------------------------------------------------
 // discord
 // ---------------------------------------------------------------------------
-async function sendTo(channelId, content) {
+const STAFF_EMBED = {
+  herald: { color: 0x46e6ff, sig: "Herald, sales desk" },
+  steward: { color: 0x35e08f, sig: "Steward, project board" },
+};
+async function sendTo(channelId, content, opts = {}) {
   if (!(BOT_TOKEN && channelId)) return false;
+  // community posts stay plain text: a human voice, not a corporate card
+  if (!opts.plain && opts.agent && STAFF_EMBED[opts.agent]) {
+    try {
+      const e = STAFF_EMBED[opts.agent];
+      const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${BOT_TOKEN}` },
+        body: JSON.stringify({ content: "", embeds: buildEmbeds(content, e.color, e.sig) }),
+      });
+      if (r.ok) return true;
+    } catch {
+      // fall through to plain text below
+    }
+  }
   let rest = String(content);
   while (rest.length) {
     const chunk = rest.slice(0, 1900);
@@ -342,7 +360,7 @@ async function runStaffCycle(key, trigger = "schedule") {
         a.communityCount = 0;
       }
       if (a.communityCount < 2) {
-        const sent = await sendTo(role.community, String(out.community_post).slice(0, 1800));
+        const sent = await sendTo(role.community, String(out.community_post).slice(0, 1800), { plain: true });
         if (sent) {
           a.communityCount++;
           log(key, "community", `posted to Eclipse-X: ${String(out.community_post).slice(0, 70)}`);
@@ -354,7 +372,7 @@ async function runStaffCycle(key, trigger = "schedule") {
       path.join("Log", `${dayKey()}.md`),
       `# ${dayKey()}\n\nFocus: ${a.focus}\n\n## Thought\n${a.thought}\n\nSee [[Projects]].\n`
     );
-    if (out.message && String(out.message).trim()) await sendTo(role.channel, String(out.message));
+    if (out.message && String(out.message).trim()) await sendTo(role.channel, String(out.message), { agent: key });
     for (const d of Array.isArray(out.delegations) ? out.delegations.slice(0, 2) : []) {
       try {
         await runStaffMinion(key, String(d.minion || "").trim(), String(d.task || "").slice(0, 160), d.context);
@@ -386,7 +404,7 @@ async function reactToMessages(key, msgs) {
       `Your current focus: ${state[key].focus}\nOpen tasks: ${JSON.stringify(state[key].tasks.filter((t) => t.status !== "done"))}\n\nNew messages:\n${text}`,
       1200
     );
-    if (out.reply) await sendTo(role.channel, String(out.reply).slice(0, 1800));
+    if (out.reply) await sendTo(role.channel, String(out.reply).slice(0, 1800), { agent: key });
     for (const t of Array.isArray(out.tasks) ? out.tasks.slice(0, 2) : []) {
       if (t.title) staffAddTask(key, String(t.title));
     }

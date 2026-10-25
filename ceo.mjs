@@ -15,6 +15,7 @@ import {
   brainFile,
   brainSave,
   addTask,
+  buildEmbeds,
 } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -160,6 +161,29 @@ export function ceoVaultPath() {
 // discord (CEO channel)
 // ---------------------------------------------------------------------------
 async function send(content) {
+  const payload = { content: "", embeds: buildEmbeds(content, 0xf2c94c, "Regent, CEO") };
+  try {
+    if (BOT_TOKEN && CEO_CHANNEL) {
+      const r = await fetch(`https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${BOT_TOKEN}` },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(`discord ${r.status}`);
+      return true;
+    } else if (WEBHOOK_URL) {
+      const r = await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, username: `${CEO_NAME} (BlackCrown CEO)` }),
+      });
+      if (!r.ok) throw new Error(`webhook ${r.status}`);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    log("error", `Discord embed send failed (${e.message || e}), falling back to plain text`);
+  }
   let rest = String(content);
   while (rest.length) {
     const chunk = rest.slice(0, 1900);
@@ -178,8 +202,8 @@ async function send(content) {
           body: JSON.stringify({ content: chunk, username: `${CEO_NAME} (BlackCrown CEO)` }),
         });
       } else return false;
-    } catch (e) {
-      log("error", `Discord send failed: ${e.message || e}`);
+    } catch (e2) {
+      log("error", `Discord send failed: ${e2.message || e2}`);
       return false;
     }
   }
