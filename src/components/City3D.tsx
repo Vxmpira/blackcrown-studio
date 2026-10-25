@@ -15,6 +15,8 @@ export type CityData = {
   worldSub: string;
   stripeSub: string;
   regentSub: string;
+  heraldSub?: string;
+  stewardSub?: string;
 };
 
 type District = { key: string; label: string; x: number; z: number; h: number; big?: boolean };
@@ -27,6 +29,8 @@ const DISTRICTS: District[] = [
   { key: "eclipse", label: "ECLIPSE-X", x: 13.5, z: 8, h: 4.2 },
   { key: "stripe", label: "STRIPE", x: -12, z: 11, h: 3.6 },
   { key: "corvid", label: "CORVID", x: -9, z: -8, h: 4.6 },
+  { key: "herald", label: "HERALD", x: -15, z: -4, h: 4.4 },
+  { key: "steward", label: "STEWARD", x: -6, z: -14, h: 4.8 },
   { key: "regent", label: "REGENT", x: -1, z: -11, h: 5.4 },
   { key: "you", label: "YOU", x: 4.5, z: -12.5, h: 6.8, big: true },
 ];
@@ -165,6 +169,11 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     addRoute("corvid", "regent", COLORS.pink, "agents", 1, 0.14);
     addRoute("regent", "you", COLORS.pink, "agents", 1, 0.16);
     addRoute("corvid", "site", COLORS.cyan, "agents", 1, 0.06);
+    addRoute("herald", "regent", COLORS.pink, "agents", 1, 0.11);
+    addRoute("stripe", "herald", COLORS.gold, "agents", 1, 0.07);
+    addRoute("steward", "regent", COLORS.pink, "agents", 1, 0.12);
+    addRoute("steward", "corvid", COLORS.cyan, "agents", 1, 0.09);
+    addRoute("steward", "eclipse", COLORS.pink, "agents", 1, 0.05);
 
     const setSize = () => {
       const w = host.clientWidth;
@@ -225,7 +234,13 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       (cores["site"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.site));
       (cores["korvus"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.korvus));
       (cores["crown"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.crown));
-      const subs: Record<string, string> = { world: d.worldSub, stripe: d.stripeSub, regent: d.regentSub };
+      const subs: Record<string, string> = {
+        world: d.worldSub,
+        stripe: d.stripeSub,
+        regent: d.regentSub,
+        herald: d.heraldSub || "",
+        steward: d.stewardSub || "",
+      };
       labels.forEach((l, i) => {
         const sub = subs[DISTRICTS[i].key];
         const subEl = l.el.querySelector(".c3d-sub") as HTMLElement;

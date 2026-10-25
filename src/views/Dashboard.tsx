@@ -4,12 +4,14 @@ import {
   getCeo,
   getRevenue,
   getSeo,
+  getStaff,
   getStats,
   getUptime,
   type AgentState,
   type CeoState,
   type RevenueData,
   type SeoData,
+  type StaffAgent,
   type UptimeSite,
 } from "../api";
 
@@ -26,6 +28,7 @@ export const Dashboard: React.FC = () => {
   const [agent, setAgent] = useState<AgentState | null>(null);
   const [seo, setSeo] = useState<SeoData | null>(null);
   const [stats, setStats] = useState<{ sources?: Record<string, number> } | null>(null);
+  const [staff, setStaff] = useState<StaffAgent[]>([]);
   const [sel, setSel] = useState<string | null>(null);
 
   const load = () => {
@@ -38,6 +41,7 @@ export const Dashboard: React.FC = () => {
     getCeo().then(setCeo);
     getAgent().then(setAgent);
     getSeo().then(setSeo);
+    getStaff().then(setStaff);
   };
   useEffect(() => {
     load();
@@ -58,6 +62,16 @@ export const Dashboard: React.FC = () => {
   const site = (k: string) => up(k);
   const fmtUp = (s: UptimeSite | null) =>
     !s || s.up === null ? "not checked yet" : s.up ? `up, ${s.ms} ms, ${s.pct24h ?? "?"}% 24h` : "DOWN";
+  const member = (k: string) => staff.find((s) => s.key === k) || null;
+  const staffLines = (k: string) => {
+    const a = member(k);
+    if (!a) return ["hiring in progress, refresh in a minute"];
+    return [
+      `${a.status}, last cycle ${a.lastCycleAt ? Math.round((Date.now() - a.lastCycleAt) / 60000) + "m ago" : "never"}`,
+      a.focus || "",
+      `${a.tasks.filter((t) => t.status !== "done").length} open tasks · every ${a.cycleEveryH}h`,
+    ];
+  };
 
   const details: Record<string, { title: string; lines: string[] }> = {
     world: {
@@ -98,6 +112,8 @@ export const Dashboard: React.FC = () => {
         `${agent?.tasks.filter((t) => t.status !== "done").length ?? 0} open tasks`,
       ],
     },
+    herald: { title: "Herald, sales and advertising", lines: staffLines("herald") },
+    steward: { title: "Steward, project manager", lines: staffLines("steward") },
     regent: {
       title: "Regent, CEO agent",
       lines: [
@@ -133,6 +149,8 @@ export const Dashboard: React.FC = () => {
               worldSub: `${visits} in today`,
               stripeSub: rev?.configured ? `${usd(rev.mrr || 0)} MRR` : "not linked",
               regentSub: asks ? `${asks} ask${asks === 1 ? "" : "s"} waiting` : "standing by",
+              heraldSub: member("herald") ? (member("herald")!.enabled ? "on the desk" : "paused") : "",
+              stewardSub: member("steward") ? (member("steward")!.enabled ? "running the board" : "paused") : "",
             }}
           />
         </Suspense>
