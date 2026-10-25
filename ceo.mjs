@@ -425,6 +425,57 @@ async function executeSiteEdit(p) {
       return { ok: true, msg: `${file} already lists every entry, nothing to add` };
     }
   }
+  if (updated === null && /\.html?$/i.test(file) && /<\/head>/i.test(html)) {
+    // head upsert: a NEW block that is nothing but meta and link tags gets merged
+    // into the head. Each tag replaces its existing counterpart (same rel, property,
+    // or name) or is inserted before </head>. Runs before the CURRENT match so a
+    // guessed anchor can never eat the closing tag.
+    const tags = next.match(/<(?:meta|link)\b[^>]*>/gi) || [];
+    const leftover = next
+      .replace(/<(?:meta|link)\b[^>]*>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .trim();
+    if (tags.length && !leftover) {
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      let out = html;
+      const inserts = [];
+      let swapped = 0;
+      for (const raw of tags) {
+        const t = raw.trim();
+        const rel = /^<link/i.test(t) && t.match(/\brel\s*=\s*["']([^"']+)["']/i);
+        const prop = t.match(/\bproperty\s*=\s*["']([^"']+)["']/i);
+        const nm = t.match(/\bname\s*=\s*["']([^"']+)["']/i);
+        const re = rel
+          ? new RegExp(`<link\\b[^>]*\\brel\\s*=\\s*["']${esc(rel[1])}["'][^>]*>`, "i")
+          : prop
+            ? new RegExp(`<meta\\b[^>]*\\bproperty\\s*=\\s*["']${esc(prop[1])}["'][^>]*>`, "i")
+            : nm
+              ? new RegExp(`<meta\\b[^>]*\\bname\\s*=\\s*["']${esc(nm[1])}["'][^>]*>`, "i")
+              : null;
+        const existing = re ? out.match(re) : null;
+        if (existing) {
+          if (existing[0].trim() !== t) {
+            out = out.replace(re, t);
+            swapped++;
+          }
+          continue;
+        }
+        if (!out.includes(t)) inserts.push(t);
+      }
+      if (inserts.length) {
+        out = out.replace(/<\/head>/i, `  ${inserts.join("\n  ")}\n</head>`);
+      }
+      if (inserts.length || swapped) {
+        updated = out;
+        const parts = [];
+        if (inserts.length) parts.push(`inserted ${inserts.length} new head tag${inserts.length === 1 ? "" : "s"}`);
+        if (swapped) parts.push(`updated ${swapped} existing`);
+        how = parts.join(", ");
+      } else {
+        return { ok: true, msg: `${file} already carries every tag in NEW, nothing to change` };
+      }
+    }
+  }
   if (updated === null && current && current.toLowerCase() !== "none") {
     const hits = html.split(current).length - 1;
     if (hits === 1) {
@@ -453,7 +504,6 @@ async function executeSiteEdit(p) {
   }
   if (updated === null && p.kind === "title" && /<title/i.test(next)) {
     updated = html.replace(/<title[^>]*>[\s\S]*?<\/title>/i, next.trim());
-    updated = html.replace(/<title[^>]*>[\s\S]*?<\/title>/i, next.trim());
     how = "title tag swap";
   }
   if (updated === null && p.kind === "meta" && /name="description"/i.test(next)) {
@@ -461,7 +511,7 @@ async function executeSiteEdit(p) {
     how = "meta tag swap";
   }
   if (updated === null) {
-    return { ok: false, msg: "no CURRENT anchor matched and the NEW block is not a full title or meta tag" };
+    return { ok: false, msg: "no CURRENT anchor matched and the NEW block is not a title, meta, or link tag set I can place" };
   }
   if (updated.includes("\u2014") || updated.includes("\u2013")) {
     updated = updated.replace(/\u2014|\u2013/g, ", ");
