@@ -279,6 +279,7 @@ let feeds = {
   money: null, // () => expense/income month summary
   engine: null, // async () => live TikTok Engine config text or null
   trends: null, // async () => trending hashtags text or null
+  ledger: null, // () => Regent's recent executions
 };
 export function wireFeeds(f) {
   feeds = { ...feeds, ...f };
@@ -627,6 +628,9 @@ export async function runCycle(trigger = "schedule") {
       `TIKTOK ENGINE (live config): ${engine ? engine.slice(0, 3200) : "Make read key not set, see brain [[TikTok-Engine]] for the design"}`,
       `TIKTOK TRENDS: ${trends ? trends.slice(0, 1200) : "feed unavailable today, use your own judgment on tags"}`,
       `CREATIVE FILED TODAY: ${creativeToday ? "yes" : "no"}`,
+      `REGENT LEDGER (what got executed, confirm wins against it): ${
+        feeds.ledger ? feeds.ledger() || "nothing yet" : "n/a"
+      }`,
       `MINION REPORTS (recent, read the vault Minions folder for full text): ${JSON.stringify(
         (state.minionReports || []).slice(-4).map((m) => ({ minion: m.minion, task: m.task, file: m.file }))
       )}`,
@@ -730,6 +734,12 @@ export async function runCycle(trigger = "schedule") {
   } catch (e) {
     state.status = "error";
     log("error", `Cycle failed: ${e.message || e}`);
+    if (!state.lastErrorPingAt || Date.now() - state.lastErrorPingAt > 6 * 3600 * 1000) {
+      state.lastErrorPingAt = Date.now();
+      await discordSend(
+        `**CORVID // ERROR** cycle failed: ${String(e.message || e).slice(0, 180)}. I will keep retrying on schedule; check Agent HQ if this repeats.`
+      ).catch(() => {});
+    }
     saveState();
     return { ok: false, error: e.message || "cycle error" };
   } finally {

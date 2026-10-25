@@ -1507,6 +1507,11 @@ wireFeeds({
   },
   engine: readEngine,
   trends: readTrends,
+  ledger: () => {
+    const body = ceoBrainFile("Ledger.md").body || "";
+    const lines = body.trim().split("\n").filter((l) => l.startsWith("- "));
+    return lines.slice(-8).join("\n");
+  },
 });
 // ----- brain sync: push the vaults to a git repo so Obsidian stays live ----
 // Set BRAIN_SYNC=1 and point AGENT_BRAIN_DIR / CEO_BRAIN_DIR inside a cloned

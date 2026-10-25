@@ -12,6 +12,7 @@ import {
   findProposal,
   renderCreative,
   agentLog,
+  brainFile,
 } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -322,6 +323,8 @@ export async function receiveProposals(filed) {
   try {
     const user = [
       `Charter:\n${vaultRead("Charter.md").slice(0, 1800)}`,
+      `Company strategy (Corvid's vault):\n${brainFile("Strategy.md").body.slice(0, 1600)}`,
+      `What the data says (Patterns):\n${brainFile("Patterns.md").body.slice(0, 1000)}`,
       `Filings:\n${JSON.stringify(
         filed.map((p) => ({ id: p.id, number: p.number, page: p.page, kind: p.kind, summary: p.summary, detail: p.detail.slice(0, 600) }))
       )}`,
