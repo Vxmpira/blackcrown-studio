@@ -674,7 +674,7 @@ PAGE ADDRESSING: a bare file name like korvus.html means the brand site. Prefix 
 TIKTOK ENGINE EDITS: to change the Make automation itself (writer prompts, captions, slide specs, variable values), file with page "make", CURRENT an exact passage copied from the TIKTOK ENGINE feed, NEW the replacement. Content strings only, never urls, keys, tokens, or module wiring. GREEN LIGHT MEANS Regent applies it to the live scenario, raw backup saved first.
 RECURRING REPORTS, kind "job": for any recurring digest, report, or monitoring post, file kind "job" instead of an automation paste. The server itself runs these, no Make involved. detail MUST carry, each on its own line: SCHEDULE: daily HH:MM ET, or weekly <monday..sunday> HH:MM ET. CHANNEL: corvid or boardroom. NEW: the exact content spec, what the report covers, in what order, pulled from live analytics, revenue, uptime, and SEO data. GREEN LIGHT MEANS the server registers the job and posts the report on schedule from then on.
 ADDING HEAD TAGS: to add canonical, og, twitter, or other meta and link tags to an html page, set CURRENT: none and make NEW only the tags themselves, nothing else. Regent merges them into the head, updating any tag that already exists and inserting the rest. Never guess head text as a CURRENT anchor. Sitemap entries work the same way: NEW is just the url blocks, Regent appends what is missing.
-kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text; green light means the owner pastes NEW into Make), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Regent renders the slides through Bloom, which spends Bloom credits, and posts the package for the owner to post manually).`;
+kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (page "make" edits to the TikTok Engine; green light means Regent applies it to the live scenario, backup first), "campaign" (a plan), "job" (a recurring server-run report, see RECURRING REPORTS), "creative" (a new TikTok post, VIDEO or slides; set "format":"video" with "video" carrying the full clip direction, or "format":"slides" with "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"]; always "caption": "keyword first line, 2-3 short lines, Link in bio plus destination", "target": the destination it sells, "brand": "korvus" or "default"; green light means Regent renders it through Bloom, video or stills, Herald finalizes the caption and hashtags for the target, and the finished package posts in this channel for the owner to post manually).`;
 
 const CYCLE_SYSTEM = `${IDENTITY}
 
@@ -711,6 +711,8 @@ ${FORMAT_RULES}
 
 The owner wrote in the channel. He may approve or reject by number, ask for a change, ask a question, or hand you a task. Only record decisions he clearly made.
 
+WHAT YOU CAN DO, never claim otherwise: produce TikTok VIDEOS and slide carousels (you file a kind creative proposal, format video or slides; on his approval Bloom renders the actual video or images, Herald finalizes the caption, and the finished package lands in this channel); edit any page on all three sites and the sitemap; edit the live TikTok Engine in Make (page "make"); register recurring server-run reports (kind "job"); delegate to minions. When he asks for any of these, queue the task, it files within minutes through your task engine, not "next cycle".
+
 Respond with ONLY one JSON object that passes JSON.parse (line breaks inside strings written as \\n):
 {
  "reply": "**CORVID //** then 1-3 short lines",
@@ -718,7 +720,7 @@ Respond with ONLY one JSON object that passes JSON.parse (line breaks inside str
  "new_tasks": [{"title":"max 7 words"}],
  "focus": "max 8 words, or the same"
 }
-If he makes a decision, acknowledge in one line that it goes to Regent, who executes and confirms; never state the change as done yourself. On a change request: acknowledge in one line; the reworked version comes in the next cycle.`;
+If he makes a decision, acknowledge in one line that it goes to Regent, who executes and confirms; never state the change as done yourself. On a change request: acknowledge in one line; the rework files within minutes.`;
 
 // ---------------------------------------------------------------------------
 // the daily cycle
