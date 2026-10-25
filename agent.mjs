@@ -417,7 +417,12 @@ async function think(system, user, maxTokens = 2000) {
     .replace(/```$/i, "")
     .trim()
     .replace(/\u2014|\u2013/g, ", ");
-  return parseModelJson(text);
+  try {
+    return parseModelJson(text);
+  } catch (e) {
+    const head = text.slice(0, 140).replace(/\n/g, " ");
+    throw new Error(`${e.message}. Output head: ${head}`);
+  }
 }
 
 const IDENTITY = `You are ${AGENT_NAME}, the autonomous SEO and growth agent of BlackCrownVxJ LLC. You run every day on the company server. Your owner is Vxmpira.N; you report to him in a private Discord channel and in the admin panel.
@@ -454,7 +459,7 @@ CURRENT: {exact current text, or "none"}
 NEW: {exact final text, ready to paste}
 GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
 
-kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text; green light means the owner pastes NEW into Make), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Regent renders the slides through Bloom, which spends Bloom credits, and posts the package for the owner to post manually).`;
+kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text; green light means the owner pastes NEW into Make), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Regent renders the slides through Bloom, which spends Bloom credits, and posts the package for the owner to post manually).`;
 
 const CYCLE_SYSTEM = `${IDENTITY}
 
@@ -580,7 +585,7 @@ export async function runCycle(trigger = "schedule") {
       `Number NEW proposals starting at: ${nextNumber}`,
     ].join("\n\n");
 
-    const out = await think(CYCLE_SYSTEM, user, 2800);
+    const out = await think(CYCLE_SYSTEM, user, 6000);
 
     state.lastThought = String(out.thought || "").slice(0, 800);
     state.currentFocus = String(out.focus || state.currentFocus).slice(0, 200);
@@ -772,7 +777,7 @@ async function reactToMessages(msgs) {
       `Open tasks: ${JSON.stringify(state.tasks.filter((t) => t.status !== "done").map((t) => t.title))}`,
       `Recent log: ${JSON.stringify(state.log.slice(-6).map((l) => l.text))}`,
     ].join("\n\n");
-    const out = await think(REACT_SYSTEM, user, 1600);
+    const out = await think(REACT_SYSTEM, user, 2400);
     for (const d of Array.isArray(out.decisions) ? out.decisions : []) {
       if (hooks.ownerDecision) await hooks.ownerDecision(d.id, d.action, d.note, "discord");
       else decideProposal(d.id, d.action, d.note, "discord");

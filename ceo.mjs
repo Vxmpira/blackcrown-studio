@@ -312,7 +312,7 @@ export async function receiveProposals(filed) {
         filed.map((p) => ({ id: p.id, number: p.number, page: p.page, kind: p.kind, summary: p.summary, detail: p.detail.slice(0, 600) }))
       )}`,
     ].join("\n\n");
-    const out = await think(REVIEW_SYSTEM, user, 800);
+    const out = await think(REVIEW_SYSTEM, user, 1400);
     verdicts = Array.isArray(out.verdicts) ? out.verdicts : [];
   } catch (e) {
     log("error", `Review failed, endorsing by default: ${e.message || e}`);
@@ -485,7 +485,7 @@ async function react(msgs) {
       `Asks waiting: ${JSON.stringify(asks)}`,
       `Recent executions: ${JSON.stringify(state.executed.slice(0, 3))}`,
     ].join("\n\n");
-    const out = await think(REACT_SYSTEM, user, 900);
+    const out = await think(REACT_SYSTEM, user, 1400);
     if (out.reply) await send(String(out.reply));
     for (const d of Array.isArray(out.decisions) ? out.decisions : []) {
       await ownerDecision(d.id, d.action, d.note, "discord");
