@@ -1053,3 +1053,41 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   .metro-packets, .grid-packets { display: none; }
   .sky-lights rect { animation: none; opacity: 0.5; }
 }
+
+/* ===== The Grid in 3D ===== */
+.city3d {
+  position: relative;
+  width: 100%;
+  height: clamp(440px, 60vh, 680px);
+  border: 1px solid var(--glass-edge);
+  clip-path: var(--notch);
+  background: radial-gradient(ellipse at 50% 30%, rgba(255, 45, 149, 0.08), transparent 60%), rgba(3, 3, 6, 0.6);
+  overflow: hidden;
+}
+.city3d canvas { display: block; }
+.c3d-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 2px 8px #000, 0 0 12px rgba(0, 0, 0, 0.9);
+}
+.c3d-name {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: #ffffff;
+  text-shadow: 0 0 8px rgba(255, 45, 149, 0.8), 0 2px 6px #000;
+}
+.c3d-big .c3d-name { font-size: 15px; font-weight: 700; }
+.c3d-sub {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--cyan);
+  text-shadow: 0 0 8px rgba(70, 230, 255, 0.7), 0 2px 6px #000;
+  margin-top: 2px;
+}
+@media (max-width: 720px) { .city3d { height: 56vh; } .c3d-name { font-size: 12px; } }

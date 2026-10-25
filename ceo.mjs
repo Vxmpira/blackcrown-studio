@@ -487,7 +487,7 @@ async function executeSiteEdit(p) {
   }
   let score = "";
   try {
-    const pages = rootKey === "site" && deps.audit ? deps.audit() : [];
+    const pages = rootKey === "site" && deps.audit ? await deps.audit() : [];
     const pg = pages.find((x) => x.file === file);
     if (pg) score = `, new score ${pg.score}`;
   } catch {

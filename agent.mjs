@@ -425,6 +425,60 @@ async function think(system, user, maxTokens = 2000) {
   }
 }
 
+async function thinkText(system, user, maxTokens = 1400) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: "user", content: user }],
+    }),
+  });
+  if (!r.ok) throw new Error(`Anthropic (${r.status})`);
+  const data = await r.json();
+  return (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim()
+    .replace(/\u2014|\u2013/g, ", ");
+}
+
+// The minions: small single-purpose workers Corvid can delegate to. Each is
+// one focused model call; the report lands in the vault and feeds the next
+// cycle, so knowledge compounds instead of piling onto one context.
+const MINIONS = {
+  scout: `You are Scout, a research minion of BlackCrown's SEO agent Corvid. You dig into one question about search behavior, keywords, trends, or competitors for the BlackCrown family (Korvus market terminal, Crown private AI, Eclipse-X community). Output a tight markdown report: a one-line finding first, then evidence bullets, then 2-3 recommended moves. Ground claims in the provided data; say plainly when you are reasoning from general knowledge instead. Never use em dashes.`,
+  scribe: `You are Scribe, a writing minion of BlackCrown's SEO agent Corvid. You produce finished copy in the house voice: anti guru, honest, specific, short sentences, no hype, no promised outcomes, never trading advice, no em dashes, no emojis. Deliver exactly what the task asks, ready to use, in markdown.`,
+  analyst: `You are Analyst, a numbers minion of BlackCrown's SEO agent Corvid. You take the provided metrics and extract what matters: trends, anomalies, ratios, and the single most actionable insight. Output tight markdown: headline insight, the numbers behind it, what to do about it. No filler, no em dashes.`,
+};
+
+function slugify(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "task";
+}
+
+async function runMinion(name, task, context) {
+  const sys = MINIONS[name];
+  if (!sys) return null;
+  const report = await thinkText(sys, `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}`, 1600);
+  const file = path.join("Minions", `${etDayKey()}-${name}-${slugify(task)}.md`);
+  fs.mkdirSync(path.join(BRAIN_DIR, "Minions"), { recursive: true });
+  brainWrite(file, `# ${name}: ${task}\n\nFor [[Corvid]], ${etDayKey()}.\n\n${report}\n`);
+  state.minionReports = (state.minionReports || []).slice(-5);
+  state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file });
+  log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
+  saveState();
+  return report;
+}
+
 const IDENTITY = `You are ${AGENT_NAME}, the autonomous SEO and growth agent of BlackCrownVxJ LLC. You run every day on the company server. Your owner is Vxmpira.N; you report to him in a private Discord channel and in the admin panel.
 
 THE COMPANY: BlackCrown builds for independent operators. Products: Korvus (korvus.industries, a 24/7 market intelligence terminal for index futures traders, the main revenue product, Observer free tier and Operator paid tier), BlackCrown Intelligence (a private AI workspace), LodeStone (a TradingView indicator sold with Operator), and Eclipse-X (the free Discord community, the top of the funnel). Brand voice: confident, direct, a little defiant, never corporate hype. The signature line: a crown is not handed down, it is built.
@@ -477,8 +531,12 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","slides":["..."],"caption":"...","brand":"korvus"}],
+ "brain_notes": [{"name":"Keywords.md","body":"full markdown content"}],
+ "delegations": [{"minion":"scout|scribe|analyst","task":"one focused job","context":"what it needs to know"}],
  "discord": "the daily update, exactly in the template"
 }
+BRAIN ECOSYSTEM: grow the vault into a real knowledge base. Use brain_notes (max 2 per cycle) to create or fully update topic notes: Keywords.md, Competitors.md, Funnel.md, Korvus-Site.md, Crown-Site.md, whatever the work needs. Wikilink them from each other and keep each note current rather than ever-growing.
+MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per cycle) for jobs a specialist does better: scout for research questions, scribe for finished copy, analyst for digging into the numbers. Their reports land in the vault Minions folder and come back to you next cycle.
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
 DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative" carousel, built from the current data and TIKTOK TRENDS when available. Fold at most one genuinely fitting trend tag into the 4 hashtags, never force one. The daily creative counts as something worth sending, so the discord update goes out with it.`;
@@ -515,7 +573,7 @@ export async function runCycle(trigger = "schedule") {
     const up = feeds.uptime() || [];
     let audit = [];
     try {
-      audit = feeds.audit() || [];
+      audit = (await feeds.audit()) || [];
     } catch (e) {
       log("error", `Audit inside cycle failed: ${e.message || e}`);
     }
@@ -569,6 +627,9 @@ export async function runCycle(trigger = "schedule") {
       `TIKTOK ENGINE (live config): ${engine ? engine.slice(0, 3200) : "Make read key not set, see brain [[TikTok-Engine]] for the design"}`,
       `TIKTOK TRENDS: ${trends ? trends.slice(0, 1200) : "feed unavailable today, use your own judgment on tags"}`,
       `CREATIVE FILED TODAY: ${creativeToday ? "yes" : "no"}`,
+      `MINION REPORTS (recent, read the vault Minions folder for full text): ${JSON.stringify(
+        (state.minionReports || []).slice(-4).map((m) => ({ minion: m.minion, task: m.task, file: m.file }))
+      )}`,
       `AUDIT (worst first): ${JSON.stringify(
         audit
           .slice()
@@ -624,6 +685,11 @@ export async function runCycle(trigger = "schedule") {
       });
     }
     state.proposals = state.proposals.slice(-60);
+    for (const note of Array.isArray(out.brain_notes) ? out.brain_notes.slice(0, 2) : []) {
+      const nm = String(note.name || "").replace(/[^a-zA-Z0-9 _-]/g, "").trim();
+      if (nm && note.body) brainWrite(`${nm.replace(/\.md$/i, "")}.md`, String(note.body).slice(0, 12000));
+    }
+    const delegations = Array.isArray(out.delegations) ? out.delegations.slice(0, 2) : [];
     const filedNow = state.proposals.filter((p) => p.number >= nextNumber);
     if (filedNow.length && hooks.onFiled) {
       hooks.onFiled(filedNow).catch((e) => log("error", `Regent intake failed: ${e.message || e}`));
@@ -648,6 +714,13 @@ export async function runCycle(trigger = "schedule") {
     brainWrite(path.join("Log", `${etDayKey()}.md`), note);
 
     if (out.discord && String(out.discord).trim()) await discordSend(String(out.discord));
+    for (const d of delegations) {
+      try {
+        await runMinion(String(d.minion || "").trim(), String(d.task || "").slice(0, 160), d.context);
+      } catch (e) {
+        log("error", `Minion ${d.minion} failed: ${e.message || e}`);
+      }
+    }
     state.lastCycleAt = Date.now();
     state.lastCycleDay = etDayKey();
     state.status = "watching";

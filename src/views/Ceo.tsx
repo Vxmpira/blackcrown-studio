@@ -161,6 +161,9 @@ export const Ceo: React.FC = () => {
         >
           {ceo?.enabled === false ? "Resume Regent" : "Pause Regent"}
         </button>
+        <button className="mini-btn" style={{ marginLeft: 0 }} onClick={load}>
+          Refresh
+        </button>
       </div>
 
       <div className="stat-grid" style={{ marginTop: 18 }}>

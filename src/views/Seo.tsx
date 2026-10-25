@@ -357,6 +357,9 @@ export const Seo: React.FC = () => {
         >
           {busy === "test" ? "Sending..." : "Test Discord"}
         </button>
+        <button className="mini-btn" style={{ marginLeft: 0 }} onClick={load}>
+          Refresh
+        </button>
       </div>
       {err ? <div className="status err">{err}</div> : null}
 

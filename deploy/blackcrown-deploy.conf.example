@@ -1,6 +1,6 @@
 # user|repo path|post command (leave empty after the second | for none)
 ubuntu|/var/www/blackcrown|
-ubuntu|/home/ubuntu/blackcrown-studio|runuser -u ubuntu -- bash -lc 'cd /home/ubuntu/blackcrown-studio && npm run build' && systemctl restart blackcrown-render
+ubuntu|/home/ubuntu/blackcrown-studio|runuser -u ubuntu -- bash -lc 'cd /home/ubuntu/blackcrown-studio && npm install --no-audit --no-fund && npm run build' && systemctl restart blackcrown-render
 # On the Korvus box, a line like:
 # ubuntu|/home/ubuntu/korvus-engine|systemctl restart korvus
 # On the Crown box, a line for its repo and restart command.

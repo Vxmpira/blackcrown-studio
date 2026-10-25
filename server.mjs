@@ -1070,7 +1070,7 @@ function stripTags(html) {
     .trim();
 }
 
-function auditPage(file, html, sitemapUrls) {
+function auditPage(file, html, sitemapUrls, skipSitemap = false) {
   const issues = [];
   const title = grab(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
   const metaDesc = grab(
@@ -1104,7 +1104,7 @@ function auditPage(file, html, sitemapUrls) {
   if (!favicon) issues.push({ sev: "low", msg: "No favicon link" });
   if (!viewport) issues.push({ sev: "high", msg: "No viewport meta, fails mobile-friendly" });
   if (words < 150) issues.push({ sev: "med", msg: `Thin content (${words} words of visible text)` });
-  if (!inSitemap) issues.push({ sev: "med", msg: "Not listed in sitemap.xml" });
+  if (!skipSitemap && !inSitemap) issues.push({ sev: "med", msg: "Not listed in sitemap.xml" });
 
   const weights = { high: 18, med: 9, low: 4 };
   const score = Math.max(
@@ -1123,7 +1123,36 @@ function auditPage(file, html, sitemapUrls) {
 
 const SKIP_PAGES = new Set(["blackcrown-bar.html"]);
 
-function doAudit() {
+const REMOTE_AUDITS = [
+  { file: "korvus.industries", url: "https://korvus.industries" },
+  { file: "blackcrown-intelligence.com", url: "https://blackcrown-intelligence.com" },
+];
+let remoteAuditCache = { at: 0, pages: [] };
+
+async function auditRemotes() {
+  if (Date.now() - remoteAuditCache.at < 2 * 3600 * 1000) return remoteAuditCache.pages;
+  const pages = [];
+  for (const t of REMOTE_AUDITS) {
+    try {
+      const ctl = new AbortController();
+      const tm = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetch(t.url, {
+        signal: ctl.signal,
+        headers: { "user-agent": "BlackCrown-Corvid-Audit/1.0" },
+      });
+      clearTimeout(tm);
+      if (!r.ok) continue;
+      const html = await r.text();
+      pages.push(auditPage(t.file, html, [], true));
+    } catch {
+      // unreachable right now; next refresh retries
+    }
+  }
+  if (pages.length) remoteAuditCache = { at: Date.now(), pages };
+  return remoteAuditCache.pages;
+}
+
+async function doAudit() {
   const files = fs
     .readdirSync(SITE_ROOT)
     .filter((f) => f.endsWith(".html") && !SKIP_PAGES.has(f))
@@ -1139,6 +1168,7 @@ function doAudit() {
   const pages = files.map((f) =>
     auditPage(f, fs.readFileSync(path.join(SITE_ROOT, f), "utf8"), sitemapUrls)
   );
+  pages.push(...(await auditRemotes()));
   const seo = loadSeo();
   seo.auditedAt = Date.now();
   seo.pages = pages;
@@ -1146,9 +1176,9 @@ function doAudit() {
   return seo;
 }
 
-app.post("/api/seo/audit", (_req, res) => {
+app.post("/api/seo/audit", async (_req, res) => {
   try {
-    const seo = doAudit();
+    const seo = await doAudit();
     res.json({ auditedAt: seo.auditedAt, pages: seo.pages, reviews: seo.reviews || {} });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : "audit error" });
@@ -1450,7 +1480,7 @@ wireFeeds({
       const last = list[list.length - 1] || null;
       return { site: site.label, up: last ? last.ok : null, ms: last ? last.ms : null };
     }),
-  audit: () => doAudit().pages,
+  audit: async () => (await doAudit()).pages,
   revenue: async () => {
     if (!STRIPE_KEY) return null;
     if (revenueCache.data && Date.now() - revenueCache.at < 30 * 60 * 1000) {
@@ -1525,7 +1555,7 @@ if (BRAIN_SYNC) {
   setInterval(() => syncBrains(), 5 * 60 * 1000);
 }
 
-wireCeo({ siteRoot: SITE_ROOT, audit: () => doAudit().pages });
+wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages });
 wireHooks({ onFiled: receiveProposals, ownerDecision });
 startAgent();
 startCeo();
