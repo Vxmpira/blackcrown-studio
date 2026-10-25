@@ -10,6 +10,15 @@ import {
   type BrainFileMeta,
   type CeoState,
 } from "../api";
+import { Switch } from "../components/Switch";
+
+const readLive = () => {
+  try {
+    return localStorage.getItem("bc_live") !== "0";
+  } catch {
+    return true;
+  }
+};
 
 const ago = (t: number | null | undefined) => {
   if (!t) return "never";
@@ -92,13 +101,30 @@ const CeoBrain: React.FC = () => {
 export const Ceo: React.FC = () => {
   const [ceo, setCeo] = useState<CeoState | null>(null);
   const [busy, setBusy] = useState("");
+  const [live, setLive] = useState(readLive);
+  const [syncAt, setSyncAt] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const load = () => getCeo().then(setCeo);
+  const load = async () => {
+    const c = await getCeo();
+    if (c) setCeo(c);
+    setSyncAt(Date.now());
+  };
   useEffect(() => {
     load();
-    const t = window.setInterval(load, 30000);
+    if (!live) return;
+    const t = window.setInterval(load, 5000);
     return () => window.clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+  const toggleLive = (v: boolean) => {
+    setLive(v);
+    try {
+      localStorage.setItem("bc_live", v ? "1" : "0");
+    } catch {
+      // per-browser convenience only
+    }
+  };
 
   const decide = async (id: string, action: "approve" | "reject") => {
     setBusy(id);
@@ -150,20 +176,36 @@ export const Ceo: React.FC = () => {
         </div>
       </div>
 
-      <div className="seo-bar" style={{ marginTop: 14 }}>
+      <div className="seo-bar" style={{ marginTop: 14, flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+        <Switch
+          on={ceo?.enabled !== false}
+          disabled={!ceo}
+          label={ceo?.enabled === false ? "Auto-run off" : "Auto-run 24/7"}
+          onChange={async (v) => {
+            await ceoEnabled(v);
+            load();
+          }}
+        />
+        <Switch on={live} label={live ? "Live feed" : "Live feed off"} onChange={toggleLive} />
         <button
           className="mini-btn"
           style={{ marginLeft: 0 }}
+          disabled={refreshing}
           onClick={async () => {
-            await ceoEnabled(!(ceo?.enabled ?? true));
-            load();
+            setRefreshing(true);
+            try {
+              await load();
+            } finally {
+              setRefreshing(false);
+            }
           }}
         >
-          {ceo?.enabled === false ? "Resume Regent" : "Pause Regent"}
+          {refreshing ? "Refreshing..." : "Refresh"}
         </button>
-        <button className="mini-btn" style={{ marginLeft: 0 }} onClick={load}>
-          Refresh
-        </button>
+        <span className="sync-stamp">
+          <span className={`dot ${live ? "ok" : "unknown"}`} />
+          {syncAt ? `synced ${new Date(syncAt).toLocaleTimeString()}` : "..."}
+        </span>
       </div>
 
       <div className="stat-grid" style={{ marginTop: 18 }}>

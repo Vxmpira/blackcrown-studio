@@ -137,7 +137,7 @@ export type StatsData = {
 
 export async function getStats(): Promise<StatsData | null> {
   try {
-    const r = await fetch(`${BASE}/api/stats`);
+    const r = await fetch(`${BASE}/api/stats`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -159,7 +159,7 @@ export type UptimeSite = {
 
 export async function getUptime(fresh = false): Promise<UptimeSite[]> {
   try {
-    const r = await fetch(`${BASE}/api/uptime${fresh ? "?now=1" : ""}`);
+    const r = await fetch(`${BASE}/api/uptime${fresh ? "?now=1" : ""}`, { cache: "no-store" });
     if (!r.ok) return [];
     const j = await r.json();
     return Array.isArray(j.sites) ? j.sites : [];
@@ -184,7 +184,7 @@ export type SystemData = {
 
 export async function getSystem(): Promise<SystemData | null> {
   try {
-    const r = await fetch(`${BASE}/api/system`);
+    const r = await fetch(`${BASE}/api/system`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -250,7 +250,7 @@ export type RevenueData = {
 
 export async function getRevenue(fresh = false): Promise<RevenueData | null> {
   try {
-    const r = await fetch(`${BASE}/api/revenue${fresh ? "?fresh=1" : ""}`);
+    const r = await fetch(`${BASE}/api/revenue${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
     const j = await r.json().catch(() => null);
     if (!r.ok) return j && j.configured ? j : null;
     return j;
@@ -278,7 +278,7 @@ export type SeoData = {
 
 export async function getSeo(): Promise<SeoData | null> {
   try {
-    const r = await fetch(`${BASE}/api/seo`);
+    const r = await fetch(`${BASE}/api/seo`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -330,6 +330,7 @@ export type AgentState = {
   discordMode: "bot" | "webhook" | "none";
   cycleHourEt: number;
   cycleEveryH?: number;
+  cycleEveryMin?: number;
   lastCycleAt: number | null;
   currentFocus: string;
   lastThought: string;
@@ -341,7 +342,7 @@ export type AgentState = {
 
 export async function getAgent(): Promise<AgentState | null> {
   try {
-    const r = await fetch(`${BASE}/api/agent`);
+    const r = await fetch(`${BASE}/api/agent`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -439,7 +440,7 @@ export type CeoState = {
 };
 export async function getCeo(): Promise<CeoState | null> {
   try {
-    const r = await fetch(`${BASE}/api/ceo`);
+    const r = await fetch(`${BASE}/api/ceo`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {

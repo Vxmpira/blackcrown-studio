@@ -20,6 +20,15 @@ import {
   type SeoData,
   type SeoPage,
 } from "../api";
+import { Switch } from "../components/Switch";
+
+const readLive = () => {
+  try {
+    return localStorage.getItem("bc_live") !== "0";
+  } catch {
+    return true;
+  }
+};
 
 const ago = (t: number | null | undefined) => {
   if (!t) return "never";
@@ -244,16 +253,39 @@ export const Seo: React.FC = () => {
   const [err, setErr] = useState("");
   const [newTask, setNewTask] = useState("");
   const [showAudit, setShowAudit] = useState(false);
+  const [live, setLive] = useState(readLive);
+  const [syncAt, setSyncAt] = useState(0);
 
-  const load = () => {
-    getAgent().then(setAgent);
-    getSeo().then(setSeo);
+  const load = async () => {
+    const [a, s] = await Promise.all([getAgent(), getSeo()]);
+    if (a) setAgent(a);
+    if (s) setSeo(s);
+    setSyncAt(Date.now());
   };
   useEffect(() => {
     load();
-    const t = window.setInterval(() => getAgent().then((a) => a && setAgent(a)), 30000);
-    return () => window.clearInterval(t);
-  }, []);
+    if (!live) return;
+    const t = window.setInterval(() => {
+      getAgent().then((a) => {
+        if (a) setAgent(a);
+        setSyncAt(Date.now());
+      });
+    }, 5000);
+    const t2 = window.setInterval(() => getSeo().then((s) => s && setSeo(s)), 60000);
+    return () => {
+      window.clearInterval(t);
+      window.clearInterval(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+  const toggleLive = (v: boolean) => {
+    setLive(v);
+    try {
+      localStorage.setItem("bc_live", v ? "1" : "0");
+    } catch {
+      // per-browser convenience only
+    }
+  };
 
   const run = async (name: string, fn: () => Promise<unknown>) => {
     setErr("");
@@ -318,7 +350,9 @@ export const Seo: React.FC = () => {
           <span className="pulse-k">Cadence</span>
           <span className="pulse-v" style={{ fontSize: 16 }}>
             {agent
-              ? agent.cycleEveryH
+              ? agent.cycleEveryMin
+                ? `every ${agent.cycleEveryMin}min`
+                : agent.cycleEveryH
                 ? `every ${agent.cycleEveryH}h`
                 : `daily ${agent.cycleHourEt}:00 ET`
               : "..."}
@@ -337,17 +371,16 @@ export const Seo: React.FC = () => {
         </div>
       </div>
 
-      <div className="seo-bar" style={{ marginTop: 14, flexWrap: "wrap" }}>
+      <div className="seo-bar" style={{ marginTop: 14, flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+        <Switch
+          on={agent?.enabled !== false}
+          disabled={!agent || Boolean(busy)}
+          label={agent?.enabled === false ? "Auto-run off" : "Auto-run 24/7"}
+          onChange={(v) => run("auto", () => agentEnabled(v))}
+        />
+        <Switch on={live} label={live ? "Live feed" : "Live feed off"} onChange={toggleLive} />
         <button className="btn" onClick={() => run("cycle", agentCycle)} disabled={Boolean(busy)}>
           {busy === "cycle" ? "Thinking..." : "Run cycle now"}
-        </button>
-        <button
-          className="mini-btn"
-          style={{ marginLeft: 0 }}
-          onClick={() => run("pause", () => agentEnabled(!(agent?.enabled ?? true)))}
-          disabled={Boolean(busy)}
-        >
-          {agent?.enabled === false ? "Resume agent" : "Pause agent"}
         </button>
         <button
           className="mini-btn"
@@ -357,9 +390,18 @@ export const Seo: React.FC = () => {
         >
           {busy === "test" ? "Sending..." : "Test Discord"}
         </button>
-        <button className="mini-btn" style={{ marginLeft: 0 }} onClick={load}>
-          Refresh
+        <button
+          className="mini-btn"
+          style={{ marginLeft: 0 }}
+          onClick={() => run("refresh", load)}
+          disabled={Boolean(busy)}
+        >
+          {busy === "refresh" ? "Refreshing..." : "Refresh"}
         </button>
+        <span className="sync-stamp">
+          <span className={`dot ${live ? "ok" : "unknown"}`} />
+          {syncAt ? `synced ${new Date(syncAt).toLocaleTimeString()}` : "..."}
+        </span>
       </div>
       {err ? <div className="status err">{err}</div> : null}
 

@@ -193,6 +193,8 @@ app.post("/api/logout", (req, res) => {
 // login endpoints themselves.
 const PUBLIC_API = new Set(["/api/track", "/api/login", "/api/logout", "/api/me"]);
 app.use("/api", (req, res, next) => {
+  // live data, never let the browser or a proxy serve a stale copy
+  res.setHeader("Cache-Control", "no-store");
   if (PUBLIC_API.has(req.baseUrl + req.path) || PUBLIC_API.has("/api" + req.path)) {
     return next();
   }

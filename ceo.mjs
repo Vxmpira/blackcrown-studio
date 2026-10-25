@@ -374,8 +374,8 @@ function section(detail, label) {
   return m ? m[1].trim() : "";
 }
 
-async function executeSiteEdit(p) {
-  let file = String(p.page || "").trim();
+function resolveSiteFile(page) {
+  let file = String(page || "").trim();
   // "korvus:engine/feed.js" or "crown:server/config.json" routes to that repo;
   // a bare file name means the brand site.
   let rootKey = "site";
@@ -389,7 +389,7 @@ async function executeSiteEdit(p) {
   }
   const rootDir = rootKey === "site" ? deps.siteRoot : REPO_ROOTS[rootKey];
   if (!rootDir || !fs.existsSync(rootDir)) {
-    return { ok: false, msg: `repo "${rootKey}" is not set up on this server yet` };
+    return { err: `repo "${rootKey}" is not set up on this server yet` };
   }
   if (
     !/^[a-z0-9._\/-]+\.(html|xml|txt|css|js|mjs|cjs|ts|tsx|jsx|json|md|py|yml|yaml|conf|sh)$/i.test(file) ||
@@ -397,14 +397,62 @@ async function executeSiteEdit(p) {
     file.startsWith("/") ||
     /(^|\/)\.env/i.test(file)
   ) {
-    return { ok: false, msg: `"${file}" is not a file I can edit` };
+    return { err: `"${file}" is not a file I can edit` };
   }
-  const full = path.join(rootDir, file);
+  return { rootKey, file, rootDir, full: path.join(rootDir, file) };
+}
+
+// the safety guard: refuse to write a result that would break the file
+async function validateEdit(file, before, after) {
+  if (!after || !after.trim()) return "the result would leave the file empty";
+  const ext = ((file.match(/\.([a-z0-9]+)$/i) || [])[1] || "").toLowerCase();
+  const count = (s, re) => (s.match(re) || []).length;
+  if (ext === "json") {
+    try {
+      JSON.parse(after);
+    } catch (e) {
+      return `the result is not valid JSON (${e.message})`;
+    }
+  }
+  if (ext === "xml") {
+    if (count(after, /<url>/gi) !== count(after, /<\/url>/gi)) return "unbalanced url tags in the result";
+    if (/<\/urlset>/i.test(before) && !/<\/urlset>/i.test(after)) return "the result lost the closing urlset tag";
+  }
+  if (ext === "html" || ext === "htm") {
+    for (const tag of ["</head>", "</body>", "</html>", "</title>"]) {
+      if (before.includes(tag) && !after.includes(tag)) return `the result lost ${tag}`;
+    }
+    if (count(after, /<title\b/gi) > Math.max(1, count(before, /<title\b/gi))) return "the result duplicated the title tag";
+    if (count(after, /<head\b/gi) > count(before, /<head\b/gi)) return "the result duplicated the head tag";
+  }
+  if (["js", "mjs", "cjs"].includes(ext)) {
+    try {
+      const { execFileSync } = await import("child_process");
+      const os = await import("os");
+      const tmp = path.join(os.tmpdir(), `regent-check-${Date.now()}.${ext}`);
+      fs.writeFileSync(tmp, after);
+      try {
+        execFileSync(process.execPath, ["--check", tmp], { timeout: 10000, stdio: ["ignore", "ignore", "pipe"] });
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      }
+    } catch (e) {
+      const err = (e.stderr ? String(e.stderr) : String(e.message || e)).split("\n").slice(0, 3).join(" ");
+      return `the result fails a JavaScript syntax check: ${err.slice(0, 220)}`;
+    }
+  }
+  return null;
+}
+
+async function executeSiteEdit(p) {
+  const loc = resolveSiteFile(p.page);
+  if (loc.err) return { ok: false, msg: loc.err };
+  const { rootKey, file, rootDir, full } = loc;
   let html;
   try {
     html = fs.readFileSync(full, "utf8");
   } catch {
-    return { ok: false, msg: `${file} not found in ${deps.siteRoot}` };
+    return { ok: false, msg: `${file} not found in ${rootDir}` };
   }
   const current = section(p.detail, "CURRENT");
   const next = section(p.detail, "NEW");
@@ -516,6 +564,10 @@ async function executeSiteEdit(p) {
   if (updated.includes("\u2014") || updated.includes("\u2013")) {
     updated = updated.replace(/\u2014|\u2013/g, ", ");
   }
+  const invalid = await validateEdit(file, html, updated);
+  if (invalid) {
+    return { ok: false, msg: `safety guard blocked the write: ${invalid}` };
+  }
   try {
     fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
     fs.writeFileSync(full, updated);
@@ -552,6 +604,45 @@ async function executeSiteEdit(p) {
   return { ok: true, msg: `${file} updated live (${how})${score}. ${sync}.` };
 }
 
+// self repair: when a site edit fails, Regent pulls the live file and
+// re-derives the edit itself, grounded in what is actually there, then
+// runs it once more through the same executor and safety guard.
+const REPAIR_SYSTEM = `You repair a failed website edit for BlackCrownVxJ. You receive an approved proposal and the live file it targets. Output STRICT JSON only, one of:
+{"current":"...","new":"..."}  or  {"done":true}
+Rules:
+- "current" is copied byte for byte from the LIVE FILE below, unique within it, under 400 characters. Never invent or paraphrase it.
+- "new" is the exact final text that replaces "current" and fulfills the proposal's intent.
+- To ADD meta or link head tags, or sitemap url entries, set "current" to "none" and make "new" only those tags or entries; the executor merges them safely.
+- If the live file already satisfies the proposal, output {"done":true}.
+- Escape every line break inside strings as \\n. The whole output must pass JSON.parse.
+- Never use em dashes anywhere, write a comma or the word "to" instead.`;
+
+async function selfRepair(p, failMsg) {
+  const loc = resolveSiteFile(p.page);
+  if (loc.err) return null;
+  let body;
+  try {
+    body = fs.readFileSync(loc.full, "utf8");
+  } catch {
+    return null;
+  }
+  const excerpt =
+    body.length <= 7000
+      ? body
+      : body.slice(0, 5200) + "\n...[middle of file omitted]...\n" + body.slice(-1800);
+  const user = `PROPOSAL #${p.number} (kind: ${p.kind}) targeting ${loc.file}:\n${String(p.detail || "").slice(0, 1500)}\n\nFIRST ATTEMPT FAILED WITH: ${failMsg}\n\nLIVE FILE (${loc.file}):\n${excerpt}`;
+  const out = await think(REPAIR_SYSTEM, user, 1800);
+  const j = parseModelJson(out);
+  if (!j) return null;
+  if (j.done) {
+    return { ok: true, msg: `${loc.file} already satisfies the ask, verified against the live file, nothing to change` };
+  }
+  if (!j.new) return null;
+  const cur = j.current && String(j.current).trim() ? String(j.current) : "none";
+  const detail = `WHAT: ${p.summary}\nCURRENT: ${cur}\nNEW: ${String(j.new)}`;
+  return executeSiteEdit({ ...p, detail });
+}
+
 async function execute(p) {
   if (p.kind === "brain") {
     const name = String(p.page || "").replace(/[^a-zA-Z0-9 ._-]/g, "");
@@ -577,7 +668,21 @@ async function execute(p) {
     return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
   }
   if (["title", "meta", "content", "other"].includes(p.kind)) {
-    return executeSiteEdit(p);
+    let r = await executeSiteEdit(p);
+    if (!r.ok && !/not set up on this server|not a file I can edit|write failed/i.test(r.msg)) {
+      log("repair", `#${p.number}: ${r.msg}. Running self repair against the live file.`);
+      try {
+        const r2 = await selfRepair(p, r.msg);
+        if (r2 && r2.ok) {
+          r = { ok: true, msg: `${r2.msg} (self repaired)` };
+        } else if (r2) {
+          r = { ok: false, msg: `${r.msg}. Self repair also failed: ${r2.msg}` };
+        }
+      } catch (e) {
+        log("error", `self repair crashed: ${e.message || e}`);
+      }
+    }
+    return r;
   }
   const next = section(p.detail, "NEW");
   return {
