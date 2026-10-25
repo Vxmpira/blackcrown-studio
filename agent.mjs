@@ -717,9 +717,12 @@ export async function runCycle(trigger = "schedule") {
         `# Tasks\n\n${state.tasks.map((t) => `- [${t.status === "done" ? "x" : " "}] ${t.title} (${t.status})`).join("\n")}\n`
       );
     }
-    let n = nextNumber;
+    // staff agents may have filed while this cycle was thinking; take the
+    // live max so two filings never share a number
+    let n = Math.max(nextNumber, state.proposals.reduce((a, p) => Math.max(a, p.number || 0), 0) + 1);
+    const pushedNow = [];
     for (const p of Array.isArray(out.proposals) ? out.proposals.slice(0, 2) : []) {
-      state.proposals.push({
+      pushedNow.push({
         id: crypto.randomBytes(5).toString("hex"),
         number: n++,
         page: String(p.page || "site").slice(0, 60),
@@ -735,15 +738,16 @@ export async function runCycle(trigger = "schedule") {
         createdAt: Date.now(),
       });
     }
+    state.proposals.push(...pushedNow);
     state.proposals = state.proposals.slice(-60);
     for (const note of Array.isArray(out.brain_notes) ? out.brain_notes.slice(0, 2) : []) {
       const nm = String(note.name || "").replace(/[^a-zA-Z0-9 _-]/g, "").trim();
       if (nm && note.body) brainWrite(`${nm.replace(/\.md$/i, "")}.md`, String(note.body).slice(0, 12000));
     }
     const delegations = Array.isArray(out.delegations) ? out.delegations.slice(0, 2) : [];
-    const filedNow = state.proposals.filter((p) => p.number >= nextNumber);
-    if (filedNow.length && hooks.onFiled) {
-      hooks.onFiled(filedNow).catch((e) => log("error", `Regent intake failed: ${e.message || e}`));
+    // hand Regent only what THIS cycle pushed; staff filings already went
+    if (pushedNow.length && hooks.onFiled) {
+      hooks.onFiled(pushedNow).catch((e) => log("error", `Regent intake failed: ${e.message || e}`));
     }
 
     // daily note in the vault

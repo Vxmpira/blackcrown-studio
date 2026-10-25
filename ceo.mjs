@@ -478,12 +478,14 @@ async function executeSiteEdit(p) {
     // into the head. Each tag replaces its existing counterpart (same rel, property,
     // or name) or is inserted before </head>. Runs before the CURRENT match so a
     // guessed anchor can never eat the closing tag.
-    const tags = next.match(/<(?:meta|link)\b[^>]*>/gi) || [];
-    const leftover = next
+    const titleTag = ((next.match(/<title[^>]*>[\s\S]*?<\/title>/i) || [])[0] || "").trim();
+    const rest = titleTag ? next.replace(/<title[^>]*>[\s\S]*?<\/title>/i, "") : next;
+    const tags = rest.match(/<(?:meta|link)\b[^>]*>/gi) || [];
+    const leftover = rest
       .replace(/<(?:meta|link)\b[^>]*>/gi, "")
       .replace(/<!--[\s\S]*?-->/g, "")
       .trim();
-    if (tags.length && !leftover) {
+    if ((tags.length || titleTag) && !leftover) {
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       let out = html;
       const inserts = [];
@@ -509,6 +511,17 @@ async function executeSiteEdit(p) {
           continue;
         }
         if (!out.includes(t)) inserts.push(t);
+      }
+      if (titleTag) {
+        const curTitle = out.match(/<title[^>]*>[\s\S]*?<\/title>/i);
+        if (curTitle) {
+          if (curTitle[0].trim() !== titleTag) {
+            out = out.replace(/<title[^>]*>[\s\S]*?<\/title>/i, titleTag);
+            swapped++;
+          }
+        } else {
+          inserts.unshift(titleTag);
+        }
       }
       if (inserts.length) {
         out = out.replace(/<\/head>/i, `  ${inserts.join("\n  ")}\n</head>`);
@@ -631,8 +644,7 @@ async function selfRepair(p, failMsg) {
       ? body
       : body.slice(0, 5200) + "\n...[middle of file omitted]...\n" + body.slice(-1800);
   const user = `PROPOSAL #${p.number} (kind: ${p.kind}) targeting ${loc.file}:\n${String(p.detail || "").slice(0, 1500)}\n\nFIRST ATTEMPT FAILED WITH: ${failMsg}\n\nLIVE FILE (${loc.file}):\n${excerpt}`;
-  const out = await think(REPAIR_SYSTEM, user, 1800);
-  const j = parseModelJson(out);
+  const j = await think(REPAIR_SYSTEM, user, 1800);
   if (!j) return null;
   if (j.done) {
     return { ok: true, msg: `${loc.file} already satisfies the ask, verified against the live file, nothing to change` };
