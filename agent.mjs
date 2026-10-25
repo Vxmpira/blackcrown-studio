@@ -129,13 +129,13 @@ function brainRead(name) {
 }
 function brainWrite(name, body) {
   ensureBrain();
-  const safe = String(body).replace(/—|–/g, ", ");
+  const safe = String(body).replace(/\u2014|\u2013/g, ", ");
   fs.writeFileSync(path.join(BRAIN_DIR, name), safe);
 }
 function brainAppend(name, body) {
   ensureBrain();
   const p = path.join(BRAIN_DIR, name);
-  const safe = String(body).replace(/—|–/g, ", ");
+  const safe = String(body).replace(/\u2014|\u2013/g, ", ");
   fs.appendFileSync(p, (fs.existsSync(p) ? "\n" : "") + safe);
 }
 export function brainList() {
@@ -323,7 +323,7 @@ async function think(system, user, maxTokens = 2000) {
     .replace(/^```(json)?/i, "")
     .replace(/```$/i, "")
     .trim()
-    .replace(/—|–/g, ", ");
+    .replace(/\u2014|\u2013/g, ", ");
   try {
     return JSON.parse(text);
   } catch {
