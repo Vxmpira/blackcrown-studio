@@ -426,6 +426,14 @@ export function startStaff() {
     for (const key of Object.keys(ROLES)) {
       const a = state[key];
       if (!a.enabled || a.status === "thinking") continue;
+      // a fresh task never waits for the schedule: cycle within the minute
+      if (a.asap && (!a.lastCycleAt || Date.now() - a.lastCycleAt > 2 * 60000)) {
+        const why = a.asap;
+        a.asap = "";
+        saveState();
+        runStaffCycle(key, `event: ${why}`).catch(() => {});
+        continue;
+      }
       if (!a.lastCycleAt || Date.now() - a.lastCycleAt >= CYCLE_EVERY_H * 3600000) {
         runStaffCycle(key, "schedule").catch(() => {});
       }
@@ -514,6 +522,8 @@ export function staffAddTask(key, title) {
   if (!t.title) return null;
   state[key].tasks.push(t);
   state[key].tasks = state[key].tasks.slice(-12);
+  state[key].asap = `a new task just landed: ${t.title}`.slice(0, 140);
   log(key, "task", `queued: ${t.title}`);
+  saveState();
   return t;
 }
