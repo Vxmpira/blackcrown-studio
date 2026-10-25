@@ -38,6 +38,25 @@ const BLOOM_BRANDS = {
   korvus: process.env.BLOOM_BRAND_KORVUS || "4c2723d4-ad2b-4b52-bd20-f5b3ee65641b",
   default: process.env.BLOOM_BRAND_DEFAULT || "c5d8f6df-bb5e-40f8-a064-4e1462d76bf5",
 };
+// keep this many credits in reserve; renders pause below it so the month
+// never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
+const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
+let creditsCache = { at: 0, data: null };
+async function bloomCredits(fresh = false) {
+  if (!BLOOM_KEY) return null;
+  if (!fresh && creditsCache.data && Date.now() - creditsCache.at < 30 * 60 * 1000) return creditsCache.data;
+  try {
+    const r = await fetch("https://www.trybloom.ai/api/v1/credits", { headers: { "x-api-key": BLOOM_KEY } });
+    const j = await r.json();
+    if (r.ok && j?.data) {
+      creditsCache = { at: Date.now(), data: { balance: j.data.balance, unlimited: Boolean(j.data.unlimited) } };
+      return creditsCache.data;
+    }
+  } catch {
+    // balance is a nicety, never a blocker for knowing it
+  }
+  return creditsCache.data;
+}
 
 // ---------------------------------------------------------------------------
 // state
@@ -586,7 +605,8 @@ STRATEGY EVOLUTION: when the data says your Strategy itself should change, file 
 MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per cycle) for jobs a specialist does better: scout for research questions, scribe for finished copy, analyst for digging into the numbers. Their reports land in the vault Minions folder and come back to you next cycle.
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
-DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative", built from the current data and TIKTOK TRENDS when available. Prefer "format":"video" (one vertical clip with a video direction in "video") over "slides"; stills are the fallback. Every creative MUST declare "target": the ONE destination this post sells, brand (blackcrownvxj.com), korvus (korvus.industries), crown (blackcrown-intelligence.com), eclipse (the free Discord), or lodestone (the indicator). On render, Herald the sales agent finalizes the caption and hashtags for that target, so focus your energy on the visual concept. The daily creative counts as something worth sending, so the discord update goes out with it.`;
+DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative", built from the current data and TIKTOK TRENDS when available. Prefer "format":"video" (one vertical clip with a video direction in "video") over "slides"; stills are the fallback. Every creative MUST declare "target": the ONE destination this post sells, brand (blackcrownvxj.com), korvus (korvus.industries), crown (blackcrown-intelligence.com), eclipse (the free Discord), or lodestone (the indicator). On render, Herald the sales agent finalizes the caption and hashtags for that target, so focus your energy on the visual concept.
+CREATIVE BUDGET: the company has 200 Bloom credits a month and a video costs several times a still. Watch BLOOM CREDITS in your feed and pace the month deliberately: video for the strongest concept, slides for routine posts, and when the balance runs ahead of the calendar, file slides or skip a day. Running dry mid-month is a failure; ending the month with credits unspent on weak posts is not. The daily creative counts as something worth sending, so the discord update goes out with it.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -675,6 +695,7 @@ export async function runCycle(trigger = "schedule") {
       `TIKTOK ENGINE (live config): ${engine ? engine.slice(0, 3200) : "Make read key not set, see brain [[TikTok-Engine]] for the design"}`,
       `TIKTOK TRENDS: ${trends ? trends.slice(0, 1200) : "feed unavailable today, use your own judgment on tags"}`,
       `CREATIVE FILED TODAY: ${creativeToday ? "yes" : "no"}`,
+      `BLOOM CREDITS: ${await bloomCredits().then((c) => (c ? (c.unlimited ? "unlimited" : `${c.balance} left of 200 monthly`) : "unknown"))}`,
       `REGENT LEDGER (what got executed, confirm wins against it): ${
         feeds.ledger ? feeds.ledger() || "nothing yet" : "n/a"
       }`,
@@ -815,6 +836,15 @@ async function executeCreative(p) {
     );
     return;
   }
+  // budget guard: pause renders when the balance sits at or below the reserve
+  const creditsBefore = await bloomCredits(true);
+  if (creditsBefore && !creditsBefore.unlimited && creditsBefore.balance <= BLOOM_MIN_RESERVE) {
+    log("error", `#${p.number} render paused: Bloom balance ${creditsBefore.balance} is at the ${BLOOM_MIN_RESERVE} credit reserve`);
+    await discordSend(
+      `**CORVID //** #${p.number} is approved but I paused the render: Bloom balance is ${creditsBefore.balance} credits, at the ${BLOOM_MIN_RESERVE} reserve. Top up or lower BLOOM_MIN_RESERVE, then say retry ${p.number}.`
+    );
+    return;
+  }
   // sales pass: Herald finalizes the caption and hashtags for the post's target
   if (hooks.copyPass) {
     try {
@@ -888,6 +918,8 @@ async function executeCreative(p) {
     ``,
     `Post manually. Images by Bloom.`,
   ];
+  const after = await bloomCredits(true);
+  if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
   await discordSend(lines.join("\n"));
   log("render", `#${p.number} delivered ${good.length}/${slides.length} slides`);
 }
@@ -968,6 +1000,8 @@ async function executeVideo(p) {
       ``,
       `Post manually. Video by Bloom.`,
     ];
+    const after = await bloomCredits(true);
+    if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
     await discordSend(lines.join("\n"));
     log("render", `#${p.number} video delivered`);
   } catch (e) {
