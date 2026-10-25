@@ -304,6 +304,107 @@ export async function runSeoReview(file: string): Promise<SeoReview> {
   return j.review as SeoReview;
 }
 
+// ----- the agent ------------------------------------------------------------
+export type AgentTask = { id: string; title: string; status: "open" | "doing" | "done" };
+export type AgentProposal = {
+  id: string;
+  number: number;
+  page: string;
+  kind: string;
+  summary: string;
+  detail: string;
+  status: "pending" | "approved" | "rejected" | "changes";
+  createdAt: number;
+  decidedAt?: number;
+  note?: string;
+};
+export type AgentLogItem = { t: number; kind: string; text: string };
+export type AgentState = {
+  name: string;
+  enabled: boolean;
+  status: string;
+  discordMode: "bot" | "webhook" | "none";
+  cycleHourEt: number;
+  lastCycleAt: number | null;
+  currentFocus: string;
+  lastThought: string;
+  tasks: AgentTask[];
+  proposals: AgentProposal[];
+  log: AgentLogItem[];
+  discord: { lastOutboundAt: number | null; lastInboundAt: number | null };
+};
+
+export async function getAgent(): Promise<AgentState | null> {
+  try {
+    const r = await fetch(`${BASE}/api/agent`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+export async function agentCycle(): Promise<AgentState> {
+  const r = await fetch(`${BASE}/api/agent/cycle`, { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Cycle failed (${r.status})`);
+  return j.state as AgentState;
+}
+export async function agentEnabled(on: boolean): Promise<AgentState | null> {
+  const r = await fetch(`${BASE}/api/agent/enabled`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on }),
+  });
+  const j = await r.json().catch(() => ({}));
+  return (j.state as AgentState) || null;
+}
+export async function agentAddTask(title: string): Promise<void> {
+  await fetch(`${BASE}/api/agent/task`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+export async function agentTest(): Promise<void> {
+  const r = await fetch(`${BASE}/api/agent/test`, { method: "POST" });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Test failed (${r.status})`);
+  }
+}
+export async function agentDecide(
+  id: string,
+  action: "approve" | "reject" | "change",
+  note = ""
+): Promise<AgentProposal> {
+  const r = await fetch(`${BASE}/api/agent/proposal/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, note }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Decision failed (${r.status})`);
+  return j.proposal as AgentProposal;
+}
+export type BrainFileMeta = { name: string; size: number; mtime: number };
+export async function getBrainList(): Promise<BrainFileMeta[]> {
+  try {
+    const r = await fetch(`${BASE}/api/agent/brain`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    return j.files || [];
+  } catch {
+    return [];
+  }
+}
+export async function getBrainFile(name: string): Promise<string> {
+  const r = await fetch(`${BASE}/api/agent/brain/file?name=${encodeURIComponent(name)}`);
+  if (!r.ok) return "";
+  const j = await r.json();
+  return j.body || "";
+}
+export const brainDownloadUrl = `${BASE}/api/agent/brain.tgz`;
+
 // ----- auth -----------------------------------------------------------------
 export type Me = { authed: boolean; user: string | null; setup: boolean };
 

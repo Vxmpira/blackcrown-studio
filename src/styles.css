@@ -807,3 +807,111 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ===== Agent HQ ===== */
+.agent-focus {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--pink);
+  text-shadow: var(--glow-pink);
+  line-height: 1.35;
+}
+.agent-thought { color: var(--mute); font-size: 14px; line-height: 1.6; margin-top: 10px; }
+.prop { border: 1px solid var(--line-soft); border-radius: 12px; margin-bottom: 10px; overflow: hidden; background: var(--panel); }
+.prop.pending { border-color: var(--line); }
+.prop-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; }
+.prop-head:hover { background: rgba(255, 255, 255, 0.02); }
+.prop-num { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--pink); text-shadow: var(--glow-pink); }
+.prop-sum { flex: 1; font-size: 13.5px; color: var(--bone); }
+.prop-status {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--mute);
+}
+.prop-status.s-approved { color: #35e08f; border-color: rgba(53, 224, 143, 0.4); }
+.prop-status.s-rejected { color: #ff7a7a; border-color: rgba(255, 122, 122, 0.4); }
+.prop-status.s-pending { color: var(--pink); border-color: var(--line); }
+.prop-body { padding: 0 14px 14px; border-top: 1px solid var(--line-soft); }
+.prop-meta { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--mute); padding: 10px 0 8px; }
+.prop-detail {
+  font-family: "Manrope", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--bone);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-task { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--bone); }
+.t-chip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--mute);
+  min-width: 42px;
+  text-align: center;
+}
+.t-chip.t-doing { color: var(--pink); border-color: var(--line); }
+.t-chip.t-done { color: #35e08f; border-color: rgba(53, 224, 143, 0.4); }
+.agent-log { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; }
+.log-row { display: flex; gap: 10px; font-size: 12px; align-items: baseline; }
+.log-t { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--mute); flex-shrink: 0; }
+.log-k {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pink-soft);
+  flex-shrink: 0;
+  min-width: 56px;
+}
+.log-k.k-error { color: #ff7a7a; }
+.log-x { color: var(--bone); word-break: break-word; }
+.brain { display: flex; gap: 14px; min-height: 220px; }
+.brain-side { display: flex; flex-direction: column; gap: 6px; min-width: 150px; max-width: 190px; }
+.brain-file {
+  background: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  color: var(--mute);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  text-align: left;
+  padding: 7px 9px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-file:hover { color: var(--bone); }
+.brain-file.active { color: var(--pink); border-color: var(--line); text-shadow: var(--glow-pink); }
+.brain-dl { margin: 6px 0 0; text-align: center; text-decoration: none; display: block; }
+.brain-view { flex: 1; min-width: 0; }
+.brain-pre {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--bone);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 14px 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 340px;
+  overflow-y: auto;
+}
+@media (max-width: 700px) { .brain { flex-direction: column; } .brain-side { max-width: none; flex-direction: row; flex-wrap: wrap; } }

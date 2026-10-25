@@ -12,6 +12,21 @@ import { renderMediaOnLambda, getRenderProgress } from "@remotion/lambda/client"
 
 dotenv.config();
 
+import {
+  startAgent,
+  wireFeeds,
+  runCycle,
+  agentState,
+  setEnabled,
+  addTask,
+  sendTest,
+  decideProposal,
+  brainList,
+  brainFile,
+  brainDirPath,
+} from "./agent.mjs";
+import { execFile as execFileCb } from "child_process";
+
 const region = process.env.REMOTION_AWS_REGION;
 const functionName = process.env.REMOTION_LAMBDA_FUNCTION_NAME;
 const serveUrl = process.env.REMOTION_SERVE_URL;
@@ -1093,28 +1108,33 @@ function auditPage(file, html, sitemapUrls) {
 
 const SKIP_PAGES = new Set(["blackcrown-bar.html"]);
 
+function doAudit() {
+  const files = fs
+    .readdirSync(SITE_ROOT)
+    .filter((f) => f.endsWith(".html") && !SKIP_PAGES.has(f))
+    .sort();
+  if (!files.length) throw new Error(`No pages found in ${SITE_ROOT}`);
+  let sitemapUrls = [];
+  try {
+    const sm = fs.readFileSync(path.join(SITE_ROOT, "sitemap.xml"), "utf8");
+    sitemapUrls = [...sm.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].trim());
+  } catch {
+    // no sitemap
+  }
+  const pages = files.map((f) =>
+    auditPage(f, fs.readFileSync(path.join(SITE_ROOT, f), "utf8"), sitemapUrls)
+  );
+  const seo = loadSeo();
+  seo.auditedAt = Date.now();
+  seo.pages = pages;
+  saveSeo(seo);
+  return seo;
+}
+
 app.post("/api/seo/audit", (_req, res) => {
   try {
-    const files = fs
-      .readdirSync(SITE_ROOT)
-      .filter((f) => f.endsWith(".html") && !SKIP_PAGES.has(f))
-      .sort();
-    if (!files.length) throw new Error(`No pages found in ${SITE_ROOT}`);
-    let sitemapUrls = [];
-    try {
-      const sm = fs.readFileSync(path.join(SITE_ROOT, "sitemap.xml"), "utf8");
-      sitemapUrls = [...sm.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].trim());
-    } catch {
-      // no sitemap
-    }
-    const pages = files.map((f) =>
-      auditPage(f, fs.readFileSync(path.join(SITE_ROOT, f), "utf8"), sitemapUrls)
-    );
-    const seo = loadSeo();
-    seo.auditedAt = Date.now();
-    seo.pages = pages;
-    saveSeo(seo);
-    res.json({ auditedAt: seo.auditedAt, pages, reviews: seo.reviews || {} });
+    const seo = doAudit();
+    res.json({ auditedAt: seo.auditedAt, pages: seo.pages, reviews: seo.reviews || {} });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : "audit error" });
   }
@@ -1187,6 +1207,86 @@ app.post("/api/seo/review", async (req, res) => {
     res.status(500).json({ error: e instanceof Error ? e.message : "review error" });
   }
 });
+
+// ----- the SEO agent (Corvid): state, controls, brain -----------------------
+app.get("/api/agent", (_req, res) => {
+  res.json(agentState());
+});
+
+app.post("/api/agent/cycle", async (_req, res) => {
+  const out = await runCycle("manual");
+  if (!out.ok) return res.status(500).json(out);
+  res.json({ ...out, state: agentState() });
+});
+
+app.post("/api/agent/enabled", (req, res) => {
+  setEnabled(Boolean(req.body?.on));
+  res.json({ ok: true, state: agentState() });
+});
+
+app.post("/api/agent/task", (req, res) => {
+  const t = addTask(req.body?.title);
+  if (!t) return res.status(400).json({ error: "title required" });
+  res.json({ task: t });
+});
+
+app.post("/api/agent/test", async (_req, res) => {
+  const ok = await sendTest();
+  if (!ok)
+    return res.status(500).json({
+      error:
+        "No Discord route configured or the send failed. Set DISCORD_BOT_TOKEN and DISCORD_SEO_CHANNEL_ID (or DISCORD_SEO_WEBHOOK) in .env and restart.",
+    });
+  res.json({ ok: true });
+});
+
+app.post("/api/agent/proposal/:id", (req, res) => {
+  const p = decideProposal(
+    req.params.id,
+    String(req.body?.action || ""),
+    String(req.body?.note || ""),
+    "admin"
+  );
+  if (!p) return res.status(400).json({ error: "unknown proposal or action" });
+  res.json({ proposal: p });
+});
+
+app.get("/api/agent/brain", (_req, res) => {
+  res.json({ files: brainList() });
+});
+
+app.get("/api/agent/brain/file", (req, res) => {
+  const f = brainFile(String(req.query.name || ""));
+  if (!f.body && !f.name) return res.status(404).json({ error: "not found" });
+  res.json(f);
+});
+
+app.get("/api/agent/brain.tgz", (_req, res) => {
+  const dir = brainDirPath();
+  res.set("Content-Type", "application/gzip");
+  res.set("Content-Disposition", 'attachment; filename="blackcrown-brain.tgz"');
+  const child = execFileCb("tar", ["-czf", "-", "-C", dir, "."], {
+    maxBuffer: 64 * 1024 * 1024,
+    encoding: "buffer",
+  }, (err, stdout) => {
+    if (err) return res.status(500).end();
+    res.end(stdout);
+  });
+  void child;
+});
+
+// hand the agent the same data the admin sees
+wireFeeds({
+  stats: () => loadStats(),
+  uptime: () =>
+    WATCH_SITES.map((site) => {
+      const list = uptime[site.key] || [];
+      const last = list[list.length - 1] || null;
+      return { site: site.label, up: last ? last.ok : null, ms: last ? last.ms : null };
+    }),
+  audit: () => doAudit().pages,
+});
+startAgent();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
