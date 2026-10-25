@@ -705,6 +705,175 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
+// ----- Command tab: box vitals, service status, SSL expiry ------------------
+import os from "os";
+import tls from "tls";
+import { execFile } from "child_process";
+
+const COMMAND_SERVICES = (process.env.COMMAND_SERVICES ||
+  "nginx,blackcrown-render,blackcrown-support")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const CERT_HOSTS = [
+  "blackcrownvxj.com",
+  "admin.blackcrownvxj.com",
+  "korvus.industries",
+  "blackcrown-intelligence.com",
+];
+
+function serviceState(name) {
+  return new Promise((resolve) => {
+    execFile("systemctl", ["is-active", name], { timeout: 4000 }, (err, stdout) => {
+      const state = String(stdout || "").trim() || "unknown";
+      resolve({ name, active: state === "active", state });
+    });
+  });
+}
+
+function certDays(host) {
+  return new Promise((resolve) => {
+    const done = (out) => resolve(out);
+    try {
+      const sock = tls.connect(
+        { host, port: 443, servername: host, timeout: 6000 },
+        () => {
+          try {
+            const cert = sock.getPeerCertificate();
+            const validTo = cert && cert.valid_to ? new Date(cert.valid_to) : null;
+            const days = validTo
+              ? Math.floor((validTo.getTime() - Date.now()) / 864e5)
+              : null;
+            done({ host, daysLeft: days, validTo: validTo ? validTo.toISOString() : null });
+          } catch {
+            done({ host, daysLeft: null, validTo: null });
+          }
+          sock.end();
+        }
+      );
+      sock.on("error", () => done({ host, daysLeft: null, validTo: null }));
+      sock.on("timeout", () => {
+        sock.destroy();
+        done({ host, daysLeft: null, validTo: null });
+      });
+    } catch {
+      done({ host, daysLeft: null, validTo: null });
+    }
+  });
+}
+
+let certCache = { at: 0, list: [] };
+
+app.get("/api/system", async (_req, res) => {
+  // vitals
+  let disk = null;
+  try {
+    const st = fs.statfsSync("/");
+    const total = st.blocks * st.bsize;
+    const free = st.bavail * st.bsize;
+    disk = {
+      totalGb: Math.round((total / 1073741824) * 10) / 10,
+      freeGb: Math.round((free / 1073741824) * 10) / 10,
+      usedPct: Math.round(((total - free) / total) * 100),
+    };
+  } catch {
+    // statfs unavailable
+  }
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const load = os.loadavg();
+  const vitals = {
+    disk,
+    mem: {
+      totalGb: Math.round((totalMem / 1073741824) * 10) / 10,
+      usedPct: Math.round(((totalMem - freeMem) / totalMem) * 100),
+    },
+    load1: Math.round(load[0] * 100) / 100,
+    cores: os.cpus().length,
+    cpuPct: Math.min(100, Math.round((load[0] / Math.max(1, os.cpus().length)) * 100)),
+    bootDays: Math.round((os.uptime() / 86400) * 10) / 10,
+  };
+  const services = await Promise.all(COMMAND_SERVICES.map(serviceState));
+  if (Date.now() - certCache.at > 60 * 60 * 1000) {
+    certCache = { at: Date.now(), list: await Promise.all(CERT_HOSTS.map(certDays)) };
+  }
+  res.json({ vitals, services, certs: certCache.list });
+});
+
+// ----- Command tab: money (income and expenses, stored on disk) -------------
+const MONEY_PATH = path.join(__dirname, "studio-money.json");
+
+function loadMoney() {
+  try {
+    const list = JSON.parse(fs.readFileSync(MONEY_PATH, "utf8"));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+function saveMoney(list) {
+  fs.writeFileSync(MONEY_PATH, JSON.stringify(list, null, 2));
+}
+
+app.get("/api/money", (_req, res) => {
+  const entries = loadMoney().sort((a, b) => (a.date < b.date ? 1 : -1));
+  // 12-month rollup
+  const months = [];
+  const now = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    months.push({ month: key, income: 0, expense: 0, net: 0 });
+  }
+  const byKey = Object.fromEntries(months.map((m) => [m.month, m]));
+  for (const e of entries) {
+    const key = String(e.date || "").slice(0, 7);
+    const m = byKey[key];
+    if (!m) continue;
+    const amt = Number(e.amount) || 0;
+    if (e.type === "income") m.income += amt;
+    else m.expense += amt;
+  }
+  for (const m of months) {
+    m.income = Math.round(m.income * 100) / 100;
+    m.expense = Math.round(m.expense * 100) / 100;
+    m.net = Math.round((m.income - m.expense) * 100) / 100;
+  }
+  res.json({ entries: entries.slice(0, 100), months });
+});
+
+app.post("/api/money", (req, res) => {
+  const type = req.body?.type === "expense" ? "expense" : "income";
+  const product = ["korvus", "crown", "brand"].includes(req.body?.product)
+    ? req.body.product
+    : "brand";
+  const label = String(req.body?.label || "").slice(0, 80).trim();
+  const amount = Math.round((Number(req.body?.amount) || 0) * 100) / 100;
+  let date = String(req.body?.date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = dayKey();
+  if (!label || !amount) {
+    return res.status(400).json({ error: "label and a non-zero amount are required" });
+  }
+  const list = loadMoney();
+  const entry = {
+    id: crypto.randomBytes(6).toString("hex"),
+    date,
+    type,
+    product,
+    label,
+    amount,
+  };
+  list.push(entry);
+  saveMoney(list);
+  res.json({ entry });
+});
+
+app.delete("/api/money/:id", (req, res) => {
+  saveMoney(loadMoney().filter((e) => e.id !== req.params.id));
+  res.json({ ok: true });
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`BlackCrown render + generation service on http://localhost:${PORT}`);

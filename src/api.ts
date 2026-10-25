@@ -168,6 +168,73 @@ export async function getUptime(fresh = false): Promise<UptimeSite[]> {
   }
 }
 
+// ----- command tab ----------------------------------------------------------
+export type SystemData = {
+  vitals: {
+    disk: { totalGb: number; freeGb: number; usedPct: number } | null;
+    mem: { totalGb: number; usedPct: number };
+    load1: number;
+    cores: number;
+    cpuPct: number;
+    bootDays: number;
+  };
+  services: { name: string; active: boolean; state: string }[];
+  certs: { host: string; daysLeft: number | null; validTo: string | null }[];
+};
+
+export async function getSystem(): Promise<SystemData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/system`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+export type MoneyEntry = {
+  id: string;
+  date: string;
+  type: "income" | "expense";
+  product: "korvus" | "crown" | "brand";
+  label: string;
+  amount: number;
+};
+export type MoneyMonth = { month: string; income: number; expense: number; net: number };
+export type MoneyData = { entries: MoneyEntry[]; months: MoneyMonth[] };
+
+export async function getMoney(): Promise<MoneyData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/money`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function addMoney(e: {
+  date: string;
+  type: string;
+  product: string;
+  label: string;
+  amount: number;
+}): Promise<void> {
+  const r = await fetch(`${BASE}/api/money`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(e),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Save failed (${r.status})`);
+  }
+}
+
+export async function deleteMoney(id: string): Promise<void> {
+  await fetch(`${BASE}/api/money/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 // ----- auth -----------------------------------------------------------------
 export type Me = { authed: boolean; user: string | null; setup: boolean };
 

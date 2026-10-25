@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Sidebar, type TabId } from "./components/Sidebar";
 import { AdStudio } from "./views/AdStudio";
-import { Content } from "./views/Content";
+import { Command } from "./views/Command";
 import { Stats } from "./views/Stats";
 import { Settings } from "./views/Settings";
 import { Dashboard } from "./views/Dashboard";
@@ -42,7 +42,7 @@ export const App: React.FC = () => {
       <main className="main">
         {tab === "dashboard" ? <Dashboard /> : null}
         {tab === "ad-studio" ? <AdStudio /> : null}
-        {tab === "content" ? <Content /> : null}
+        {tab === "command" ? <Command /> : null}
         {tab === "stats" ? <Stats /> : null}
         {tab === "settings" ? <Settings /> : null}
       </main>
