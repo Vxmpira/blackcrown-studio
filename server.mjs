@@ -1406,6 +1406,73 @@ function scrubSecrets(s) {
     .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]");
 }
 
+// write access to Make, used ONLY by Regent executing an owner-approved ask.
+// Edits land on content strings inside the blueprint (prompts, captions,
+// variable values), never module wiring; a raw backup is saved first and
+// nothing from the blueprint is ever logged or echoed.
+function walkReplace(node, current, next, stats) {
+  if (!node || typeof node !== "object") return;
+  const entries = Array.isArray(node) ? node.map((v, i) => [i, v]) : Object.entries(node);
+  for (const [k, v] of entries) {
+    if (typeof v === "string") {
+      if (v.includes(current)) {
+        stats.hits += v.split(current).length - 1;
+        stats.fields++;
+        node[k] = v.split(current).join(next);
+      }
+    } else if (v && typeof v === "object") {
+      walkReplace(v, current, next, stats);
+    }
+  }
+}
+async function applyMakeEdit({ scenarioId, current, next }) {
+  if (!MAKE_TOKEN) return { ok: false, msg: "MAKE_API_TOKEN is not set in .env" };
+  const id = String(scenarioId || TIKTOK_SCENARIO_ID).replace(/[^0-9]/g, "") || TIKTOK_SCENARIO_ID;
+  if (!current || current.toLowerCase() === "none") {
+    return { ok: false, msg: "Make edits need CURRENT copied exactly from the engine feed, none given" };
+  }
+  if (!next) return { ok: false, msg: "no NEW text to apply" };
+  try {
+    const r = await fetch(`https://${MAKE_ZONE}/api/v2/scenarios/${id}/blueprint`, {
+      headers: { Authorization: `Token ${MAKE_TOKEN}` },
+    });
+    if (!r.ok) return { ok: false, msg: `could not read scenario ${id} (${r.status}), check the token` };
+    const j = await r.json();
+    const bp = j?.response?.blueprint || j?.blueprint;
+    if (!bp) return { ok: false, msg: "Make returned no blueprint" };
+    const dir = path.join(__dirname, "make-backups");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${id}-${Date.now()}.json`), JSON.stringify(bp));
+    const stats = { hits: 0, fields: 0 };
+    walkReplace(bp, current, String(next).replace(/\u2014|\u2013/g, ", "), stats);
+    if (stats.hits === 0) {
+      return { ok: false, msg: "CURRENT text not found in the live blueprint, it may have changed, pull the engine feed again" };
+    }
+    if (stats.hits > 3) {
+      return { ok: false, msg: `CURRENT appears ${stats.hits} times in the blueprint, refusing an ambiguous edit` };
+    }
+    const w = await fetch(`https://${MAKE_ZONE}/api/v2/scenarios/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Token ${MAKE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ blueprint: JSON.stringify(bp) }),
+    });
+    if (!w.ok) {
+      const et = scrubSecrets(await w.text().catch(() => ""));
+      return {
+        ok: false,
+        msg: `Make refused the write (${w.status}): ${et.slice(0, 160)}. The token likely needs the scenarios write scope`,
+      };
+    }
+    engineCache = { at: 0, text: null };
+    return {
+      ok: true,
+      msg: `TikTok Engine scenario ${id} updated live, ${stats.hits} occurrence(s) across ${stats.fields} field(s). Raw backup saved on the server first.`,
+    };
+  } catch (e) {
+    return { ok: false, msg: `Make edit failed: ${scrubSecrets(String(e.message || e)).slice(0, 160)}` };
+  }
+}
+
 async function readEngine() {
   if (!MAKE_TOKEN) return null;
   if (engineCache.text && Date.now() - engineCache.at < 6 * 3600 * 1000) {
@@ -1828,7 +1895,7 @@ app.delete("/api/jobs/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages, createJob: createJobFromProposal });
+wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages, createJob: createJobFromProposal, makeEdit: applyMakeEdit });
 wireHooks({
   onFiled: receiveProposals,
   ownerDecision,

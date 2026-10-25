@@ -773,6 +773,15 @@ async function execute(p) {
     renderCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
     return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
   }
+  // the TikTok Engine: page "make" (or make:scenarioId) edits the live
+  // Make scenario's content strings, with a server-side backup first
+  if (/^make(:\d+)?$/i.test(String(p.page || "").trim()) && deps.makeEdit) {
+    const current = section(p.detail, "CURRENT");
+    const next = section(p.detail, "NEW");
+    if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
+    const sid = (String(p.page).match(/^make:(\d+)/i) || [])[1];
+    return deps.makeEdit({ scenarioId: sid, current, next });
+  }
   if (["title", "meta", "content", "other"].includes(p.kind)) {
     let r = await executeSiteEdit(p);
     if (!r.ok && !/not set up on this server|not a file I can edit|write failed/i.test(r.msg)) {
