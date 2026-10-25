@@ -108,7 +108,7 @@ function vaultRead(name) {
 }
 function vaultAppend(name, body) {
   ensureVault();
-  fs.appendFileSync(path.join(VAULT, name), "\n" + String(body).replace(/—|–/g, ", "));
+  fs.appendFileSync(path.join(VAULT, name), "\n" + String(body).replace(/\u2014|\u2013/g, ", "));
 }
 export function ceoBrainList() {
   ensureVault();
@@ -129,7 +129,7 @@ export function ceoBrainSave(name, body) {
   const clean = String(name).replace(/\.\./g, "").replace(/^\/+/, "");
   if (!clean.endsWith(".md") || clean.includes("/") || clean.includes("\\")) return null;
   ensureVault();
-  fs.writeFileSync(path.join(VAULT, clean), String(body).slice(0, 60000).replace(/—|–/g, ", "));
+  fs.writeFileSync(path.join(VAULT, clean), String(body).slice(0, 60000).replace(/\u2014|\u2013/g, ", "));
   log("brain", `Owner edited ${clean}`);
   return { name: clean };
 }
@@ -218,7 +218,7 @@ async function think(system, user, maxTokens = 1400) {
     .replace(/^```(json)?/i, "")
     .replace(/```$/i, "")
     .trim()
-    .replace(/—|–/g, ", ");
+    .replace(/\u2014|\u2013/g, ", ");
   try {
     return JSON.parse(text);
   } catch {
@@ -332,7 +332,7 @@ async function executeSiteEdit(p) {
     return { ok: false, msg: "no CURRENT anchor and the NEW block is not a full title or meta tag" };
   }
   if (updated.includes("—") || updated.includes("–")) {
-    updated = updated.replace(/—|–/g, ", ");
+    updated = updated.replace(/\u2014|\u2013/g, ", ");
   }
   try {
     fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
