@@ -284,7 +284,7 @@ const Money: React.FC = () => {
         Manual ledger, expenses and anything outside Stripe
       </div>
 
-      {data && data.months.some((m) => m.income || m.expense) ? (
+      {data && data.months.filter((m) => m.income || m.expense).length > 1 ? (
         <div className="net-chart" title="Monthly net, last 12 months">
           {data.months.map((m) => (
             <div className="net-col" key={m.month} title={`${m.month}: net ${usd(m.net)}`}>
