@@ -370,17 +370,58 @@ async function executeSiteEdit(p) {
   const next = section(p.detail, "NEW");
   if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
   let updated = null;
-  if (current && current.toLowerCase() !== "none") {
+  let how = "";
+  if (/sitemap\.xml$/i.test(file) && /<\/urlset>/i.test(html) && /<url>/i.test(next)) {
+    // sitemap append: insert only the <url> blocks whose <loc> is not already listed
+    const blocks = next.match(/<url>[\s\S]*?<\/url>/gi) || [];
+    const fresh = blocks.filter((b) => {
+      const loc = (b.match(/<loc>([^<]+)<\/loc>/i) || [])[1];
+      return loc && !html.includes(`<loc>${loc}</loc>`);
+    });
+    if (fresh.length) {
+      updated = html.replace(/<\/urlset>/i, `  ${fresh.join("\n  ")}\n</urlset>`);
+      how = `appended ${fresh.length} new entr${fresh.length === 1 ? "y" : "ies"}`;
+    } else {
+      return { ok: true, msg: `${file} already lists every entry, nothing to add` };
+    }
+  }
+  if (updated === null && current && current.toLowerCase() !== "none") {
     const hits = html.split(current).length - 1;
-    if (hits === 1) updated = html.replace(current, next);
-    else if (hits === 0) return { ok: false, msg: "CURRENT text not found in the live file, it may have changed" };
-    else return { ok: false, msg: `CURRENT text appears ${hits} times, refusing an ambiguous edit` };
-  } else if (p.kind === "title" && /<title/i.test(next)) {
+    if (hits === 1) {
+      updated = html.replace(current, next);
+      how = "exact match";
+    } else if (hits > 1) {
+      return { ok: false, msg: `CURRENT text appears ${hits} times, refusing an ambiguous edit` };
+    } else {
+      // whitespace-tolerant second pass: same tokens, any spacing
+      const fuzzy = new RegExp(
+        current
+          .trim()
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/\s+/g, "[\\s]+"),
+        "g"
+      );
+      const m = html.match(fuzzy);
+      if (m && m.length === 1) {
+        updated = html.replace(fuzzy, next);
+        how = "whitespace-tolerant match";
+      }
+    }
+  }
+  if (updated === null && current && current.toLowerCase() !== "none") {
+    return { ok: false, msg: "CURRENT text not found in the live file, it may have changed" };
+  }
+  if (updated === null && p.kind === "title" && /<title/i.test(next)) {
     updated = html.replace(/<title[^>]*>[\s\S]*?<\/title>/i, next.trim());
-  } else if (p.kind === "meta" && /name="description"/i.test(next)) {
+    updated = html.replace(/<title[^>]*>[\s\S]*?<\/title>/i, next.trim());
+    how = "title tag swap";
+  }
+  if (updated === null && p.kind === "meta" && /name="description"/i.test(next)) {
     updated = html.replace(/<meta\s+name="description"\s+content="[\s\S]*?">/i, next.trim());
-  } else {
-    return { ok: false, msg: "no CURRENT anchor and the NEW block is not a full title or meta tag" };
+    how = "meta tag swap";
+  }
+  if (updated === null) {
+    return { ok: false, msg: "no CURRENT anchor matched and the NEW block is not a full title or meta tag" };
   }
   if (updated.includes("\u2014") || updated.includes("\u2013")) {
     updated = updated.replace(/\u2014|\u2013/g, ", ");
@@ -418,7 +459,7 @@ async function executeSiteEdit(p) {
   } catch {
     // audit optional
   }
-  return { ok: true, msg: `${file} updated live${score}. ${sync}.` };
+  return { ok: true, msg: `${file} updated live (${how})${score}. ${sync}.` };
 }
 
 async function execute(p) {
