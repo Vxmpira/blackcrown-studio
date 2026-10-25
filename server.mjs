@@ -340,6 +340,7 @@ app.get("/api/config", (_req, res) => {
         process.env.REMOTION_AWS_SECRET_ACCESS_KEY
     ),
     anthropicKeySet: Boolean(process.env.ANTHROPIC_API_KEY),
+    stripeKeySet: Boolean((process.env.STRIPE_SECRET_KEY || "").trim()),
     framesPerLambda: 200,
     generatedCount: loadGenerated().length,
   });
@@ -872,6 +873,319 @@ app.post("/api/money", (req, res) => {
 app.delete("/api/money/:id", (req, res) => {
   saveMoney(loadMoney().filter((e) => e.id !== req.params.id));
   res.json({ ok: true });
+});
+
+// ----- Stripe: live revenue from what customers actually pay ----------------
+// Set STRIPE_SECRET_KEY in .env. A restricted read-only key is enough and
+// safer: Stripe dashboard, Developers, API keys, Create restricted key, give
+// it Read on everything, no writes.
+const STRIPE_KEY = (process.env.STRIPE_SECRET_KEY || "").trim();
+
+async function stripeGet(pathAndQuery) {
+  const r = await fetch(`https://api.stripe.com/v1/${pathAndQuery}`, {
+    headers: { Authorization: `Bearer ${STRIPE_KEY}` },
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    throw new Error(j?.error?.message || `Stripe error (${r.status})`);
+  }
+  return j;
+}
+
+const productNameCache = new Map();
+async function productName(id) {
+  if (!id) return "Other";
+  if (productNameCache.has(id)) return productNameCache.get(id);
+  try {
+    const p = await stripeGet(`products/${id}`);
+    const name = p?.name || "Other";
+    productNameCache.set(id, name);
+    return name;
+  } catch {
+    return "Other";
+  }
+}
+
+function monthlyAmount(item) {
+  const price = item?.price;
+  if (!price || price.unit_amount == null) return 0;
+  const qty = item.quantity || 1;
+  let amt = (price.unit_amount * qty) / 100;
+  const rec = price.recurring || {};
+  const count = rec.interval_count || 1;
+  if (rec.interval === "year") amt = amt / (12 * count);
+  else if (rec.interval === "week") amt = (amt * 4.345) / count;
+  else if (rec.interval === "day") amt = (amt * 30.4) / count;
+  else amt = amt / count; // month
+  return amt;
+}
+
+let revenueCache = { at: 0, data: null };
+
+async function buildRevenue() {
+  // active + trialing subscriptions -> MRR and per-product split
+  const products = {};
+  let mrr = 0;
+  let subCount = 0;
+  for (const status of ["active", "trialing"]) {
+    let startingAfter = "";
+    for (let page = 0; page < 5; page++) {
+      const q = `subscriptions?status=${status}&limit=100${
+        startingAfter ? `&starting_after=${startingAfter}` : ""
+      }`;
+      const res = await stripeGet(q);
+      const subs = res.data || [];
+      for (const sub of subs) {
+        subCount += 1;
+        for (const item of sub.items?.data || []) {
+          const amt = monthlyAmount(item);
+          mrr += amt;
+          const name = await productName(item?.price?.product);
+          products[name] = (products[name] || 0) + amt;
+        }
+      }
+      if (!res.has_more || !subs.length) break;
+      startingAfter = subs[subs.length - 1].id;
+    }
+  }
+  // charges this month (gross collected) + recent payments
+  const now = new Date();
+  const monthStart = Math.floor(
+    new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000
+  );
+  let monthGross = 0;
+  let monthCount = 0;
+  const recent = [];
+  let startingAfter = "";
+  for (let page = 0; page < 5; page++) {
+    const q = `charges?limit=100&created[gte]=${monthStart}${
+      startingAfter ? `&starting_after=${startingAfter}` : ""
+    }`;
+    const res = await stripeGet(q);
+    const charges = res.data || [];
+    for (const c of charges) {
+      if (c.paid && c.status === "succeeded" && !c.refunded) {
+        monthGross += c.amount / 100;
+        monthCount += 1;
+        if (recent.length < 10) {
+          recent.push({
+            t: c.created * 1000,
+            amount: c.amount / 100,
+            desc: c.description || c.calculated_statement_descriptor || "Payment",
+            customer: c.billing_details?.name || c.billing_details?.email || "",
+          });
+        }
+      }
+    }
+    if (!res.has_more || !charges.length) break;
+    startingAfter = charges[charges.length - 1].id;
+  }
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    configured: true,
+    mrr: round(mrr),
+    subscribers: subCount,
+    monthGross: round(monthGross),
+    monthPayments: monthCount,
+    products: Object.fromEntries(
+      Object.entries(products).map(([k, v]) => [k, round(v)])
+    ),
+    recent,
+    fetchedAt: Date.now(),
+  };
+}
+
+app.get("/api/revenue", async (req, res) => {
+  if (!STRIPE_KEY) return res.json({ configured: false });
+  if (!req.query.fresh && revenueCache.data && Date.now() - revenueCache.at < 5 * 60 * 1000) {
+    return res.json(revenueCache.data);
+  }
+  try {
+    const data = await buildRevenue();
+    revenueCache = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({
+      configured: true,
+      error: e instanceof Error ? e.message : "Stripe error",
+    });
+  }
+});
+
+// ----- SEO Agent: audits the live site files, AI writes the fixes -----------
+const SITE_ROOT = process.env.SITE_ROOT || "/var/www/blackcrown";
+const SEO_PATH = path.join(__dirname, "studio-seo.json");
+
+function loadSeo() {
+  try {
+    return JSON.parse(fs.readFileSync(SEO_PATH, "utf8"));
+  } catch {
+    return { auditedAt: null, pages: [], reviews: {} };
+  }
+}
+function saveSeo(s) {
+  fs.writeFileSync(SEO_PATH, JSON.stringify(s));
+}
+
+function grab(html, re) {
+  const m = html.match(re);
+  return m ? m[1].trim() : "";
+}
+function stripTags(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function auditPage(file, html, sitemapUrls) {
+  const issues = [];
+  const title = grab(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
+  const metaDesc = grab(
+    html,
+    /<meta\s+name=["']description["']\s+content=["']([\s\S]*?)["']/i
+  );
+  const canonical = grab(html, /<link\s+rel=["']canonical["']\s+href=["']([^"']+)["']/i);
+  const h1s = (html.match(/<h1[\s>]/gi) || []).length;
+  const imgs = html.match(/<img\b[^>]*>/gi) || [];
+  const imgsNoAlt = imgs.filter((t) => !/\salt=["'][^"']+["']/i.test(t)).length;
+  const ogTitle = /property=["']og:title["']/i.test(html);
+  const ogImage = /property=["']og:image["']/i.test(html);
+  const favicon = /rel=["']icon["']/i.test(html);
+  const viewport = /name=["']viewport["']/i.test(html);
+  const text = stripTags(html);
+  const words = text ? text.split(" ").length : 0;
+  const inSitemap = sitemapUrls.some((u) => u.endsWith("/" + file) || (file === "index.html" && /blackcrownvxj\.com\/?$/.test(u)));
+
+  if (!title) issues.push({ sev: "high", msg: "Missing <title>" });
+  else if (title.length > 60) issues.push({ sev: "med", msg: `Title is ${title.length} chars, Google trims past 60` });
+  else if (title.length < 25) issues.push({ sev: "low", msg: `Title is short (${title.length} chars), room for a keyword` });
+  if (!metaDesc) issues.push({ sev: "high", msg: "Missing meta description" });
+  else if (metaDesc.length > 160) issues.push({ sev: "med", msg: `Meta description is ${metaDesc.length} chars, trims past 160` });
+  else if (metaDesc.length < 70) issues.push({ sev: "low", msg: `Meta description is short (${metaDesc.length} chars)` });
+  if (!canonical) issues.push({ sev: "med", msg: "No canonical URL" });
+  if (h1s === 0) issues.push({ sev: "high", msg: "No <h1> on the page" });
+  if (h1s > 1) issues.push({ sev: "med", msg: `${h1s} <h1> tags, keep one` });
+  if (imgsNoAlt > 0) issues.push({ sev: "med", msg: `${imgsNoAlt} image${imgsNoAlt === 1 ? "" : "s"} missing alt text` });
+  if (!ogTitle) issues.push({ sev: "low", msg: "No og:title, shares look bare" });
+  if (!ogImage) issues.push({ sev: "med", msg: "No og:image, no preview card on shares" });
+  if (!favicon) issues.push({ sev: "low", msg: "No favicon link" });
+  if (!viewport) issues.push({ sev: "high", msg: "No viewport meta, fails mobile-friendly" });
+  if (words < 150) issues.push({ sev: "med", msg: `Thin content (${words} words of visible text)` });
+  if (!inSitemap) issues.push({ sev: "med", msg: "Not listed in sitemap.xml" });
+
+  const weights = { high: 18, med: 9, low: 4 };
+  const score = Math.max(
+    0,
+    100 - issues.reduce((a, i) => a + (weights[i.sev] || 5), 0)
+  );
+  return {
+    file,
+    title,
+    metaDesc,
+    words,
+    score,
+    issues,
+  };
+}
+
+const SKIP_PAGES = new Set(["blackcrown-bar.html"]);
+
+app.post("/api/seo/audit", (_req, res) => {
+  try {
+    const files = fs
+      .readdirSync(SITE_ROOT)
+      .filter((f) => f.endsWith(".html") && !SKIP_PAGES.has(f))
+      .sort();
+    if (!files.length) throw new Error(`No pages found in ${SITE_ROOT}`);
+    let sitemapUrls = [];
+    try {
+      const sm = fs.readFileSync(path.join(SITE_ROOT, "sitemap.xml"), "utf8");
+      sitemapUrls = [...sm.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].trim());
+    } catch {
+      // no sitemap
+    }
+    const pages = files.map((f) =>
+      auditPage(f, fs.readFileSync(path.join(SITE_ROOT, f), "utf8"), sitemapUrls)
+    );
+    const seo = loadSeo();
+    seo.auditedAt = Date.now();
+    seo.pages = pages;
+    saveSeo(seo);
+    res.json({ auditedAt: seo.auditedAt, pages, reviews: seo.reviews || {} });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "audit error" });
+  }
+});
+
+app.get("/api/seo", (_req, res) => {
+  const s = loadSeo();
+  res.json({ auditedAt: s.auditedAt, pages: s.pages || [], reviews: s.reviews || {} });
+});
+
+const SEO_SYSTEM = `You are BlackCrown's in-house SEO strategist. The brand builds tools for independent operators: Korvus (korvus.industries, a real-time market intelligence terminal for index futures traders), BlackCrown Intelligence (a private AI workspace), LodeStone (a TradingView indicator) and the Eclipse-X community.
+
+You are given one page of blackcrownvxj.com: its file name, current title, meta description, detected issues and the visible text. Produce a tight, actionable review:
+
+1. VERDICT: one sentence on what this page is doing well or badly for search.
+2. TARGET KEYWORDS: 3 to 5 phrases this page should rank for, matched to what traders and operators actually type.
+3. REWRITES: a new title tag (under 60 chars) and meta description (under 155 chars), written to earn the click, in the brand voice (confident, direct, no hype).
+4. FIXES, in priority order: the 3 to 6 highest-impact changes, each one line, concrete enough to act on today.
+
+Rules: plain text, numbered sections exactly as above, no markdown symbols, never use em dashes or en dashes anywhere, use a period or comma instead.`;
+
+app.post("/api/seo/review", async (req, res) => {
+  try {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) throw new Error("ANTHROPIC_API_KEY is not set in .env on the server.");
+    const file = String(req.body?.file || "");
+    const seo = loadSeo();
+    const page = (seo.pages || []).find((p) => p.file === file);
+    if (!page) throw new Error("Run an audit first, then review a page.");
+    const html = fs.readFileSync(path.join(SITE_ROOT, file), "utf8");
+    const text = stripTags(html).slice(0, 6000);
+    const issueLines = page.issues.map((i) => `- [${i.sev}] ${i.msg}`).join("\n");
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1200,
+        system: SEO_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: `Page: ${file}\nCurrent title: ${page.title || "(none)"}\nCurrent meta description: ${
+              page.metaDesc || "(none)"
+            }\nDetected issues:\n${issueLines || "(none)"}\n\nVisible text:\n${text}`,
+          },
+        ],
+      }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Anthropic API error (${r.status}): ${t.slice(0, 200)}`);
+    }
+    const data = await r.json();
+    const review = (data.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .trim()
+      .replace(/\s*[—–]\s*/g, ", ");
+    seo.reviews = seo.reviews || {};
+    seo.reviews[file] = { at: Date.now(), text: review };
+    saveSeo(seo);
+    res.json({ file, review: seo.reviews[file] });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "review error" });
+  }
 });
 
 const PORT = process.env.PORT || 3001;

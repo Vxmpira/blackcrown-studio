@@ -235,6 +235,75 @@ export async function deleteMoney(id: string): Promise<void> {
   await fetch(`${BASE}/api/money/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// ----- stripe revenue -------------------------------------------------------
+export type RevenueData = {
+  configured: boolean;
+  error?: string;
+  mrr?: number;
+  subscribers?: number;
+  monthGross?: number;
+  monthPayments?: number;
+  products?: Record<string, number>;
+  recent?: { t: number; amount: number; desc: string; customer: string }[];
+  fetchedAt?: number;
+};
+
+export async function getRevenue(fresh = false): Promise<RevenueData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/revenue${fresh ? "?fresh=1" : ""}`);
+    const j = await r.json().catch(() => null);
+    if (!r.ok) return j && j.configured ? j : null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+// ----- seo agent ------------------------------------------------------------
+export type SeoIssue = { sev: "high" | "med" | "low"; msg: string };
+export type SeoPage = {
+  file: string;
+  title: string;
+  metaDesc: string;
+  words: number;
+  score: number;
+  issues: SeoIssue[];
+};
+export type SeoReview = { at: number; text: string };
+export type SeoData = {
+  auditedAt: number | null;
+  pages: SeoPage[];
+  reviews: Record<string, SeoReview>;
+};
+
+export async function getSeo(): Promise<SeoData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/seo`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function runSeoAudit(): Promise<SeoData> {
+  const r = await fetch(`${BASE}/api/seo/audit`, { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Audit failed (${r.status})`);
+  return j as SeoData;
+}
+
+export async function runSeoReview(file: string): Promise<SeoReview> {
+  const r = await fetch(`${BASE}/api/seo/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Review failed (${r.status})`);
+  return j.review as SeoReview;
+}
+
 // ----- auth -----------------------------------------------------------------
 export type Me = { authed: boolean; user: string | null; setup: boolean };
 

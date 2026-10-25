@@ -3,10 +3,12 @@ import {
   addMoney,
   deleteMoney,
   getMoney,
+  getRevenue,
   getStats,
   getSystem,
   getUptime,
   type MoneyData,
+  type RevenueData,
   type SystemData,
   type UptimeSite,
 } from "../api";
@@ -123,9 +125,114 @@ const Runbook: React.FC = () => {
   );
 };
 
+const Revenue: React.FC<{ expenseThisMonth: number }> = ({ expenseThisMonth }) => {
+  const [rev, setRev] = useState<RevenueData | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = (fresh = false) => {
+    setBusy(true);
+    getRevenue(fresh).then((r) => {
+      setRev(r);
+      setBusy(false);
+    });
+  };
+  useEffect(() => load(), []);
+
+  if (!rev) return <div className="bl-empty">Reading Stripe...</div>;
+  if (!rev.configured) {
+    return (
+      <div className="notice">
+        <div className="notice-h">Connect Stripe for live revenue</div>
+        <p>
+          In Stripe: Developers, API keys, Create restricted key, give it Read
+          on everything. Then on the server add{" "}
+          <span className="mono">STRIPE_SECRET_KEY=rk_live_...</span> to .env
+          and restart blackcrown-render. MRR, subscribers and payments will
+          appear here on their own.
+        </p>
+      </div>
+    );
+  }
+  if (rev.error) {
+    return <div className="status err">Stripe: {rev.error}</div>;
+  }
+  const net = Math.round(((rev.monthGross || 0) - expenseThisMonth) * 100) / 100;
+  const prods = Object.entries(rev.products || {}).sort((a, b) => b[1] - a[1]);
+  const maxP = Math.max(1, ...prods.map(([, v]) => v));
+  return (
+    <>
+      <div className="cards" style={{ marginBottom: 16 }}>
+        <div className="card">
+          <div className="k">MRR</div>
+          <div className="v money-in">{usd(rev.mrr || 0)}</div>
+        </div>
+        <div className="card">
+          <div className="k">Subscribers</div>
+          <div className="v">{rev.subscribers || 0}</div>
+        </div>
+        <div className="card">
+          <div className="k">Collected this month</div>
+          <div className="v money-in">{usd(rev.monthGross || 0)}</div>
+          <div className="sub">{rev.monthPayments || 0} payments</div>
+        </div>
+        <div className="card">
+          <div className="k">Expenses this month</div>
+          <div className="v money-out">{usd(expenseThisMonth)}</div>
+        </div>
+        <div className="card">
+          <div className="k">Net this month</div>
+          <div className={`v ${net >= 0 ? "money-in" : "money-out"}`}>{usd(net)}</div>
+        </div>
+      </div>
+      <div className="stat-grid">
+        {prods.length ? (
+          <div>
+            <div className="sgroup-h" style={{ fontSize: 13 }}>MRR by product</div>
+            <div className="bl">
+              {prods.map(([name, v]) => (
+                <div className="bl-row" key={name}>
+                  <span className="bl-k">{name}</span>
+                  <span className="bl-track">
+                    <i style={{ width: `${(v / maxP) * 100}%` }} />
+                  </span>
+                  <span className="bl-n">{usd(v)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {rev.recent && rev.recent.length ? (
+          <div>
+            <div className="sgroup-h" style={{ fontSize: 13 }}>Latest payments</div>
+            <div className="money-list" style={{ marginTop: 0 }}>
+              {rev.recent.slice(0, 6).map((p, i) => (
+                <div className="money-row" key={i}>
+                  <span className="m-date">{new Date(p.t).toISOString().slice(0, 10)}</span>
+                  <span className="m-label">{p.customer || p.desc}</span>
+                  <span className="m-amt money-in">+{usd(p.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="bl-empty">No payments yet this month.</div>
+        )}
+      </div>
+      <div className="seo-bar" style={{ marginTop: 10 }}>
+        <button className="mini-btn" style={{ marginLeft: 0 }} onClick={() => load(true)} disabled={busy}>
+          {busy ? "Refreshing..." : "Refresh from Stripe"}
+        </button>
+        {rev.fetchedAt ? (
+          <span className="seo-rev-at">as of {new Date(rev.fetchedAt).toLocaleTimeString()}</span>
+        ) : null}
+      </div>
+    </>
+  );
+};
+
 const Money: React.FC = () => {
   const [data, setData] = useState<MoneyData | null>(null);
-  const [type, setType] = useState("income");
+  const [type, setType] = useState("expense");
   const [product, setProduct] = useState("korvus");
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
@@ -171,21 +278,10 @@ const Money: React.FC = () => {
 
   return (
     <>
-      <div className="cards" style={{ marginBottom: 16 }}>
-        <div className="card">
-          <div className="k">Income this month</div>
-          <div className="v money-in">{usd(thisMonth.income)}</div>
-        </div>
-        <div className="card">
-          <div className="k">Expenses this month</div>
-          <div className="v money-out">{usd(thisMonth.expense)}</div>
-        </div>
-        <div className="card">
-          <div className="k">Net this month</div>
-          <div className={`v ${thisMonth.net >= 0 ? "money-in" : "money-out"}`}>
-            {usd(thisMonth.net)}
-          </div>
-        </div>
+      <Revenue expenseThisMonth={thisMonth.expense} />
+
+      <div className="sgroup-h" style={{ fontSize: 13, marginTop: 20 }}>
+        Manual ledger, expenses and anything outside Stripe
       </div>
 
       {data && data.months.some((m) => m.income || m.expense) ? (
