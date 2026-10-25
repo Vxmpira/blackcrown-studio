@@ -409,10 +409,12 @@ app.get("/api/track", (req, res) => {
           s[d].src = s[d].src || {};
           s[d].src[src] = (s[d].src[src] || 0) + 1;
         }
-        // hour of day, US Eastern, so "best hours" matches your clock
-        const hr = new Date()
+        // hour of day, US Eastern, so "best hours" matches your clock.
+        // Some Node builds report midnight as "24", so wrap with % 24.
+        const rawHr = new Date()
           .toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: "America/New_York" })
           .slice(0, 2);
+        const hr = String((parseInt(rawHr, 10) || 0) % 24).padStart(2, "0");
         s[d].hr = s[d].hr || {};
         s[d].hr[hr] = (s[d].hr[hr] || 0) + 1;
       }
