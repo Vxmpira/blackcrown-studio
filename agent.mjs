@@ -20,9 +20,11 @@ const BRAIN_DIR = process.env.AGENT_BRAIN_DIR || path.join(__dirname, "brain");
 const CYCLE_HOUR_ET = Number(process.env.AGENT_CYCLE_HOUR || 9); // 9am ET
 // Set AGENT_CYCLE_EVERY_H (1-24) to run around the clock instead of once a day.
 const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
-// For a truly constant operator: AGENT_CYCLE_EVERY_MIN (floor 20) beats the hourly setting.
+// For a truly constant operator: AGENT_CYCLE_EVERY_MIN (1 or more) beats the hourly
+// setting. Every cycle is a paid model call, so short cadences cost real money; the
+// watchman tick below already reacts within a minute for free when something happens.
 const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
-const CYCLE_MS = CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
+const CYCLE_MS = CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const MODEL = process.env.AGENT_MODEL || "claude-sonnet-4-6";
 
@@ -276,6 +278,7 @@ export function wireHooks(h) {
 
 let feeds = {
   stats: () => null, // () => parsed studio-stats.json
+  pulse: null, // () => { visits, down } cheap signals for the watchman
   uptime: () => null, // () => uptime summary
   audit: () => null, // () => runs the audit, returns pages
   revenue: null, // async () => stripe summary or null
@@ -286,6 +289,38 @@ let feeds = {
 };
 export function wireFeeds(f) {
   feeds = { ...feeds, ...f };
+}
+
+// ---------------------------------------------------------------------------
+// watchman: a free check every minute; a full cycle fires only on a real event
+// ---------------------------------------------------------------------------
+let cycleAsap = "";
+let lastPulse = null;
+let lastEventCycleAt = 0;
+export function pokeCycle(reason) {
+  cycleAsap = String(reason || "something changed").slice(0, 140);
+}
+async function watchEvents() {
+  const events = [];
+  if (cycleAsap) {
+    events.push(cycleAsap);
+    cycleAsap = "";
+  }
+  if (feeds.pulse) {
+    try {
+      const p = await feeds.pulse();
+      if (p && lastPulse) {
+        if ((p.down || 0) > (lastPulse.down || 0)) events.push("a site just went DOWN");
+        if ((p.down || 0) < (lastPulse.down || 0)) events.push("a site came back up");
+        const jump = (p.visits || 0) - (lastPulse.visits || 0);
+        if (jump >= 5) events.push(`traffic spike, ${jump} visits in the last minute`);
+      }
+      if (p) lastPulse = p;
+    } catch {
+      // pulse is best effort
+    }
+  }
+  return events;
 }
 
 function aggregates() {
@@ -480,6 +515,10 @@ async function runMinion(name, task, context) {
   state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file });
   log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
   saveState();
+  // a report that lands long after the cycle that ordered it deserves prompt attention
+  if (!state.lastCycleAt || Date.now() - state.lastCycleAt > 10 * 60000) {
+    pokeCycle(`minion ${name} delivered a report: ${String(task).slice(0, 80)}`);
+  }
   return report;
 }
 
@@ -617,6 +656,7 @@ export async function runCycle(trigger = "schedule") {
 
     const user = [
       `Today (ET): ${etDayKey()}`,
+      `WHY THIS CYCLE FIRED: ${trigger}. If it fired on an event, deal with that event first and keep the rest of the cycle short.`,
       `ANALYTICS 7d: visits ${agg.visits7} (prev 7d ${agg.visitsPrev7}${
         agg.deltaPct === null ? "" : `, ${agg.deltaPct >= 0 ? "+" : ""}${agg.deltaPct}%`
       })`,
@@ -900,8 +940,25 @@ export function startAgent() {
   if (state.status === "thinking") state.status = "watching";
   saveState();
   // minute tick: around the clock every N hours, or once daily at the set hour
-  setInterval(() => {
+  setInterval(async () => {
     if (!state.enabled || busy) return;
+    // watchman first: react within a minute when something real happens,
+    // with a 3 minute cooldown so one event never becomes a paid loop
+    try {
+      const events = await watchEvents();
+      if (
+        events.length &&
+        Date.now() - lastEventCycleAt > 3 * 60000 &&
+        (!state.lastCycleAt || Date.now() - state.lastCycleAt > 2 * 60000)
+      ) {
+        lastEventCycleAt = Date.now();
+        log("watch", `event: ${events.join("; ")}`);
+        runCycle(`event: ${events.join("; ")}`).catch(() => {});
+        return;
+      }
+    } catch {
+      // watchman is best effort, the schedule below still runs
+    }
     if (CYCLE_MS > 0) {
       if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
         runCycle("schedule").catch(() => {});
@@ -922,9 +979,9 @@ export function startAgent() {
     "boot",
     `${AGENT_NAME} online. Discord: ${discordMode()}. Cadence: ${
       CYCLE_MS > 0
-        ? `every ${CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN + "min" : CYCLE_EVERY_H + "h"}, around the clock`
+        ? `every ${CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN + "min" : CYCLE_EVERY_H + "h"}, around the clock`
         : `daily ${CYCLE_HOUR_ET}:00 ET`
-    }.`
+    } Watchman: checking signals every minute, cycles fire instantly on events.`
   );
 }
 
@@ -939,7 +996,7 @@ export function agentState() {
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
     cycleEveryH: CYCLE_EVERY_H,
-    cycleEveryMin: CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN : 0,
+    cycleEveryMin: CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN : 0,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
     lastThought: state.lastThought,
@@ -964,6 +1021,8 @@ export function addTask(title) {
   if (!t.title) return null;
   state.tasks.push(t);
   saveState();
+  log("task", `queued: ${t.title}`);
+  pokeCycle(`a new task just landed in my queue: ${t.title}`);
   return t;
 }
 export async function sendTest() {

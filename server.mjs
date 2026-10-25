@@ -1476,6 +1476,19 @@ async function readTrends() {
 // hand the agent the same data the admin sees, business wide, read only
 wireFeeds({
   stats: () => loadStats(),
+  // cheap signals for the watchman tick, no model call, no network
+  pulse: () => {
+    let down = 0;
+    for (const site of WATCH_SITES) {
+      const list = uptime[site.key] || [];
+      const last = list[list.length - 1];
+      if (last && !last.ok) down++;
+    }
+    const s = loadStats();
+    const obj = (s[dayKey()] && s[dayKey()].visit) || {};
+    const visits = Object.values(obj).reduce((a, b) => a + b, 0);
+    return { visits, down };
+  },
   uptime: () =>
     WATCH_SITES.map((site) => {
       const list = uptime[site.key] || [];
