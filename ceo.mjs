@@ -13,6 +13,8 @@ import {
   renderCreative,
   agentLog,
   brainFile,
+  brainSave,
+  addTask,
 } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +24,7 @@ const STATE_PATH = path.join(__dirname, "studio-ceo.json");
 const VAULT = process.env.CEO_BRAIN_DIR || path.join(__dirname, "brain-ceo");
 const MODEL = process.env.CEO_MODEL || "claude-sonnet-4-6";
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
+const INITIATIVE_EVERY_H = Math.max(2, Number(process.env.CEO_CYCLE_EVERY_H || 6));
 
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const SEO_CHANNEL = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
@@ -500,6 +503,25 @@ async function executeSiteEdit(p) {
 }
 
 async function execute(p) {
+  if (p.kind === "brain") {
+    const name = String(p.page || "").replace(/[^a-zA-Z0-9 ._-]/g, "");
+    const current = section(p.detail, "CURRENT");
+    const next = section(p.detail, "NEW");
+    if (!name.endsWith(".md") || !next) return { ok: false, msg: "brain edits need a .md page and a NEW block" };
+    const existing = brainFile(name).body || "";
+    let body;
+    if (current && current.toLowerCase() !== "none" && existing.includes(current)) {
+      body = existing.replace(current, next);
+    } else if (!existing || (current || "").toLowerCase() === "none") {
+      body = next;
+    } else {
+      return { ok: false, msg: "CURRENT passage not found in that vault note" };
+    }
+    const saved = brainSave(name, body);
+    return saved
+      ? { ok: true, msg: `${name} updated in the vault, now law` }
+      : { ok: false, msg: "vault write refused" };
+  }
   if (p.kind === "creative") {
     renderCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
     return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
@@ -575,6 +597,64 @@ async function react(msgs) {
 }
 
 // ---------------------------------------------------------------------------
+// initiative: Regent runs the business, not just the approvals
+// ---------------------------------------------------------------------------
+const INITIATIVE_SYSTEM = `${IDENTITY}
+
+Initiative cycle. You are given the company strategy, the data patterns, your execution ledger, open asks and Corvid's open tasks. Set the business agenda: what matters most right now for revenue and growth, and what Corvid should be working on.
+
+Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
+{
+ "agenda_md": "full content of Agenda.md: the top 3-5 business priorities, each one line with a reason, markdown bullets, [[wikilinks]] where apt",
+ "directives": [{"task":"max 10 words, a concrete job for Corvid"}],
+ "note": "one or two short lines to the owner ONLY if priorities genuinely shifted, else empty string"
+}
+Max 2 directives; zero is fine. Never direct what is already an open task or pending ask.`;
+
+let initiativeBusy = false;
+export async function runInitiative(trigger = "schedule") {
+  if (initiativeBusy || !state.enabled) return { ok: false };
+  initiativeBusy = true;
+  state.status = "planning";
+  saveState();
+  try {
+    const user = [
+      `Strategy:\n${brainFile("Strategy.md").body.slice(0, 1800)}`,
+      `Patterns:\n${brainFile("Patterns.md").body.slice(0, 1200)}`,
+      `My Ledger (recent):\n${vaultRead("Ledger.md").split("\n").filter((l) => l.startsWith("- ")).slice(-8).join("\n")}`,
+      `Open asks: ${JSON.stringify(state.asks.map((id) => findProposal(id)).filter(Boolean).map((p) => p.summary))}`,
+      `Corvid open tasks: ${JSON.stringify(
+        JSON.parse(JSON.stringify((brainFile("Tasks.md").body.match(/- \[ \][^\n]+/g) || []).slice(0, 10)))
+      )}`,
+      `Current Agenda:\n${vaultRead("Agenda.md").slice(0, 900)}`,
+    ].join("\n\n");
+    const out = await think(INITIATIVE_SYSTEM, user, 1400);
+    if (out.agenda_md) {
+      ensureVault();
+      fs.writeFileSync(path.join(VAULT, "Agenda.md"), String(out.agenda_md).slice(0, 8000).replace(/\u2014|\u2013/g, ", "));
+    }
+    for (const d of Array.isArray(out.directives) ? out.directives.slice(0, 2) : []) {
+      if (d.task) {
+        addTask(`Regent: ${String(d.task).slice(0, 110)}`);
+        log("directive", `to Corvid: ${String(d.task).slice(0, 90)}`);
+      }
+    }
+    if (out.note && String(out.note).trim()) {
+      await send(`**REGENT // AGENDA** ${String(out.note).trim()}`);
+    }
+    state.lastInitiativeAt = Date.now();
+    log("initiative", `Agenda set (${trigger})`);
+  } catch (e) {
+    log("error", `Initiative failed: ${e.message || e}`);
+  } finally {
+    initiativeBusy = false;
+    state.status = state.enabled ? "watching" : "paused";
+    saveState();
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // lifecycle + admin surface
 // ---------------------------------------------------------------------------
 export function startCeo() {
@@ -583,6 +663,12 @@ export function startCeo() {
   saveState();
   // Regent polls its own channel only when it is distinct; otherwise owner
   // decisions arrive routed through Corvid's reactor.
+  setInterval(() => {
+    if (!state.enabled || initiativeBusy) return;
+    if (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000) {
+      runInitiative("schedule").catch(() => {});
+    }
+  }, 60 * 1000);
   if (BOT_TOKEN && CEO_CHANNEL && CEO_CHANNEL !== SEO_CHANNEL) {
     setInterval(async () => {
       if (!state.enabled) return;
@@ -611,6 +697,7 @@ export function ceoState() {
     channel: CEO_CHANNEL ? (CEO_CHANNEL === SEO_CHANNEL ? "shared" : "own") : "none",
     asks,
     executed: state.executed,
+    lastInitiativeAt: state.lastInitiativeAt || null,
     log: state.log.slice(-40).reverse(),
   };
 }

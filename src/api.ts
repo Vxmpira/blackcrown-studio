@@ -434,6 +434,7 @@ export type CeoState = {
   channel: "own" | "shared" | "none";
   asks: { id: string; number: number; page: string; kind: string; summary: string; detail: string; status: string }[];
   executed: CeoExec[];
+  lastInitiativeAt?: number | null;
   log: AgentLogItem[];
 };
 export async function getCeo(): Promise<CeoState | null> {

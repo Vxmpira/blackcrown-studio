@@ -20,6 +20,9 @@ const BRAIN_DIR = process.env.AGENT_BRAIN_DIR || path.join(__dirname, "brain");
 const CYCLE_HOUR_ET = Number(process.env.AGENT_CYCLE_HOUR || 9); // 9am ET
 // Set AGENT_CYCLE_EVERY_H (1-24) to run around the clock instead of once a day.
 const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
+// For a truly constant operator: AGENT_CYCLE_EVERY_MIN (floor 20) beats the hourly setting.
+const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
+const CYCLE_MS = CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const MODEL = process.env.AGENT_MODEL || "claude-sonnet-4-6";
 
@@ -537,6 +540,9 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "discord": "the daily update, exactly in the template"
 }
 BRAIN ECOSYSTEM: grow the vault into a real knowledge base. Use brain_notes (max 2 per cycle) to create or fully update topic notes: Keywords.md, Competitors.md, Funnel.md, Korvus-Site.md, Crown-Site.md, whatever the work needs. Wikilink them from each other and keep each note current rather than ever-growing.
+GROWTH MANDATE: you exist to grow traffic and Korvus revenue. Every cycle, hunt at least one concrete growth lever in the data (a page leaking visitors, a source worth doubling, a product with clicks but no signups, a keyword gap) and either act on it, delegate it to a minion, or file it. Curiosity is free; use it constantly.
+SELF IMPROVEMENT: once per day (first cycle after midnight ET), review your own performance against [[Ledger]] outcomes and the data, then update two vault notes via brain_notes: Skills.md (what worked, what failed, what you will do differently) and Playbook.md (your current best tactics, kept sharp, not ever-growing). Your skill is your brain; grow it deliberately.
+STRATEGY EVOLUTION: when the data says your Strategy itself should change, file a proposal with kind "brain", page set to the vault file name (for example Strategy.md), CURRENT the exact passage to replace, NEW the replacement. The owner's approval makes it law and Regent writes it.
 MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per cycle) for jobs a specialist does better: scout for research questions, scribe for finished copy, analyst for digging into the numbers. Their reports land in the vault Minions folder and come back to you next cycle.
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
@@ -895,8 +901,8 @@ export function startAgent() {
   // minute tick: around the clock every N hours, or once daily at the set hour
   setInterval(() => {
     if (!state.enabled || busy) return;
-    if (CYCLE_EVERY_H > 0) {
-      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_EVERY_H * 3600 * 1000) {
+    if (CYCLE_MS > 0) {
+      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
         runCycle("schedule").catch(() => {});
       }
     } else if (etHour() === CYCLE_HOUR_ET && state.lastCycleDay !== etDayKey()) {
@@ -914,7 +920,9 @@ export function startAgent() {
   log(
     "boot",
     `${AGENT_NAME} online. Discord: ${discordMode()}. Cadence: ${
-      CYCLE_EVERY_H > 0 ? `every ${CYCLE_EVERY_H}h, around the clock` : `daily ${CYCLE_HOUR_ET}:00 ET`
+      CYCLE_MS > 0
+        ? `every ${CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN + "min" : CYCLE_EVERY_H + "h"}, around the clock`
+        : `daily ${CYCLE_HOUR_ET}:00 ET`
     }.`
   );
 }
@@ -930,6 +938,7 @@ export function agentState() {
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
     cycleEveryH: CYCLE_EVERY_H,
+    cycleEveryMin: CYCLE_EVERY_MIN >= 20 ? CYCLE_EVERY_MIN : 0,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
     lastThought: state.lastThought,

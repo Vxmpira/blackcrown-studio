@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 // The Grid in three dimensions: a wireframe city on a dark plain, the
 // districts of the empire as lit towers, and data packets flying the
@@ -44,10 +45,15 @@ function pos(key: string) {
   return new THREE.Vector3(d.x, 0, d.z);
 }
 
-export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
+export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) => void }> = ({
+  data,
+  onSelect,
+}) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const dataRef = useRef(data);
   dataRef.current = data;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -95,12 +101,15 @@ export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
     // district towers + status cores + labels
     const labels: { el: HTMLDivElement; v: THREE.Vector3 }[] = [];
     const cores: Record<string, THREE.Mesh> = {};
+    const clickable: THREE.Mesh[] = [];
     for (const d of DISTRICTS) {
       const tower = new THREE.Mesh(
         new THREE.BoxGeometry(d.big ? 2.4 : 1.8, d.h, d.big ? 2.4 : 1.8),
         new THREE.MeshBasicMaterial({ color: 0x0c0c14 })
       );
       tower.position.set(d.x, d.h / 2, d.z);
+      tower.userData.key = d.key;
+      clickable.push(tower);
       scene.add(tower);
       const wire = new THREE.Mesh(
         tower.geometry,
@@ -114,6 +123,8 @@ export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
         new THREE.MeshBasicMaterial({ color: COLORS.pink })
       );
       core.position.set(d.x, d.h + 0.8, d.z);
+      core.userData.key = d.key;
+      clickable.push(core);
       scene.add(core);
       cores[d.key] = core;
 
@@ -166,9 +177,45 @@ export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
     ro.observe(host);
     setSize();
 
+    // hands on the city: drag to orbit, wheel to zoom, right-drag to pan
+    camera.position.set(-10, 17, 28);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 2, -1);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.minDistance = 10;
+    controls.maxDistance = 70;
+    controls.maxPolarAngle = 1.42;
+    controls.autoRotate = !reduced;
+    controls.autoRotateSpeed = 0.45;
+    controls.addEventListener("start", () => {
+      controls.autoRotate = false;
+    });
+    renderer.domElement.style.cursor = "grab";
+
+    // click a district (short press, not a drag) to inspect it
+    const ray = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let downAt: { x: number; y: number } | null = null;
+    const onDown = (e: PointerEvent) => {
+      downAt = { x: e.clientX, y: e.clientY };
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!downAt) return;
+      const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+      downAt = null;
+      if (moved > 6) return;
+      const r = renderer.domElement.getBoundingClientRect();
+      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+      const hit = ray.intersectObjects(clickable, false)[0];
+      onSelectRef.current?.(hit ? (hit.object.userData.key as string) : null);
+    };
+    renderer.domElement.addEventListener("pointerdown", onDown);
+    renderer.domElement.addEventListener("pointerup", onUp);
+
     const tmp = new THREE.Vector3();
     let raf = 0;
-    let angle = -0.35;
     const clock = new THREE.Clock();
 
     const applyData = () => {
@@ -193,9 +240,7 @@ export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
 
     const frame = () => {
       const dt = Math.min(clock.getDelta(), 0.05);
-      if (!reduced) angle += dt * 0.045;
-      camera.position.set(Math.sin(angle) * 30, 17, Math.cos(angle) * 30);
-      camera.lookAt(0, 2, -1);
+      controls.update();
       for (const p of packets) {
         if (!p.mesh.visible) continue;
         p.t = (p.t + dt * p.speed * (dataRef.current.clicksActive || p.key !== "clicks" ? 1 : 0.35)) % 1;
@@ -223,15 +268,13 @@ export const City3D: React.FC<{ data: CityData }> = ({ data }) => {
     };
     document.addEventListener("visibilitychange", onVis);
     raf = requestAnimationFrame(frame);
-    if (reduced) {
-      // render a handful of settled frames, then stop
-      frame();
-      renderer.render(scene, camera);
-    }
 
     return () => {
       cancelAnimationFrame(raf);
       document.removeEventListener("visibilitychange", onVis);
+      renderer.domElement.removeEventListener("pointerdown", onDown);
+      renderer.domElement.removeEventListener("pointerup", onUp);
+      controls.dispose();
       ro.disconnect();
       renderer.dispose();
       host.innerHTML = "";
