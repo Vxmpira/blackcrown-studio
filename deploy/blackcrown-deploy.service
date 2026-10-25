@@ -1,0 +1,6 @@
+[Unit]
+Description=BlackCrown auto deploy (pull repos when GitHub is ahead)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/blackcrown-autodeploy.sh
