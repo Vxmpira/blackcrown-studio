@@ -929,3 +929,127 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   resize: vertical;
 }
 .brain-edit:focus { outline: none; border-color: var(--pink); }
+
+/* ============================================================
+   METROPOLIS SKIN
+   The city at night. Later rules override the flat base above.
+   Signals: pink = the house, cyan = data moving, gold = money.
+   ============================================================ */
+:root {
+  --cyan: #46e6ff;
+  --gold: #f2c94c;
+  --glass: rgba(10, 10, 16, 0.72);
+  --glass-edge: rgba(255, 45, 149, 0.22);
+  --glow-cyan: 0 0 6px rgba(70, 230, 255, 0.5), 0 0 16px rgba(70, 230, 255, 0.22);
+  --glow-gold: 0 0 6px rgba(242, 201, 76, 0.5), 0 0 16px rgba(242, 201, 76, 0.22);
+  --notch: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+}
+
+/* --- the city itself --- */
+.metro { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.metro-grid {
+  position: absolute;
+  left: -40%;
+  right: -40%;
+  bottom: -220px;
+  height: 75vh;
+  background-image:
+    linear-gradient(rgba(255, 45, 149, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 45, 149, 0.16) 1px, transparent 1px);
+  background-size: 72px 72px;
+  transform: perspective(620px) rotateX(64deg);
+  transform-origin: center bottom;
+  -webkit-mask-image: linear-gradient(to top, rgba(0,0,0,.5), transparent 85%);
+  mask-image: linear-gradient(to top, rgba(0,0,0,.5), transparent 85%);
+}
+.metro-avenues { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.8; }
+.metro-trace use { stroke: rgba(255, 45, 149, 0.1); stroke-width: 1; }
+.pk { opacity: 0.85; }
+.pk-pink { fill: var(--pink); filter: drop-shadow(0 0 5px rgba(255, 45, 149, 0.9)); }
+.pk-cyan { fill: var(--cyan); filter: drop-shadow(0 0 5px rgba(70, 230, 255, 0.9)); }
+.pk-gold { fill: var(--gold); filter: drop-shadow(0 0 5px rgba(242, 201, 76, 0.9)); }
+.metro-skyline { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 190px; }
+.sky-fill { fill: #060609; stroke: rgba(255, 45, 149, 0.18); stroke-width: 1; }
+.sky-lights rect { fill: var(--pink); opacity: 0.55; animation: skyblink 4.5s infinite; }
+.sky-lights rect:nth-child(2n) { fill: var(--cyan); animation-delay: 1.3s; }
+.sky-lights rect:nth-child(3n) { animation-delay: 2.4s; }
+@keyframes skyblink { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.85; } }
+
+/* --- everything above the city --- */
+.layout, .login-wrap, .boot { position: relative; z-index: 1; }
+
+/* --- glass towers: panels get depth and the notched tower-top corner --- */
+.sidebar,
+.sgroup,
+.card,
+.up-card,
+.pulse,
+.prop,
+.seo-card,
+.login-card,
+.notice {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.sgroup, .card, .pulse, .prop, .seo-card, .notice, .up-card {
+  border-radius: 0;
+  clip-path: var(--notch);
+  border: 1px solid var(--glass-edge);
+}
+.card { border-color: var(--line-soft); }
+.sidebar { border-right: 1px solid var(--glass-edge); }
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(255, 45, 149, 0.14), rgba(255, 45, 149, 0.02));
+  border-left: 2px solid var(--pink);
+  border-radius: 0;
+  clip-path: var(--notch);
+}
+.login-card { clip-path: var(--notch); border-radius: 0; }
+.btn { border-radius: 0; clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
+.mini-btn, .range-btn, .logout, .gen-pill, .m-del, .brain-file { border-radius: 0; }
+.main { max-width: 1200px; }
+
+/* telemetry accents */
+.spark-bar { background: linear-gradient(to top, var(--pink), var(--pink-soft)); }
+.bl-track i { background: linear-gradient(90deg, var(--pink), var(--pink-soft)); }
+.card .v a, .card a.v { color: var(--cyan); text-shadow: var(--glow-cyan); }
+.m-amt.money-in, .money-in { text-shadow: var(--glow-gold); }
+
+/* --- The Grid (dashboard map) --- */
+.grid-map {
+  border: 1px solid var(--glass-edge);
+  clip-path: var(--notch);
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(255, 45, 149, 0.07), transparent 60%),
+    var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.grid-map svg { display: block; width: 100%; height: auto; }
+.grid-routes use { stroke: rgba(255, 45, 149, 0.22); stroke-width: 1.2; stroke-dasharray: 2 6; fill: none; }
+.gpk-pink { fill: var(--pink); filter: drop-shadow(0 0 6px rgba(255, 45, 149, 1)); }
+.gpk-cyan { fill: var(--cyan); filter: drop-shadow(0 0 6px rgba(70, 230, 255, 1)); }
+.gpk-gold { fill: var(--gold); filter: drop-shadow(0 0 6px rgba(242, 201, 76, 1)); }
+.gnode-ring { fill: rgba(6, 6, 10, 0.9); stroke: var(--pink); stroke-width: 1.4; filter: drop-shadow(0 0 7px rgba(255, 45, 149, 0.45)); }
+.gnode-ring.g-up { stroke: #35e08f; filter: drop-shadow(0 0 7px rgba(53, 224, 143, 0.55)); }
+.gnode-ring.g-down { stroke: #ff5a5a; filter: drop-shadow(0 0 9px rgba(255, 90, 90, 0.7)); }
+.gnode-ring.g-unknown { stroke: var(--mute); filter: none; }
+.gnode-core { fill: var(--pink); }
+.gnode-label {
+  fill: var(--bone);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-anchor: middle;
+}
+.gnode-sub { fill: var(--mute); font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 0.06em; text-anchor: middle; }
+
+@media (max-width: 720px) {
+  .gnode-label { font-size: 14px; }
+  .gnode-sub { font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .metro-packets, .grid-packets { display: none; }
+  .sky-lights rect { animation: none; opacity: 0.5; }
+}

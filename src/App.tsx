@@ -8,6 +8,7 @@ import { Settings } from "./views/Settings";
 import { Dashboard } from "./views/Dashboard";
 import { Login } from "./views/Login";
 import { getMe, logout, type Me } from "./api";
+import { Metropolis } from "./components/Metropolis";
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<TabId>("dashboard");
@@ -29,7 +30,12 @@ export const App: React.FC = () => {
   }
 
   if (!me?.authed) {
-    return <Login me={me} onSuccess={refresh} />;
+    return (
+      <>
+        <Metropolis />
+        <Login me={me} onSuccess={refresh} />
+      </>
+    );
   }
 
   const signOut = async () => {
@@ -38,7 +44,9 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="layout">
+    <>
+      <Metropolis />
+      <div className="layout">
       <Sidebar active={tab} onChange={setTab} onLogout={signOut} />
       <main className="main">
         {tab === "dashboard" ? <Dashboard /> : null}
@@ -48,6 +56,7 @@ export const App: React.FC = () => {
         {tab === "stats" ? <Stats /> : null}
         {tab === "settings" ? <Settings /> : null}
       </main>
-    </div>
+      </div>
+    </>
   );
 };
