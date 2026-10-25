@@ -25,6 +25,13 @@ const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const CHANNEL_ID = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
 const WEBHOOK_URL = (process.env.DISCORD_SEO_WEBHOOK || "").trim();
 
+// Bloom image rendering, used ONLY after the owner approves a creative.
+const BLOOM_KEY = (process.env.BLOOM_API_KEY || "").trim();
+const BLOOM_BRANDS = {
+  korvus: process.env.BLOOM_BRAND_KORVUS || "4c2723d4-ad2b-4b52-bd20-f5b3ee65641b",
+  default: process.env.BLOOM_BRAND_DEFAULT || "c5d8f6df-bb5e-40f8-a064-4e1462d76bf5",
+};
+
 // ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
@@ -115,6 +122,17 @@ The working queue. Mirrored in the admin.
 
 function ensureBrain() {
   fs.mkdirSync(path.join(BRAIN_DIR, "Log"), { recursive: true });
+  // richer seeds shipped with the repo win over the built-in minimal ones
+  const seedDir = path.join(__dirname, "brain-seed");
+  try {
+    for (const f of fs.readdirSync(seedDir)) {
+      if (!f.endsWith(".md")) continue;
+      const p = path.join(BRAIN_DIR, f);
+      if (!fs.existsSync(p)) fs.copyFileSync(path.join(seedDir, f), p);
+    }
+  } catch {
+    // no seed dir
+  }
   for (const [name, body] of Object.entries(SEED_FILES)) {
     const p = path.join(BRAIN_DIR, name);
     if (!fs.existsSync(p)) fs.writeFileSync(p, body);
@@ -156,6 +174,13 @@ export function brainList() {
 export function brainFile(name) {
   const clean = String(name).replace(/\.\./g, "");
   return { name: clean, body: brainRead(clean) };
+}
+export function brainSave(name, body) {
+  const clean = String(name).replace(/\.\./g, "").replace(/^\/+/, "");
+  if (!clean.endsWith(".md") || clean.includes("\\")) return null;
+  brainWrite(clean, String(body).slice(0, 60000));
+  log("brain", `Owner edited ${clean}`);
+  return { name: clean };
 }
 export function brainDirPath() {
   ensureBrain();
@@ -243,6 +268,9 @@ let feeds = {
   stats: () => null, // () => parsed studio-stats.json
   uptime: () => null, // () => uptime summary
   audit: () => null, // () => runs the audit, returns pages
+  revenue: null, // async () => stripe summary or null
+  money: null, // () => expense/income month summary
+  engine: null, // async () => live TikTok Engine config text or null
 };
 export function wireFeeds(f) {
   feeds = { ...feeds, ...f };
@@ -345,33 +373,63 @@ HARD RULES:
 - Never use em dashes or en dashes anywhere. Use a period or a comma.
 - Be concise. The owner reads this on his phone.`;
 
+const FORMAT_RULES = `MESSAGE FORMAT, non negotiable. Discord markdown only (**bold**). Tight, titled, phone first.
+
+Daily update template, follow it exactly, max 16 lines total:
+**CORVID // DAILY** · {date}
+**PULSE** · visits {n} ({delta}) · K {n} · Crown {n} · EX {n}
+**LEARNED**
+- {max 2 bullets, each under 12 words, data backed}
+**ON IT**
+- {max 2 bullets, each under 10 words}
+**YOUR CALL**
+#{n} {page}: {summary under 10 words} · say approve {n} or reject {n}
+(omit YOUR CALL entirely when there is nothing new to decide; omit LEARNED when data is flat and say so in one PULSE word)
+
+Replies in chat: start with **CORVID //** then 1 to 3 short lines. No greetings, no filler, no restating his message.`;
+
+const PROPOSAL_RULES = `PROPOSAL RULES. summary: under 10 words. detail MUST use exactly this labeled layout so the owner knows what a yes triggers:
+WHAT: {one line}
+WHY: {one line with a number from the data}
+CURRENT: {exact current text, or "none"}
+NEW: {exact final text, ready to paste}
+GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
+
+kinds: "title" and "meta" (site tag rewrites; green light means the owner pastes NEW into the file), "content" (page copy), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Corvid renders the slides through Bloom, which spends Bloom credits, and posts the package to this channel for the owner to post manually).`;
+
 const CYCLE_SYSTEM = `${IDENTITY}
 
-You are running your daily cycle. You get: this week's analytics, the site audit, uptime, your brain files, open tasks and pending proposals.
+${FORMAT_RULES}
 
-Respond with ONLY one JSON object, no markdown fences, in exactly this shape:
+${PROPOSAL_RULES}
+
+Daily cycle. You get: the week's analytics, Stripe revenue, the expense ledger, the site audit, uptime, the TikTok Engine config, your brain, open tasks, pending proposals.
+
+Respond with ONLY one JSON object, no fences:
 {
- "thought": "2-4 sentences: what you see today and why your focus is what it is",
- "focus": "one line, your current focus",
- "patterns_md": "the full new content of Patterns.md: keep what still holds, update confidence, add what the new data shows, drop what died. Use markdown bullets and [[wikilinks]]",
- "tasks": [{"title":"short task","status":"open|doing|done"}],
- "proposals": [{"page":"file or area","kind":"title|meta|content|campaign|other","summary":"one line","detail":"the exact change or plan, ready to approve"}],
- "discord": "the update you post to the owner's channel: what happened, what you learned, then your numbered asks. Number NEW proposals starting at the number given to you. Plain text, short lines."
+ "thought": "max 2 sentences",
+ "focus": "max 8 words",
+ "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
+ "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
+ "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","slides":["..."],"caption":"...","brand":"korvus"}],
+ "discord": "the daily update, exactly in the template"
 }
-Propose at most 3 new proposals per cycle, only ones worth the owner's time. Do not re-propose anything already pending or decided.`;
+Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
-The owner just wrote in your Discord channel. You get his message(s), your pending proposals (with ids and numbers), recent context and your focus. Interpret him naturally: he may approve by number or name, reject, ask for a change, ask a question, or hand you a new task.
+${FORMAT_RULES}
+
+The owner wrote in the channel. He may approve or reject by number, ask for a change, ask a question, or hand you a task. Only record decisions he clearly made.
 
 Respond with ONLY one JSON object:
 {
- "reply": "what you say back in the channel, plain text, short",
- "decisions": [{"id":"proposal id","action":"approve|reject|change","note":"his reasoning or the change he wants"}],
- "new_tasks": [{"title":"short task"}],
- "focus": "updated one-line focus, or the same one"
+ "reply": "**CORVID //** then 1-3 short lines",
+ "decisions": [{"id":"proposal id","action":"approve|reject|change","note":"his words, short"}],
+ "new_tasks": [{"title":"max 7 words"}],
+ "focus": "max 8 words, or the same"
 }
-If a proposal is approved and it is a title or meta change, include the exact final tag line(s) in your reply so he can ship them. Only include decisions he clearly made.`;
+On approving a title or meta: put the exact final NEW text in the reply. On approving a creative: say it is rendering via Bloom and the package lands here. On a change request: acknowledge in one line; the reworked version comes in the next cycle.`;
 
 // ---------------------------------------------------------------------------
 // the daily cycle
@@ -394,6 +452,19 @@ export async function runCycle(trigger = "schedule") {
     } catch (e) {
       log("error", `Audit inside cycle failed: ${e.message || e}`);
     }
+    let rev = null;
+    try {
+      rev = feeds.revenue ? await feeds.revenue() : null;
+    } catch {
+      rev = null;
+    }
+    const money = feeds.money ? feeds.money() : null;
+    let engine = null;
+    try {
+      engine = feeds.engine ? await feeds.engine() : null;
+    } catch {
+      engine = null;
+    }
     const pending = state.proposals.filter((p) => p.status === "pending");
     const nextNumber =
       state.proposals.reduce((a, p) => Math.max(a, p.number || 0), 0) + 1;
@@ -409,6 +480,13 @@ export async function runCycle(trigger = "schedule") {
       `Devices 7d: ${JSON.stringify(agg.devices7)}`,
       `Visit hours 7d (ET): ${JSON.stringify(agg.hours7)}`,
       `UPTIME: ${JSON.stringify(up)}`,
+      `REVENUE (Stripe): ${
+        rev
+          ? JSON.stringify({ mrr: rev.mrr, subs: rev.subscribers, monthGross: rev.monthGross, products: rev.products })
+          : "not connected"
+      }`,
+      `EXPENSES this month (manual ledger): ${money ? JSON.stringify(money) : "none logged"}`,
+      `TIKTOK ENGINE (live config): ${engine ? engine.slice(0, 3200) : "Make read key not set, see brain [[TikTok-Engine]] for the design"}`,
       `AUDIT (worst first): ${JSON.stringify(
         audit
           .slice()
@@ -446,14 +524,19 @@ export async function runCycle(trigger = "schedule") {
       );
     }
     let n = nextNumber;
-    for (const p of Array.isArray(out.proposals) ? out.proposals.slice(0, 3) : []) {
+    for (const p of Array.isArray(out.proposals) ? out.proposals.slice(0, 2) : []) {
       state.proposals.push({
         id: crypto.randomBytes(5).toString("hex"),
         number: n++,
         page: String(p.page || "site").slice(0, 60),
         kind: String(p.kind || "other").slice(0, 20),
-        summary: String(p.summary || "").slice(0, 160),
-        detail: String(p.detail || "").slice(0, 2000),
+        summary: String(p.summary || "").slice(0, 120),
+        detail: String(p.detail || "").slice(0, 2400),
+        slides: Array.isArray(p.slides)
+          ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480))
+          : undefined,
+        caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
+        brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
         status: "pending",
         createdAt: Date.now(),
       });
@@ -498,6 +581,69 @@ export async function runCycle(trigger = "schedule") {
 // ---------------------------------------------------------------------------
 // reacting to the owner's channel messages
 // ---------------------------------------------------------------------------
+// Renders an approved creative through Bloom and delivers the package to the
+// channel. The ONLY write action the agent performs, and only after a green
+// light. Spends Bloom credits.
+async function executeCreative(p) {
+  if (!BLOOM_KEY) {
+    log("error", `#${p.number} approved but BLOOM_API_KEY is not set, cannot render`);
+    await discordSend(
+      `**CORVID //** #${p.number} is approved but I cannot render: BLOOM_API_KEY is missing in .env. Add it and tell me to retry.`
+    );
+    return;
+  }
+  const slides = Array.isArray(p.slides) ? p.slides : [];
+  if (!slides.length) {
+    log("error", `#${p.number} has no slide prompts to render`);
+    return;
+  }
+  log("render", `#${p.number} rendering ${slides.length} slides via Bloom`);
+  const brandSessionId = BLOOM_BRANDS[p.brand === "korvus" ? "korvus" : "default"];
+  const urls = [];
+  for (const prompt of slides) {
+    try {
+      const gen = await fetch("https://www.trybloom.ai/api/v1/images/generations", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": BLOOM_KEY },
+        body: JSON.stringify({
+          brandSessionId,
+          prompt,
+          aspectRatio: "9:16",
+          imageSize: "2K",
+          model: "pro",
+        }),
+      });
+      const gj = await gen.json();
+      const imgId = gj?.data?.ids?.[0];
+      if (!gen.ok || !imgId) throw new Error(gj?.error?.message || `generation refused (${gen.status})`);
+      const got = await fetch(`https://www.trybloom.ai/api/v1/images/${imgId}?wait=true`, {
+        headers: { "x-api-key": BLOOM_KEY },
+      });
+      const ij = await got.json();
+      if (ij?.data?.status === "completed" && ij?.data?.imageUrl) urls.push(ij.data.imageUrl);
+      else throw new Error(`slide not completed (${ij?.data?.status || got.status})`);
+    } catch (e) {
+      log("error", `#${p.number} slide render failed: ${e.message || e}`);
+      urls.push(null);
+    }
+  }
+  const good = urls.filter(Boolean);
+  p.rendered = good;
+  saveState();
+  const lines = [
+    `**CORVID // DELIVERY** · #${p.number} ${p.page}`,
+    `${good.length}/${slides.length} slides rendered, swipe order:`,
+    ...good.map((u, i) => `${i + 1}. ${u}`),
+    ``,
+    `**CAPTION**`,
+    p.caption || "(no caption stored)",
+    ``,
+    `Post manually. Images by Bloom.`,
+  ];
+  await discordSend(lines.join("\n"));
+  log("render", `#${p.number} delivered ${good.length}/${slides.length} slides`);
+}
+
 export function decideProposal(id, action, note = "", via = "admin") {
   const p = state.proposals.find((x) => x.id === id || String(x.number) === String(id));
   if (!p) return null;
@@ -511,6 +657,15 @@ export function decideProposal(id, action, note = "", via = "admin") {
   );
   log("decision", `#${p.number} ${p.status}${p.note ? `: ${p.note}` : ""}`);
   saveState();
+  if (p.status === "approved" && p.kind === "creative") {
+    executeCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
+  }
+  return p;
+}
+export function retryCreative(id) {
+  const p = state.proposals.find((x) => x.id === id || String(x.number) === String(id));
+  if (!p || p.kind !== "creative" || p.status !== "approved") return null;
+  executeCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
   return p;
 }
 

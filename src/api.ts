@@ -317,6 +317,10 @@ export type AgentProposal = {
   createdAt: number;
   decidedAt?: number;
   note?: string;
+  slides?: string[];
+  caption?: string;
+  brand?: string;
+  rendered?: string[];
 };
 export type AgentLogItem = { t: number; kind: string; text: string };
 export type AgentState = {
@@ -385,6 +389,20 @@ export async function agentDecide(
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `Decision failed (${r.status})`);
   return j.proposal as AgentProposal;
+}
+export async function agentRetry(id: string): Promise<void> {
+  await fetch(`${BASE}/api/agent/proposal/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+export async function brainSaveFile(name: string, body: string): Promise<void> {
+  const r = await fetch(`${BASE}/api/agent/brain/file`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, body }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Save failed (${r.status})`);
+  }
 }
 export type BrainFileMeta = { name: string; size: number; mtime: number };
 export async function getBrainList(): Promise<BrainFileMeta[]> {

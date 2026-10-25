@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   agentAddTask,
+  agentRetry,
+  brainSaveFile,
   agentCycle,
   agentDecide,
   agentEnabled,
@@ -60,6 +62,11 @@ const ProposalCard: React.FC<{
             {p.note ? ` · note: ${p.note}` : ""}
           </div>
           <pre className="prop-detail">{p.detail}</pre>
+          {p.kind === "creative" ? (
+            <div className="prop-meta" style={{ color: "#f2c94c" }}>
+              Green light renders {p.slides?.length || 0} slides via Bloom (spends credits) and posts the package to Discord.
+            </div>
+          ) : null}
           {p.status === "pending" ? (
             <div className="seo-actions">
               <button className="btn" disabled={busy} onClick={() => act("approve")}>
@@ -67,6 +74,25 @@ const ProposalCard: React.FC<{
               </button>
               <button className="mini-btn" style={{ marginLeft: 0 }} disabled={busy} onClick={() => act("reject")}>
                 Reject
+              </button>
+            </div>
+          ) : null}
+          {p.status === "approved" && p.kind === "creative" ? (
+            <div className="seo-actions">
+              <button
+                className="mini-btn"
+                style={{ marginLeft: 0 }}
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await agentRetry(p.id);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Re-render via Bloom
               </button>
             </div>
           ) : null}
@@ -81,13 +107,25 @@ const Brain: React.FC = () => {
   const [files, setFiles] = useState<BrainFileMeta[]>([]);
   const [sel, setSel] = useState("");
   const [body, setBody] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     getBrainList().then(setFiles);
   }, []);
   const openFile = async (name: string) => {
     setSel(name);
+    setEditing(false);
     setBody(await getBrainFile(name));
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await brainSaveFile(sel, body);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -108,7 +146,29 @@ const Brain: React.FC = () => {
       </div>
       <div className="brain-view">
         {sel ? (
-          <pre className="brain-pre">{body || "(empty)"}</pre>
+          <>
+            <div className="seo-bar" style={{ marginBottom: 8 }}>
+              {!editing ? (
+                <button className="mini-btn" style={{ marginLeft: 0 }} onClick={() => setEditing(true)}>
+                  Edit
+                </button>
+              ) : (
+                <>
+                  <button className="mini-btn" style={{ marginLeft: 0 }} onClick={save} disabled={saving}>
+                    {saving ? "Saving..." : "Save"}
+                  </button>
+                  <button className="mini-btn" style={{ marginLeft: 0 }} onClick={() => openFile(sel)} disabled={saving}>
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+            {editing ? (
+              <textarea className="brain-edit" value={body} onChange={(e) => setBody(e.target.value)} />
+            ) : (
+              <pre className="brain-pre">{body || "(empty)"}</pre>
+            )}
+          </>
         ) : (
           <div className="bl-empty">
             The brain is an Obsidian vault of markdown. Pick a file, or download

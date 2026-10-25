@@ -21,8 +21,10 @@ import {
   addTask,
   sendTest,
   decideProposal,
+  retryCreative,
   brainList,
   brainFile,
+  brainSave,
   brainDirPath,
 } from "./agent.mjs";
 import { execFile as execFileCb } from "child_process";
@@ -1275,7 +1277,79 @@ app.get("/api/agent/brain.tgz", (_req, res) => {
   void child;
 });
 
-// hand the agent the same data the admin sees
+app.post("/api/agent/brain/file", (req, res) => {
+  const out = brainSave(String(req.body?.name || ""), String(req.body?.body || ""));
+  if (!out) return res.status(400).json({ error: "only .md files inside the vault" });
+  res.json(out);
+});
+
+app.post("/api/agent/proposal/:id/retry", (req, res) => {
+  const p = retryCreative(req.params.id);
+  if (!p) return res.status(400).json({ error: "not an approved creative" });
+  res.json({ ok: true });
+});
+
+// ----- read access to the live TikTok Engine in Make (read only) -----------
+const MAKE_TOKEN = (process.env.MAKE_API_TOKEN || "").trim();
+const MAKE_ZONE = process.env.MAKE_ZONE || "us2.make.com";
+const TIKTOK_SCENARIO_ID = process.env.TIKTOK_SCENARIO_ID || "5822164";
+let engineCache = { at: 0, text: null };
+
+function scrubSecrets(s) {
+  return String(s)
+    .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[key]")
+    .replace(/bloom_sk_[A-Za-z0-9]+/g, "[key]")
+    .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]");
+}
+
+async function readEngine() {
+  if (!MAKE_TOKEN) return null;
+  if (engineCache.text && Date.now() - engineCache.at < 6 * 3600 * 1000) {
+    return engineCache.text;
+  }
+  try {
+    const r = await fetch(
+      `https://${MAKE_ZONE}/api/v2/scenarios/${TIKTOK_SCENARIO_ID}/blueprint`,
+      { headers: { Authorization: `Token ${MAKE_TOKEN}` } }
+    );
+    if (!r.ok) return engineCache.text;
+    const j = await r.json();
+    const bp = j?.response?.blueprint || j?.blueprint || j;
+    const flow = Array.isArray(bp?.flow) ? bp.flow : [];
+    const parts = [`TikTok Engine live config (scenario ${TIKTOK_SCENARIO_ID}, read ${new Date().toISOString().slice(0, 10)})`];
+    for (const m of flow) {
+      if (m.module === "util:SetVariables" && m.mapper?.variables) {
+        for (const v of m.mapper.variables) {
+          if (["product", "brief", "why", "cta", "slides"].includes(v.name)) {
+            parts.push(`${v.name}: ${scrubSecrets(v.value)}`);
+          }
+        }
+      }
+      if (
+        m.module === "http:ActionSendData" &&
+        typeof m.mapper?.url === "string" &&
+        m.mapper.url.includes("api.anthropic.com") &&
+        typeof m.mapper?.data === "string"
+      ) {
+        parts.push(`writer prompt payload: ${scrubSecrets(m.mapper.data)}`);
+      }
+    }
+    engineCache = { at: Date.now(), text: parts.join("\n\n").slice(0, 12000) };
+    try {
+      fs.writeFileSync(
+        path.join(brainDirPath(), "TikTok-Engine-Live.md"),
+        `# TikTok-Engine-Live\n\nAuto refreshed from Make, read only. Secrets scrubbed.\n\n${engineCache.text}\n`
+      );
+    } catch {
+      // vault write is best effort
+    }
+    return engineCache.text;
+  } catch {
+    return engineCache.text;
+  }
+}
+
+// hand the agent the same data the admin sees, business wide, read only
 wireFeeds({
   stats: () => loadStats(),
   uptime: () =>
@@ -1285,6 +1359,31 @@ wireFeeds({
       return { site: site.label, up: last ? last.ok : null, ms: last ? last.ms : null };
     }),
   audit: () => doAudit().pages,
+  revenue: async () => {
+    if (!STRIPE_KEY) return null;
+    if (revenueCache.data && Date.now() - revenueCache.at < 30 * 60 * 1000) {
+      return revenueCache.data;
+    }
+    try {
+      const data = await buildRevenue();
+      revenueCache = { at: Date.now(), data };
+      return data;
+    } catch {
+      return revenueCache.data;
+    }
+  },
+  money: () => {
+    const key = new Date().toISOString().slice(0, 7);
+    let income = 0;
+    let expense = 0;
+    for (const e of loadMoney()) {
+      if (String(e.date || "").slice(0, 7) !== key) continue;
+      if (e.type === "income") income += Number(e.amount) || 0;
+      else expense += Number(e.amount) || 0;
+    }
+    return { month: key, income: Math.round(income * 100) / 100, expense: Math.round(expense * 100) / 100 };
+  },
+  engine: readEngine,
 });
 startAgent();
 

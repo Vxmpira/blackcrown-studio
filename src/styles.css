@@ -915,3 +915,17 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   overflow-y: auto;
 }
 @media (max-width: 700px) { .brain { flex-direction: column; } .brain-side { max-width: none; flex-direction: row; flex-wrap: wrap; } }
+.brain-edit {
+  width: 100%;
+  min-height: 300px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--bone);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  resize: vertical;
+}
+.brain-edit:focus { outline: none; border-color: var(--pink); }
