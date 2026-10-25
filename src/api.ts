@@ -438,6 +438,54 @@ export type CeoState = {
   lastInitiativeAt?: number | null;
   log: AgentLogItem[];
 };
+// ----- staff agents (Herald, Steward) ---------------------------------------
+export type StaffAgent = {
+  key: string;
+  name: string;
+  title: string;
+  enabled: boolean;
+  status: string;
+  lastCycleAt: number | null;
+  cycleEveryH: number;
+  focus: string;
+  thought: string;
+  tasks: { id: string; title: string; status: string }[];
+  log: { t: number; kind: string; text: string }[];
+  channel: "own" | "shared" | "none";
+  community?: boolean;
+};
+export async function getStaff(): Promise<StaffAgent[]> {
+  try {
+    const r = await fetch(`${BASE}/api/staff`, { cache: "no-store" });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return j.agents || [];
+  } catch {
+    return [];
+  }
+}
+export async function staffCycle(key: string): Promise<void> {
+  const r = await fetch(`${BASE}/api/staff/${encodeURIComponent(key)}/cycle`, { method: "POST" });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Cycle failed (${r.status})`);
+  }
+}
+export async function staffEnabled(key: string, on: boolean): Promise<void> {
+  await fetch(`${BASE}/api/staff/${encodeURIComponent(key)}/enabled`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on }),
+  });
+}
+export async function staffAddTask(key: string, title: string): Promise<void> {
+  await fetch(`${BASE}/api/staff/${encodeURIComponent(key)}/task`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+
 export async function getCeo(): Promise<CeoState | null> {
   try {
     const r = await fetch(`${BASE}/api/ceo`, { cache: "no-store" });

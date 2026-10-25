@@ -39,7 +39,9 @@ import {
   ceoBrainFile,
   ceoBrainSave,
   ceoVaultPath,
+  REPO_ROOTS,
 } from "./ceo.mjs";
+import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask } from "./staff.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1171,6 +1173,36 @@ async function doAudit() {
     auditPage(f, fs.readFileSync(path.join(SITE_ROOT, f), "utf8"), sitemapUrls)
   );
   pages.push(...(await auditRemotes()));
+  // product codebases: audit their html the moment the fleet clones exist,
+  // addressed as korvus:path and crown:path so proposals can target them
+  for (const [key, dir] of Object.entries(REPO_ROOTS)) {
+    if (key === "site" || !dir || !fs.existsSync(dir)) continue;
+    const found = [];
+    const walk = (d, depth) => {
+      if (depth > 2 || found.length >= 12) return;
+      let entries = [];
+      try {
+        entries = fs.readdirSync(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const f of entries) {
+        if (found.length >= 12) break;
+        if (f.name.startsWith(".") || f.name === "node_modules" || f.name === "dist") continue;
+        const fp = path.join(d, f.name);
+        if (f.isDirectory()) walk(fp, depth + 1);
+        else if (f.name.endsWith(".html")) found.push(fp);
+      }
+    };
+    walk(dir, 0);
+    for (const fp of found) {
+      try {
+        pages.push(auditPage(`${key}:${path.relative(dir, fp)}`, fs.readFileSync(fp, "utf8"), [], true));
+      } catch {
+        // unreadable file, skip
+      }
+    }
+  }
   const seo = loadSeo();
   seo.auditedAt = Date.now();
   seo.pages = pages;
@@ -1575,10 +1607,107 @@ if (BRAIN_SYNC) {
   setInterval(() => syncBrains(), 5 * 60 * 1000);
 }
 
+// ----- staff: Herald (sales and ads) and Steward (project manager) ----------
+app.get("/api/staff", (_req, res) => res.json({ agents: staffStates() }));
+app.post("/api/staff/:key/cycle", async (req, res) => {
+  const r = await staffRunCycle(String(req.params.key));
+  if (!r.ok) return res.status(500).json({ error: r.error || "cycle failed" });
+  res.json({ ok: true });
+});
+app.post("/api/staff/:key/enabled", (req, res) => {
+  const on = staffSetEnabled(String(req.params.key), Boolean(req.body?.on));
+  if (on === null) return res.status(404).json({ error: "no such agent" });
+  res.json({ ok: true, enabled: on });
+});
+app.post("/api/staff/:key/task", (req, res) => {
+  const t = staffAddTask(String(req.params.key), String(req.body?.title || ""));
+  if (!t) return res.status(400).json({ error: "task needs a title" });
+  res.json({ ok: true, task: t });
+});
+
+wireStaff({
+  feed: async (key) => {
+    const lines = [];
+    try {
+      const s = loadStats();
+      const dk = dayKey();
+      const sum = (day, e) => Object.values((s[day] && s[day][e]) || {}).reduce((a, b) => a + b, 0);
+      let v7 = 0;
+      let c7 = 0;
+      for (let i = 0; i < 7; i++) {
+        v7 += sum(dayKey(i), "visit");
+        c7 += sum(dayKey(i), "click");
+      }
+      lines.push(`TRAFFIC: today ${sum(dk, "visit")} visits ${sum(dk, "click")} clicks; 7d ${v7} visits ${c7} clicks`);
+    } catch {
+      lines.push("TRAFFIC: unavailable");
+    }
+    try {
+      const sites = WATCH_SITES.map((site) => {
+        const list = uptime[site.key] || [];
+        const last = list[list.length - 1];
+        return `${site.label} ${last ? (last.ok ? "up" : "DOWN") : "?"}`;
+      });
+      lines.push(`UPTIME: ${sites.join(", ")}`);
+    } catch {
+      // optional
+    }
+    try {
+      if (STRIPE_KEY && revenueCache.data) {
+        lines.push(
+          `REVENUE: MRR $${revenueCache.data.mrr || 0}, ${revenueCache.data.subscribers || 0} subscribers, $${revenueCache.data.monthGross || 0} this month`
+        );
+      } else {
+        lines.push("REVENUE: Stripe shows $0 MRR, 0 subscribers, first paying customer is still the goal");
+      }
+    } catch {
+      // optional
+    }
+    try {
+      const seo = loadSeo();
+      const worst = (seo.pages || []).slice().sort((a, b) => a.score - b.score).slice(0, 5);
+      lines.push(`SEO WORST PAGES: ${worst.map((p) => `${p.file} ${p.score}`).join("; ") || "no audit yet"}`);
+    } catch {
+      // optional
+    }
+    if (key === "herald") {
+      try {
+        const t = await readTrends();
+        if (t) lines.push(`TIKTOK TRENDS: ${String(t).slice(0, 900)}`);
+      } catch {
+        // optional
+      }
+      try {
+        const e = await readEngine();
+        if (e) lines.push(`TIKTOK ENGINE: ${String(e).slice(0, 1200)}`);
+      } catch {
+        // optional
+      }
+    }
+    if (key === "steward") {
+      try {
+        const body = ceoBrainFile("Ledger.md").body || "";
+        const tail = body.trim().split("\n").filter((l) => l.startsWith("- ")).slice(-6).join("\n");
+        lines.push(`REGENT LEDGER (recent executions):\n${tail || "nothing yet"}`);
+      } catch {
+        // optional
+      }
+      try {
+        const a = agentState();
+        lines.push(`CORVID: ${a.status}, focus: ${a.currentFocus}, open tasks ${a.tasks.filter((t) => t.status !== "done").length}`);
+      } catch {
+        // optional
+      }
+    }
+    return lines.join("\n");
+  },
+});
+
 wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages });
 wireHooks({ onFiled: receiveProposals, ownerDecision });
 startAgent();
 startCeo();
+startStaff();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

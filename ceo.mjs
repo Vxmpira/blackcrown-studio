@@ -35,7 +35,7 @@ const WEBHOOK_URL = (process.env.DISCORD_SEO_WEBHOOK || "").trim();
 // Repos Regent may edit, as name:path pairs. "site" is the brand site and
 // always exists; add korvus and crown clones on this box to put those
 // products in reach. Their boxes auto-pull what Regent pushes.
-const REPO_ROOTS = Object.fromEntries(
+export const REPO_ROOTS = Object.fromEntries(
   (process.env.CEO_REPO_ROOTS ||
     "site:/var/www/blackcrown,korvus:/home/ubuntu/fleet/korvus-engine,crown:/home/ubuntu/fleet/crown")
     .split(",")

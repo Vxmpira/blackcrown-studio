@@ -14,3 +14,5 @@ brain/
 studio-ceo.json
 brain-ceo/
 *.bak-*
+studio-staff.json
+brain-staff/
