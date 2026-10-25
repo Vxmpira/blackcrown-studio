@@ -27,6 +27,8 @@ import {
   brainSave,
   brainDirPath,
   wireHooks,
+  thinkText,
+  buildEmbeds,
 } from "./agent.mjs";
 import {
   startCeo,
@@ -1625,8 +1627,7 @@ app.post("/api/staff/:key/task", (req, res) => {
   res.json({ ok: true, task: t });
 });
 
-wireStaff({
-  feed: async (key) => {
+const companyFeed = async (key) => {
     const lines = [];
     try {
       const s = loadStats();
@@ -1700,10 +1701,134 @@ wireStaff({
       }
     }
     return lines.join("\n");
-  },
+};
+wireStaff({ feed: companyFeed });
+
+// ----- scheduled jobs: the in-house automation engine -----------------------
+// Agents file kind "job" proposals; on approval Regent registers them here
+// and the server runs them on schedule, no Make, no manual pasting. A job is
+// a stored report spec: at fire time the live company data is gathered, the
+// report is written, and the card posts to the chosen channel.
+const JOBS_PATH = path.join(__dirname, "studio-jobs.json");
+const JOBS_BOT = (process.env.DISCORD_BOT_TOKEN || "").trim();
+const JOBS_CH = {
+  corvid: (process.env.DISCORD_SEO_CHANNEL_ID || "").trim(),
+  boardroom: (process.env.DISCORD_CEO_CHANNEL_ID || "").trim() || (process.env.DISCORD_SEO_CHANNEL_ID || "").trim(),
+};
+function loadJobs() {
+  try {
+    return JSON.parse(fs.readFileSync(JOBS_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+}
+function saveJobs(j) {
+  try {
+    fs.writeFileSync(JOBS_PATH, JSON.stringify(j, null, 2));
+  } catch {
+    // best effort
+  }
+}
+const JOB_DAYS = { sunday: "Sunday", monday: "Monday", tuesday: "Tuesday", wednesday: "Wednesday", thursday: "Thursday", friday: "Friday", saturday: "Saturday" };
+function parseJobDetail(detail) {
+  const d = String(detail || "");
+  const sm = d.match(/SCHEDULE:\s*(daily|weekly)\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)?\s*(\d{1,2}):(\d{2})/i);
+  if (!sm) return null;
+  const kind = sm[1].toLowerCase();
+  const day = kind === "weekly" ? JOB_DAYS[(sm[2] || "monday").toLowerCase()] : null;
+  const channel = ((d.match(/CHANNEL:\s*(corvid|boardroom)/i) || [])[1] || "corvid").toLowerCase();
+  const spec = ((d.match(/NEW:\s*([\s\S]*?)(?=\nGREEN LIGHT MEANS:|$)/i) || [])[1] || d).trim().slice(0, 1600);
+  return { kind, day, hour: Math.min(23, parseInt(sm[3], 10) || 9), minute: Math.min(59, parseInt(sm[4], 10) || 0), channel, spec };
+}
+export function createJobFromProposal(p) {
+  const parsed = parseJobDetail(p.detail);
+  if (!parsed) return null;
+  const jobs = loadJobs();
+  const job = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: String(p.summary || "report").slice(0, 80),
+    ...parsed,
+    enabled: true,
+    lastRunAt: null,
+    createdAt: Date.now(),
+    fromNumber: p.number,
+  };
+  jobs.push(job);
+  saveJobs(jobs);
+  const when = `${job.kind === "weekly" ? `every ${job.day}` : "daily"} at ${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")} ET`;
+  return { ok: true, msg: `job registered: "${job.name}", ${when}, posts to ${job.channel}. The server runs it from now on, no Make needed.` };
+}
+const JOB_SYSTEM = `You are The Desk, BlackCrownVxJ LLC's automated reporting service. Write the requested report from the live data exactly per the spec: numbers first, bold section headers, tight lines, week over week deltas where the data allows, zero filler, never use em dashes (write a comma instead), honest about any metric the data does not carry yet. Plain markdown, under 220 words.`;
+async function runJob(job) {
+  try {
+    const data = await companyFeed("jobs");
+    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200);
+    const content = `**THE DESK // ${job.name.toUpperCase().slice(0, 60)}** · ${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}\n${text}`;
+    const channelId = JOBS_CH[job.channel] || JOBS_CH.corvid;
+    if (JOBS_BOT && channelId) {
+      await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${JOBS_BOT}` },
+        body: JSON.stringify({ content: "", embeds: buildEmbeds(content, 0xb9b6c9, "The Desk, scheduled reports") }),
+      });
+    }
+    const jobs = loadJobs();
+    const j = jobs.find((x) => x.id === job.id);
+    if (j) {
+      j.lastRunAt = Date.now();
+      saveJobs(jobs);
+    }
+    return true;
+  } catch (e) {
+    console.error("job run failed:", job.name, e.message || e);
+    return false;
+  }
+}
+const jobsClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  weekday: "long",
+  hour: "numeric",
+  minute: "numeric",
+  hour12: false,
+});
+setInterval(() => {
+  const parts = Object.fromEntries(jobsClock.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  const hour = parseInt(parts.hour, 10) % 24;
+  const minute = parseInt(parts.minute, 10);
+  for (const job of loadJobs()) {
+    if (!job.enabled) continue;
+    if (job.hour !== hour || job.minute !== minute) continue;
+    if (job.kind === "weekly" && job.day !== parts.weekday) continue;
+    if (job.lastRunAt && Date.now() - job.lastRunAt < 20 * 3600 * 1000) continue;
+    runJob(job);
+  }
+}, 60 * 1000);
+
+app.get("/api/jobs", (_req, res) => res.json({ jobs: loadJobs() }));
+app.post("/api/jobs/:id/run", async (req, res) => {
+  const job = loadJobs().find((x) => x.id === req.params.id);
+  if (!job) return res.status(404).json({ error: "no such job" });
+  const ok = await runJob(job);
+  res.json({ ok });
+});
+app.post("/api/jobs/:id/toggle", (req, res) => {
+  const jobs = loadJobs();
+  const job = jobs.find((x) => x.id === req.params.id);
+  if (!job) return res.status(404).json({ error: "no such job" });
+  job.enabled = !job.enabled;
+  saveJobs(jobs);
+  res.json({ ok: true, enabled: job.enabled });
+});
+app.delete("/api/jobs/:id", (req, res) => {
+  const jobs = loadJobs();
+  const idx = jobs.findIndex((x) => x.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "no such job" });
+  jobs.splice(idx, 1);
+  saveJobs(jobs);
+  res.json({ ok: true });
 });
 
-wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages });
+wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages, createJob: createJobFromProposal });
 wireHooks({
   onFiled: receiveProposals,
   ownerDecision,

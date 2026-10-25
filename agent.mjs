@@ -543,7 +543,7 @@ async function think(system, user, maxTokens = 2000) {
   }
 }
 
-async function thinkText(system, user, maxTokens = 1400) {
+export async function thinkText(system, user, maxTokens = 1400) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -636,6 +636,7 @@ NEW: {exact final text, ready to paste}
 GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
 
 PAGE ADDRESSING: a bare file name like korvus.html means the brand site. Prefix with a repo to reach a product codebase: "korvus:relative/path/file.ext" is the Korvus engine, "crown:relative/path/file.ext" is Crown. Only propose repo edits when you know the exact file and exact CURRENT text.
+RECURRING REPORTS, kind "job": for any recurring digest, report, or monitoring post, file kind "job" instead of an automation paste. The server itself runs these, no Make involved. detail MUST carry, each on its own line: SCHEDULE: daily HH:MM ET, or weekly <monday..sunday> HH:MM ET. CHANNEL: corvid or boardroom. NEW: the exact content spec, what the report covers, in what order, pulled from live analytics, revenue, uptime, and SEO data. GREEN LIGHT MEANS the server registers the job and posts the report on schedule from then on.
 ADDING HEAD TAGS: to add canonical, og, twitter, or other meta and link tags to an html page, set CURRENT: none and make NEW only the tags themselves, nothing else. Regent merges them into the head, updating any tag that already exists and inserting the rest. Never guess head text as a CURRENT anchor. Sitemap entries work the same way: NEW is just the url blocks, Regent appends what is missing.
 kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text; green light means the owner pastes NEW into Make), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Regent renders the slides through Bloom, which spends Bloom credits, and posts the package for the owner to post manually).`;
 

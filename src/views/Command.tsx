@@ -1,14 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   addMoney,
+  deleteJob,
   deleteMoney,
+  getJobs,
   getMoney,
   getRevenue,
   getStats,
   getSystem,
   getUptime,
+  runJobNow,
+  toggleJob,
   type MoneyData,
   type RevenueData,
+  type ServerJob,
   type SystemData,
   type UptimeSite,
 } from "../api";
@@ -95,6 +100,59 @@ const RUNBOOK: { title: string; note: string; cmd: string }[] = [
     cmd: "cd ~/blackcrown-studio && npm run deploy:site",
   },
 ];
+
+const Jobs: React.FC = () => {
+  const [jobs, setJobs] = useState<ServerJob[]>([]);
+  const [busy, setBusy] = useState("");
+  const load = () => getJobs().then(setJobs);
+  useEffect(() => {
+    load();
+  }, []);
+  const act = async (id: string, fn: () => Promise<void>) => {
+    setBusy(id);
+    try {
+      await fn();
+      await load();
+    } finally {
+      setBusy("");
+    }
+  };
+  const when = (j: ServerJob) =>
+    `${j.kind === "weekly" ? j.day : "daily"} ${String(j.hour).padStart(2, "0")}:${String(j.minute).padStart(2, "0")} ET`;
+  if (!jobs.length) {
+    return (
+      <div className="bl-empty">
+        No jobs yet. When an agent files a kind "job" proposal and you approve it, the server
+        registers it here and runs it on schedule, no Make needed.
+      </div>
+    );
+  }
+  return (
+    <div className="bl">
+      {jobs.map((j) => (
+        <div className="agent-task" key={j.id}>
+          <span className={`t-chip ${j.enabled ? "t-doing" : ""}`}>{j.enabled ? "on" : "off"}</span>
+          <span style={{ flex: 1 }}>
+            {j.name}
+            <span style={{ color: "var(--mute)", fontSize: 12 }}>
+              {" "}· {when(j)} · to {j.channel}
+              {j.lastRunAt ? ` · last ran ${new Date(j.lastRunAt).toLocaleString()}` : " · never ran yet"}
+            </span>
+          </span>
+          <button className="mini-btn" disabled={busy === j.id} onClick={() => act(j.id, () => runJobNow(j.id))}>
+            Run now
+          </button>
+          <button className="mini-btn" disabled={busy === j.id} onClick={() => act(j.id, () => toggleJob(j.id))}>
+            {j.enabled ? "Pause" : "Resume"}
+          </button>
+          <button className="m-del" disabled={busy === j.id} onClick={() => act(j.id, () => deleteJob(j.id))}>
+            x
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 const Runbook: React.FC = () => {
   const [copied, setCopied] = useState<string | null>(null);
@@ -454,6 +512,11 @@ export const Command: React.FC = () => {
       <div className="sgroup" style={{ marginTop: 18 }}>
         <div className="sgroup-h">Money</div>
         <Money />
+      </div>
+
+      <div className="sgroup" style={{ marginTop: 18 }}>
+        <div className="sgroup-h">Scheduled jobs, the in-house automation engine</div>
+        <Jobs />
       </div>
 
       <div className="sgroup" style={{ marginTop: 18 }}>

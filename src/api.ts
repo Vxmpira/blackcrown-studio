@@ -438,6 +438,40 @@ export type CeoState = {
   lastInitiativeAt?: number | null;
   log: AgentLogItem[];
 };
+// ----- scheduled jobs (the in-house automation engine) ----------------------
+export type ServerJob = {
+  id: string;
+  name: string;
+  kind: "daily" | "weekly";
+  day: string | null;
+  hour: number;
+  minute: number;
+  channel: string;
+  spec: string;
+  enabled: boolean;
+  lastRunAt: number | null;
+  createdAt: number;
+};
+export async function getJobs(): Promise<ServerJob[]> {
+  try {
+    const r = await fetch(`${BASE}/api/jobs`, { cache: "no-store" });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return j.jobs || [];
+  } catch {
+    return [];
+  }
+}
+export async function runJobNow(id: string): Promise<void> {
+  await fetch(`${BASE}/api/jobs/${encodeURIComponent(id)}/run`, { method: "POST" });
+}
+export async function toggleJob(id: string): Promise<void> {
+  await fetch(`${BASE}/api/jobs/${encodeURIComponent(id)}/toggle`, { method: "POST" });
+}
+export async function deleteJob(id: string): Promise<void> {
+  await fetch(`${BASE}/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 // ----- staff agents (Herald, Steward) ---------------------------------------
 export type StaffAgent = {
   key: string;

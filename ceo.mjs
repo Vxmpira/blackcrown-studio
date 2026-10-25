@@ -720,10 +720,16 @@ async function execute(p) {
     }
     return r;
   }
+  // recurring reports and automations: register with the in-house jobs
+  // engine when the proposal carries a schedule; the server runs it forever
+  if (["job", "automation", "campaign"].includes(p.kind) && deps.createJob) {
+    const r = deps.createJob(p);
+    if (r) return r;
+  }
   const next = section(p.detail, "NEW");
   return {
     ok: true,
-    msg: `manual step, paste this into ${p.kind === "automation" ? "Make" : "place"} yourself:\n${next || p.detail.slice(0, 600)}`,
+    msg: `manual step, no SCHEDULE line found so I cannot register it as a server job. Paste this yourself or refile as kind job with SCHEDULE and CHANNEL lines:\n${(next || p.detail).slice(0, 600)}`,
   };
 }
 
