@@ -331,7 +331,7 @@ async function executeSiteEdit(p) {
   } else {
     return { ok: false, msg: "no CURRENT anchor and the NEW block is not a full title or meta tag" };
   }
-  if (updated.includes("—") || updated.includes("–")) {
+  if (updated.includes("\u2014") || updated.includes("\u2013")) {
     updated = updated.replace(/\u2014|\u2013/g, ", ");
   }
   try {
