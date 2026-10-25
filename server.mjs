@@ -1423,6 +1423,53 @@ wireFeeds({
   },
   engine: readEngine,
 });
+// ----- brain sync: push the vaults to a git repo so Obsidian stays live ----
+// Set BRAIN_SYNC=1 and point AGENT_BRAIN_DIR / CEO_BRAIN_DIR inside a cloned
+// repo (see the setup notes). Pull before, push after, every 5 minutes.
+const BRAIN_SYNC = process.env.BRAIN_SYNC === "1";
+const BRAIN_REPO_DIR =
+  process.env.BRAIN_REPO_DIR || path.resolve(brainDirPath(), "..");
+
+import { execFileSync as gitExec } from "child_process";
+function brainGit(args, timeout = 30000) {
+  return gitExec("git", ["-C", BRAIN_REPO_DIR, ...args], {
+    timeout,
+    encoding: "utf8",
+  });
+}
+
+let brainSyncFailed = false;
+async function syncBrains() {
+  if (!BRAIN_SYNC) return;
+  try {
+    try {
+      brainGit(["pull", "--rebase"]);
+    } catch {
+      // offline or conflict; local wins for now
+    }
+    brainGit(["add", "-A"]);
+    const status = brainGit(["status", "--porcelain"]);
+    if (status.trim()) {
+      brainGit([
+        "-c", "user.email=corvid@blackcrownvxj.com",
+        "-c", "user.name=BlackCrown Brains",
+        "commit", "-m", `brain sync ${new Date().toISOString().slice(0, 16)}`,
+      ]);
+    }
+    brainGit(["push", "origin", "main"], 45000);
+    brainSyncFailed = false;
+  } catch (e) {
+    if (!brainSyncFailed) {
+      brainSyncFailed = true;
+      console.log("brain sync failed:", e.message || e);
+    }
+  }
+}
+if (BRAIN_SYNC) {
+  setTimeout(() => syncBrains(), 20 * 1000);
+  setInterval(() => syncBrains(), 5 * 60 * 1000);
+}
+
 wireCeo({ siteRoot: SITE_ROOT, audit: () => doAudit().pages });
 wireHooks({ onFiled: receiveProposals, ownerDecision });
 startAgent();
