@@ -329,6 +329,7 @@ export type AgentState = {
   status: string;
   discordMode: "bot" | "webhook" | "none";
   cycleHourEt: number;
+  cycleEveryH?: number;
   lastCycleAt: number | null;
   currentFocus: string;
   lastThought: string;

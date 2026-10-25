@@ -315,9 +315,13 @@ export const Seo: React.FC = () => {
           <span className="pulse-v" style={{ fontSize: 16 }}>{ago(agent?.lastCycleAt)}</span>
         </div>
         <div className="pulse-item">
-          <span className="pulse-k">Daily cycle</span>
+          <span className="pulse-k">Cadence</span>
           <span className="pulse-v" style={{ fontSize: 16 }}>
-            {agent ? `${agent.cycleHourEt}:00 ET` : "..."}
+            {agent
+              ? agent.cycleEveryH
+                ? `every ${agent.cycleEveryH}h`
+                : `daily ${agent.cycleHourEt}:00 ET`
+              : "..."}
           </span>
         </div>
         <div className="pulse-item">

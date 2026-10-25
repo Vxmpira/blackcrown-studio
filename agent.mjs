@@ -18,6 +18,8 @@ const AGENT_NAME = "Corvid";
 const STATE_PATH = path.join(__dirname, "studio-agent.json");
 const BRAIN_DIR = process.env.AGENT_BRAIN_DIR || path.join(__dirname, "brain");
 const CYCLE_HOUR_ET = Number(process.env.AGENT_CYCLE_HOUR || 9); // 9am ET
+// Set AGENT_CYCLE_EVERY_H (1-24) to run around the clock instead of once a day.
+const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const MODEL = process.env.AGENT_MODEL || "claude-sonnet-4-6";
 
@@ -470,7 +472,8 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","slides":["..."],"caption":"...","brand":"korvus"}],
  "discord": "the daily update, exactly in the template"
 }
-Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.`;
+Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
+When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -621,7 +624,7 @@ export async function runCycle(trigger = "schedule") {
     ].join("\n");
     brainWrite(path.join("Log", `${etDayKey()}.md`), note);
 
-    if (out.discord) await discordSend(String(out.discord));
+    if (out.discord && String(out.discord).trim()) await discordSend(String(out.discord));
     state.lastCycleAt = Date.now();
     state.lastCycleDay = etDayKey();
     state.status = "watching";
@@ -783,10 +786,14 @@ export function startAgent() {
   ensureBrain();
   if (state.status === "thinking") state.status = "watching";
   saveState();
-  // minute tick: daily cycle at the set ET hour
+  // minute tick: around the clock every N hours, or once daily at the set hour
   setInterval(() => {
     if (!state.enabled || busy) return;
-    if (etHour() === CYCLE_HOUR_ET && state.lastCycleDay !== etDayKey()) {
+    if (CYCLE_EVERY_H > 0) {
+      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_EVERY_H * 3600 * 1000) {
+        runCycle("schedule").catch(() => {});
+      }
+    } else if (etHour() === CYCLE_HOUR_ET && state.lastCycleDay !== etDayKey()) {
       runCycle("schedule").catch(() => {});
     }
   }, 60 * 1000);
@@ -798,7 +805,12 @@ export function startAgent() {
       if (msgs.length) await reactToMessages(msgs);
     }, POLL_SECONDS * 1000);
   }
-  log("boot", `${AGENT_NAME} online. Discord: ${discordMode()}. Cycle hour: ${CYCLE_HOUR_ET}:00 ET.`);
+  log(
+    "boot",
+    `${AGENT_NAME} online. Discord: ${discordMode()}. Cadence: ${
+      CYCLE_EVERY_H > 0 ? `every ${CYCLE_EVERY_H}h, around the clock` : `daily ${CYCLE_HOUR_ET}:00 ET`
+    }.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +823,7 @@ export function agentState() {
     status: state.enabled ? state.status : "paused",
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
+    cycleEveryH: CYCLE_EVERY_H,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
     lastThought: state.lastThought,
