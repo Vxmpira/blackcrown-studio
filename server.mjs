@@ -6,6 +6,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { renderMediaOnLambda, getRenderProgress } from "@remotion/lambda/client";
 
@@ -19,10 +20,155 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LIB_PATH = path.join(__dirname, "studio-ads.json");
 const BRIEF_PATH = path.join(__dirname, "marketing-brief.md");
 const STATS_PATH = path.join(__dirname, "studio-stats.json");
+const SESS_PATH = path.join(__dirname, "studio-sessions.json");
+const UPTIME_PATH = path.join(__dirname, "studio-uptime.json");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
+
+// ----- login (replaces the nginx basic-auth popup) -------------------------
+// Set ADMIN_USER and ADMIN_PASSWORD in .env on the server. Until both exist,
+// the admin stays locked and the login page explains what to set.
+const ADMIN_USER = (process.env.ADMIN_USER || "").trim();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const SESSION_DAYS = 30;
+
+function loadSessions() {
+  try {
+    const s = JSON.parse(fs.readFileSync(SESS_PATH, "utf8"));
+    const now = Date.now();
+    for (const t of Object.keys(s)) if (!s[t] || s[t].exp < now) delete s[t];
+    return s;
+  } catch {
+    return {};
+  }
+}
+function saveSessions(s) {
+  try {
+    fs.writeFileSync(SESS_PATH, JSON.stringify(s));
+  } catch {
+    // disk hiccup: sessions fall back to memory only
+  }
+}
+let sessions = loadSessions();
+
+function readCookie(req, name) {
+  const raw = req.headers.cookie || "";
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return "";
+}
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) {
+    // compare against self to keep timing flat, then fail
+    crypto.timingSafeEqual(ab, ab);
+    return false;
+  }
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+// simple per-IP lockout: 8 failed logins per 15 minutes
+const loginFails = new Map();
+function failKey(req) {
+  return String(req.headers["x-real-ip"] || req.ip || "ip");
+}
+function tooManyFails(req) {
+  const rec = loginFails.get(failKey(req));
+  if (!rec) return false;
+  if (Date.now() - rec.t > 15 * 60 * 1000) {
+    loginFails.delete(failKey(req));
+    return false;
+  }
+  return rec.n >= 8;
+}
+function noteFail(req) {
+  const k = failKey(req);
+  const rec = loginFails.get(k);
+  if (rec && Date.now() - rec.t <= 15 * 60 * 1000) rec.n += 1;
+  else loginFails.set(k, { n: 1, t: Date.now() });
+}
+
+function isAuthed(req) {
+  const t = readCookie(req, "bc_admin");
+  if (!t) return false;
+  const s = sessions[t];
+  if (!s) return false;
+  if (s.exp < Date.now()) {
+    delete sessions[t];
+    saveSessions(sessions);
+    return false;
+  }
+  return true;
+}
+
+app.get("/api/me", (req, res) => {
+  res.json({
+    authed: isAuthed(req),
+    user: ADMIN_USER || null,
+    setup: !(ADMIN_USER && ADMIN_PASSWORD),
+  });
+});
+
+app.post("/api/login", (req, res) => {
+  if (!(ADMIN_USER && ADMIN_PASSWORD)) {
+    return res.status(503).json({
+      error:
+        "Login is not configured yet. Add ADMIN_USER and ADMIN_PASSWORD to .env on the server, then restart the service.",
+    });
+  }
+  if (tooManyFails(req)) {
+    return res
+      .status(429)
+      .json({ error: "Too many attempts. Wait 15 minutes and try again." });
+  }
+  const user = String(req.body?.user ?? "");
+  const pass = String(req.body?.pass ?? "");
+  const okUser = safeEqual(user, ADMIN_USER);
+  const okPass = safeEqual(pass, ADMIN_PASSWORD);
+  if (!(okUser && okPass)) {
+    noteFail(req);
+    return res.status(401).json({ error: "Wrong name or password." });
+  }
+  loginFails.delete(failKey(req));
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions[token] = { user, exp: Date.now() + SESSION_DAYS * 864e5 };
+  saveSessions(sessions);
+  res.set(
+    "Set-Cookie",
+    `bc_admin=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${
+      SESSION_DAYS * 86400
+    }`
+  );
+  res.json({ ok: true });
+});
+
+app.post("/api/logout", (req, res) => {
+  const t = readCookie(req, "bc_admin");
+  if (t && sessions[t]) {
+    delete sessions[t];
+    saveSessions(sessions);
+  }
+  res.set("Set-Cookie", "bc_admin=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+  res.json({ ok: true });
+});
+
+// Everything under /api needs a session, except the public beacon and the
+// login endpoints themselves.
+const PUBLIC_API = new Set(["/api/track", "/api/login", "/api/logout", "/api/me"]);
+app.use("/api", (req, res, next) => {
+  if (PUBLIC_API.has(req.baseUrl + req.path) || PUBLIC_API.has("/api" + req.path)) {
+    return next();
+  }
+  if (isAuthed(req)) return next();
+  res.status(401).json({ error: "Not signed in." });
+});
 
 function assertConfigured() {
   const missing = [];
@@ -214,8 +360,32 @@ function dayKey(offset = 0) {
   return new Date(Date.now() - offset * 864e5).toISOString().slice(0, 10);
 }
 
+// Turns a raw document.referrer into a short source bucket.
+function refBucket(r) {
+  let host = "";
+  try {
+    host = new URL(r).hostname.toLowerCase();
+  } catch {
+    return "direct";
+  }
+  if (!host) return "direct";
+  if (/blackcrownvxj\.com$/.test(host)) return ""; // internal hop, skip
+  if (/google\./.test(host)) return "google";
+  if (/bing\.com$/.test(host)) return "bing";
+  if (/duckduckgo/.test(host)) return "duckduckgo";
+  if (/discord/.test(host)) return "discord";
+  if (/(^|\.)t\.co$|twitter\.com$|(^|\.)x\.com$/.test(host)) return "x";
+  if (/instagram/.test(host)) return "instagram";
+  if (/tiktok/.test(host)) return "tiktok";
+  if (/youtube|youtu\.be/.test(host)) return "youtube";
+  if (/reddit/.test(host)) return "reddit";
+  if (/facebook|fb\.com/.test(host)) return "facebook";
+  if (/linkedin/.test(host)) return "linkedin";
+  return "other";
+}
+
 // Public beacon. The sites call this on each visit and each product click.
-// It must stay outside the admin login (handled in nginx).
+// It is the one endpoint that skips the login, by design.
 app.get("/api/track", (req, res) => {
   try {
     const e = String(req.query.e || "").slice(0, 16);
@@ -228,6 +398,24 @@ app.get("/api/track", (req, res) => {
       s[d] = s[d] || {};
       s[d][e] = s[d][e] || {};
       s[d][e][k] = (s[d][e][k] || 0) + 1;
+      if (e === "visit") {
+        // device: m (phone) or d (desktop/tablet)
+        const dev = String(req.query.d || "") === "m" ? "mobile" : "desktop";
+        s[d].dev = s[d].dev || {};
+        s[d].dev[dev] = (s[d].dev[dev] || 0) + 1;
+        // traffic source from the referrer
+        const src = refBucket(String(req.query.r || "").slice(0, 300));
+        if (src) {
+          s[d].src = s[d].src || {};
+          s[d].src[src] = (s[d].src[src] || 0) + 1;
+        }
+        // hour of day, US Eastern, so "best hours" matches your clock
+        const hr = new Date()
+          .toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: "America/New_York" })
+          .slice(0, 2);
+        s[d].hr = s[d].hr || {};
+        s[d].hr[hr] = (s[d].hr[hr] || 0) + 1;
+      }
       const cutoff = dayKey(120);
       for (const day of Object.keys(s)) if (day < cutoff) delete s[day];
       saveStats(s);
@@ -242,29 +430,129 @@ app.get("/api/track", (req, res) => {
   );
 });
 
-// Read totals (behind the admin login via nginx).
+// Read totals (behind the app login).
 app.get("/api/stats", (_req, res) => {
   const s = loadStats();
   const days = Object.keys(s).sort();
   const windowSum = (n) => {
     const since = dayKey(n - 1);
-    const out = { visit: {}, click: {} };
+    const out = { visit: {}, click: {}, src: {}, dev: {}, hr: {} };
     for (const day of days) {
       if (day < since) continue;
-      for (const e of ["visit", "click"]) {
+      for (const e of ["visit", "click", "src", "dev", "hr"]) {
         const obj = (s[day] && s[day][e]) || {};
         for (const k of Object.keys(obj)) out[e][k] = (out[e][k] || 0) + obj[k];
       }
     }
     return out;
   };
+  const daySum = (day, e) => {
+    const obj = (s[day] && s[day][e]) || {};
+    return Object.values(obj).reduce((a, b) => a + b, 0);
+  };
   const series = [];
   for (let i = 13; i >= 0; i--) {
     const day = dayKey(i);
-    const v = (s[day] && s[day].visit) || {};
-    series.push({ day, visits: Object.values(v).reduce((a, b) => a + b, 0) });
+    series.push({ day, visits: daySum(day, "visit") });
   }
-  res.json({ w7: windowSum(7), w30: windowSum(30), series });
+  const series30 = [];
+  for (let i = 29; i >= 0; i--) {
+    const day = dayKey(i);
+    series30.push({ day, visits: daySum(day, "visit"), clicks: daySum(day, "click") });
+  }
+  // today vs the average of the 7 days before it
+  let prev = 0;
+  for (let i = 1; i <= 7; i++) prev += daySum(dayKey(i), "visit");
+  res.json({
+    w7: windowSum(7),
+    w30: windowSum(30),
+    series,
+    series30,
+    today: { visits: daySum(dayKey(), "visit"), clicks: daySum(dayKey(), "click") },
+    prev7avg: Math.round((prev / 7) * 10) / 10,
+  });
+});
+
+// ----- uptime watch for the three properties --------------------------------
+const WATCH_SITES = [
+  { key: "brand", label: "blackcrownvxj.com", url: "https://blackcrownvxj.com" },
+  { key: "korvus", label: "korvus.industries", url: "https://korvus.industries" },
+  {
+    key: "intelligence",
+    label: "blackcrown-intelligence.com",
+    url: "https://blackcrown-intelligence.com",
+  },
+];
+const UPTIME_KEEP = 288; // 24h of 5-minute checks
+
+function loadUptime() {
+  try {
+    const u = JSON.parse(fs.readFileSync(UPTIME_PATH, "utf8"));
+    return u && typeof u === "object" ? u : {};
+  } catch {
+    return {};
+  }
+}
+let uptime = loadUptime();
+function saveUptime() {
+  try {
+    fs.writeFileSync(UPTIME_PATH, JSON.stringify(uptime));
+  } catch {
+    // best effort
+  }
+}
+
+async function checkSite(site) {
+  const started = Date.now();
+  let ok = false;
+  let status = 0;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 10000);
+    const r = await fetch(site.url, {
+      redirect: "follow",
+      signal: ctl.signal,
+      headers: { "user-agent": "BlackCrown-Admin-Uptime/1.0" },
+    });
+    clearTimeout(t);
+    status = r.status;
+    ok = r.status >= 200 && r.status < 400;
+  } catch {
+    ok = false;
+  }
+  const ms = Date.now() - started;
+  const list = uptime[site.key] || [];
+  list.push({ t: Date.now(), ok, ms, status });
+  uptime[site.key] = list.slice(-UPTIME_KEEP);
+}
+
+async function checkAllSites() {
+  await Promise.all(WATCH_SITES.map(checkSite));
+  saveUptime();
+}
+checkAllSites().catch(() => {});
+setInterval(() => checkAllSites().catch(() => {}), 5 * 60 * 1000);
+
+app.get("/api/uptime", async (req, res) => {
+  if (req.query.now) await checkAllSites().catch(() => {});
+  const out = WATCH_SITES.map((site) => {
+    const list = uptime[site.key] || [];
+    const last = list[list.length - 1] || null;
+    const dayAgo = Date.now() - 864e5;
+    const recent = list.filter((x) => x.t >= dayAgo);
+    const okCount = recent.filter((x) => x.ok).length;
+    return {
+      key: site.key,
+      label: site.label,
+      url: site.url,
+      up: last ? last.ok : null,
+      status: last ? last.status : null,
+      ms: last ? last.ms : null,
+      checkedAt: last ? last.t : null,
+      pct24h: recent.length ? Math.round((okCount / recent.length) * 1000) / 10 : null,
+    };
+  });
+  res.json({ sites: out });
 });
 
 // ----- AI ad generation ----------------------------------------------------

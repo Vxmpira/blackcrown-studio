@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+studio-ads.json
+studio-stats.json
+studio-sessions.json
+studio-uptime.json
+marketing-brief.md
+out/

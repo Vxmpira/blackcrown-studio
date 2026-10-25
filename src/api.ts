@@ -122,11 +122,17 @@ export async function resetBrief(): Promise<string> {
 export type StatBuckets = {
   visit: Record<string, number>;
   click: Record<string, number>;
+  src?: Record<string, number>;
+  dev?: Record<string, number>;
+  hr?: Record<string, number>;
 };
 export type StatsData = {
   w7: StatBuckets;
   w30: StatBuckets;
   series: { day: string; visits: number }[];
+  series30?: { day: string; visits: number; clicks: number }[];
+  today?: { visits: number; clicks: number };
+  prev7avg?: number;
 };
 
 export async function getStats(): Promise<StatsData | null> {
@@ -137,4 +143,56 @@ export async function getStats(): Promise<StatsData | null> {
   } catch {
     return null;
   }
+}
+
+// ----- uptime ---------------------------------------------------------------
+export type UptimeSite = {
+  key: string;
+  label: string;
+  url: string;
+  up: boolean | null;
+  status: number | null;
+  ms: number | null;
+  checkedAt: number | null;
+  pct24h: number | null;
+};
+
+export async function getUptime(fresh = false): Promise<UptimeSite[]> {
+  try {
+    const r = await fetch(`${BASE}/api/uptime${fresh ? "?now=1" : ""}`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j.sites) ? j.sites : [];
+  } catch {
+    return [];
+  }
+}
+
+// ----- auth -----------------------------------------------------------------
+export type Me = { authed: boolean; user: string | null; setup: boolean };
+
+export async function getMe(): Promise<Me | null> {
+  try {
+    const r = await fetch(`${BASE}/api/me`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function login(user: string, pass: string): Promise<void> {
+  const r = await fetch(`${BASE}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user, pass }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || `Login failed (${r.status})`);
+  }
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${BASE}/api/logout`, { method: "POST" });
 }

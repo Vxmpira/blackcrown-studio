@@ -30,7 +30,8 @@ const TABS: { id: TabId; label: string; soon?: boolean }[] = [
 export const Sidebar: React.FC<{
   active: TabId;
   onChange: (t: TabId) => void;
-}> = ({ active, onChange }) => {
+  onLogout?: () => void;
+}> = ({ active, onChange, onLogout }) => {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -48,7 +49,14 @@ export const Sidebar: React.FC<{
           {t.soon ? <span className="soon">Soon</span> : null}
         </button>
       ))}
-      <div className="sidebar-foot">BlackCrownVxJ LLC</div>
+      <div className="sidebar-foot">
+        BlackCrownVxJ LLC
+        {onLogout ? (
+          <button className="logout" onClick={onLogout}>
+            Sign out
+          </button>
+        ) : null}
+      </div>
     </aside>
   );
 };
