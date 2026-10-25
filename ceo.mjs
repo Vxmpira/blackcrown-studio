@@ -294,7 +294,7 @@ The owner wrote in your channel. He may approve or reject asks by number, ask ab
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"reply":"**REGENT //** then 1-3 short lines","decisions":[{"id":"proposal id","action":"approve|reject","note":"short"}]}
-On approve say you are executing now and will confirm. Never claim a change is done before executing.`;
+In "id" put the proposal's id string exactly as given in the asks list; when he refers to a number like "approve 6", match it to the ask with number 6 and use that ask's id. If he says retry or run it again about an approved item whose execution failed, record it as an approve decision again. On approve say you are executing now and will confirm. Never claim a change is done before executing.`;
 
 // ---------------------------------------------------------------------------
 // intake: Corvid files proposals
@@ -356,7 +356,7 @@ function section(detail, label) {
 
 async function executeSiteEdit(p) {
   const file = String(p.page || "").trim();
-  if (!/^[a-z0-9._-]+\.html$/i.test(file)) {
+  if (!/^[a-z0-9._-]+\.(html|xml|txt|css|js)$/i.test(file)) {
     return { ok: false, msg: `page "${file}" is not a site file I can edit` };
   }
   const full = path.join(deps.siteRoot, file);
