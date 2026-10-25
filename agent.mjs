@@ -1144,6 +1144,106 @@ async function reactToMessages(msgs) {
 // ---------------------------------------------------------------------------
 // scheduler
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// the task engine: awake between cycles, grinding the queue one step at a
+// time until it is empty, then silent. Guards: a gap between steps, a daily
+// step budget, and tasks blocked on an owner decision are skipped until the
+// decision lands, so a self-feeding queue can never become runaway spend.
+// ---------------------------------------------------------------------------
+const WORK_GAP_MIN = Math.max(2, Number(process.env.AGENT_WORK_GAP_MIN || 5));
+const WORK_DAILY_CAP = Math.max(0, Number(process.env.AGENT_WORK_DAILY_CAP || 48));
+
+const WORK_SYSTEM = `${IDENTITY}
+${PROPOSAL_RULES}
+TASK MODE: between your scheduled cycles you stay awake and advance ONE task at a time. Do the real work of that task right now, not a plan for later.
+Output STRICT JSON only:
+{
+ "thought": "what you did and found, under 80 words",
+ "status": "doing|done",
+ "proposal": {optional, same shape as a cycle proposal, only when this task's outcome is a change that needs the owner},
+ "delegation": {"minion":"scout|scribe|analyst","task":"one focused job","context":"what it needs"} optional,
+ "note": {"name":"X.md","body":"full markdown"} optional vault write,
+ "blocked_on": optional proposal number this task now waits on,
+ "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
+}
+Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
+
+function pickOpenTask() {
+  return state.tasks.find(
+    (t) =>
+      t.status !== "done" &&
+      !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
+  );
+}
+
+async function workTick() {
+  if (busy || !state.enabled) return;
+  const t = pickOpenTask();
+  if (!t) return;
+  const day = etDayKey();
+  if (state.workDay !== day) {
+    state.workDay = day;
+    state.workSteps = 0;
+  }
+  if (WORK_DAILY_CAP && (state.workSteps || 0) >= WORK_DAILY_CAP) return;
+  if (state.lastWorkAt && Date.now() - state.lastWorkAt < WORK_GAP_MIN * 60000) return;
+  if (state.lastCycleAt && Date.now() - state.lastCycleAt < 2 * 60000) return;
+  busy = true;
+  state.lastWorkAt = Date.now();
+  state.workSteps = (state.workSteps || 0) + 1;
+  saveState();
+  log("work", `advancing: ${t.title}`);
+  try {
+    const agg = aggregates();
+    const pending = state.proposals
+      .filter((p) => p.status === "pending")
+      .map((p) => ({ number: p.number, summary: p.summary }));
+    const user = [
+      `THE TASK: ${t.title}`,
+      `Current focus: ${state.currentFocus}`,
+      `Other open tasks (context only, work THE TASK): ${JSON.stringify(
+        state.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title)
+      )}`,
+      `ANALYTICS 7d: visits ${agg.visits7} (prev ${agg.visitsPrev7})`,
+      `PENDING PROPOSALS (never re-file): ${JSON.stringify(pending)}`,
+      `BRAIN Strategy.md (excerpt):\n${brainRead("Strategy.md").slice(0, 1200)}`,
+      `BRAIN Playbook.md (excerpt):\n${brainRead("Playbook.md").slice(0, 800)}`,
+    ].join("\n\n");
+    const out = await think(WORK_SYSTEM, user, 2400);
+    if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
+    t.status = out.status === "done" ? "done" : "doing";
+    if (out.proposal && out.proposal.summary) {
+      const filed = fileProposals([out.proposal], AGENT_NAME);
+      if (filed.length && t.status !== "done") t.wait = filed[0].number;
+    }
+    if (out.blocked_on) t.wait = Number(out.blocked_on) || t.wait;
+    if (out.note && out.note.name && out.note.body) {
+      const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
+      if (nm) brainWrite(`${nm.replace(/\.md$/i, "")}.md`, String(out.note.body).slice(0, 12000));
+    }
+    if (out.delegation && out.delegation.minion) {
+      await runMinion(
+        String(out.delegation.minion).trim(),
+        String(out.delegation.task || t.title).slice(0, 160),
+        out.delegation.context
+      );
+    }
+    if (out.say && String(out.say).trim()) {
+      await discordSend(`**CORVID //** ${String(out.say).slice(0, 300)}`);
+    }
+    brainWrite(
+      "Tasks.md",
+      `# Tasks\n\n${state.tasks.map((x) => `- [${x.status === "done" ? "x" : " "}] ${x.title} (${x.status})`).join("\n")}\n`
+    );
+    log("work", `step done: ${t.title} -> ${t.status}${t.wait ? `, waiting on #${t.wait}` : ""}`);
+    saveState();
+  } catch (e) {
+    log("error", `work step failed: ${String(e.message || e).slice(0, 200)}`);
+  } finally {
+    busy = false;
+  }
+}
+
 export function startAgent() {
   ensureBrain();
   if (state.status === "thinking") state.status = "watching";
@@ -1171,10 +1271,14 @@ export function startAgent() {
     if (CYCLE_MS > 0) {
       if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
         runCycle("schedule").catch(() => {});
+        return;
       }
     } else if (etHour() === CYCLE_HOUR_ET && state.lastCycleDay !== etDayKey()) {
       runCycle("schedule").catch(() => {});
+      return;
     }
+    // no cycle due: the task engine keeps the agent working the queue
+    workTick().catch(() => {});
   }, 60 * 1000);
   // inbound polling
   if (discordMode() === "bot") {

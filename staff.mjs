@@ -393,6 +393,85 @@ async function runStaffCycle(key, trigger = "schedule") {
   }
 }
 
+// the task engine: between cycles, staff grind their queues one step at a
+// time. Same guards as Corvid: step gap, daily budget, blocked tasks skipped.
+const WORK_GAP_MIN = Math.max(2, Number(process.env.STAFF_WORK_GAP_MIN || 6));
+const WORK_DAILY_CAP = Math.max(0, Number(process.env.STAFF_WORK_DAILY_CAP || 24));
+
+const WORK_SCHEMA = `TASK MODE: advance ONE task right now, doing its real work, not planning it.
+Output STRICT JSON only:
+{
+ "thought": "what you did and found, under 80 words",
+ "status": "doing|done",
+ "proposal": {optional, same shape as a cycle proposal, only when the outcome needs the owner},
+ "delegation": {"minion":"...","task":"one focused job","context":"..."} optional,
+ "note": {"name":"X.md","body":"full markdown"} optional vault write,
+ "assignment": {"to":"corvid|herald","task":"max 12 words"} optional, Steward only,
+ "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
+}
+Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.`;
+
+async function staffWorkTick(key) {
+  const a = state[key];
+  const role = ROLES[key];
+  if (!a.enabled || a.status === "thinking") return;
+  const t = a.tasks.find((x) => x.status !== "done");
+  if (!t) return;
+  const day = dayKey();
+  if (a.workDay !== day) {
+    a.workDay = day;
+    a.workSteps = 0;
+  }
+  if (WORK_DAILY_CAP && (a.workSteps || 0) >= WORK_DAILY_CAP) return;
+  if (a.lastWorkAt && Date.now() - a.lastWorkAt < WORK_GAP_MIN * 60000) return;
+  if (a.lastCycleAt && Date.now() - a.lastCycleAt < 2 * 60000) return;
+  a.status = "thinking";
+  a.lastWorkAt = Date.now();
+  a.workSteps = (a.workSteps || 0) + 1;
+  saveState();
+  log(key, "work", `advancing: ${t.title}`);
+  try {
+    const user = [
+      `THE TASK: ${t.title}`,
+      `Current focus: ${a.focus}`,
+      `Other open tasks (context only): ${JSON.stringify(a.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title))}`,
+      `YOUR Playbook.md (excerpt):\n${vaultRead(key, "Playbook.md").slice(0, 800) || "(not started)"}`,
+      key === "steward" ? `YOUR Projects.md (excerpt):\n${vaultRead(key, "Projects.md").slice(0, 1200) || "(not started)"}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 2000);
+    if (out.thought) a.thought = String(out.thought).slice(0, 700);
+    t.status = out.status === "done" ? "done" : "doing";
+    if (out.proposal && out.proposal.summary) {
+      const filed = fileProposals([out.proposal], role.name);
+      if (filed.length) log(key, "filed", `#${filed[0].number} ${filed[0].summary}`);
+    }
+    if (out.note && out.note.name && out.note.body) {
+      const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
+      if (nm) vaultWrite(key, nm.replace(/\.md$/i, "") + ".md", String(out.note.body).slice(0, 12000));
+    }
+    if (out.delegation && out.delegation.minion) {
+      await runStaffMinion(key, String(out.delegation.minion).trim(), String(out.delegation.task || t.title).slice(0, 160), out.delegation.context);
+    }
+    if (role.flags.assigns && out.assignment && out.assignment.to && out.assignment.task) {
+      const title = `${role.name}: ${String(out.assignment.task).slice(0, 100)}`;
+      if (out.assignment.to === "corvid") corvidAddTask(title);
+      else if (out.assignment.to === "herald") staffAddTask("herald", title);
+      log(key, "assign", `${out.assignment.to} <- ${String(out.assignment.task).slice(0, 80)}`);
+    }
+    if (out.say && String(out.say).trim()) {
+      await sendTo(role.channel, `**${role.name.toUpperCase()} //** ${String(out.say).slice(0, 300)}`, { agent: key });
+    }
+    log(key, "work", `step done: ${t.title} -> ${t.status}`);
+  } catch (e) {
+    log(key, "error", `work step failed: ${String(e.message || e).slice(0, 200)}`);
+  } finally {
+    a.status = "watching";
+    saveState();
+  }
+}
+
 const REACT_SCHEMA = `The owner just spoke in your channel. Output STRICT JSON only: {"reply":"your answer, template voice, 1 to 3 short lines","tasks":[{"title":"max 7 words"}]}. tasks is only for new work he just handed you, max 2, usually empty.`;
 
 async function reactToMessages(key, msgs) {
@@ -436,7 +515,10 @@ export function startStaff() {
       }
       if (!a.lastCycleAt || Date.now() - a.lastCycleAt >= CYCLE_EVERY_H * 3600000) {
         runStaffCycle(key, "schedule").catch(() => {});
+        continue;
       }
+      // no cycle due: grind the queue
+      staffWorkTick(key).catch(() => {});
     }
   }, 60 * 1000);
   // two way chat only in a channel of its own; shared channels already have
