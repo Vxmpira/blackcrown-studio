@@ -28,6 +28,20 @@ const CEO_CHANNEL =
   (process.env.DISCORD_CEO_CHANNEL_ID || "").trim() || SEO_CHANNEL;
 const WEBHOOK_URL = (process.env.DISCORD_SEO_WEBHOOK || "").trim();
 
+// Repos Regent may edit, as name:path pairs. "site" is the brand site and
+// always exists; add korvus and crown clones on this box to put those
+// products in reach. Their boxes auto-pull what Regent pushes.
+const REPO_ROOTS = Object.fromEntries(
+  (process.env.CEO_REPO_ROOTS ||
+    "site:/var/www/blackcrown,korvus:/home/ubuntu/fleet/korvus-engine,crown:/home/ubuntu/fleet/crown")
+    .split(",")
+    .map((pair) => {
+      const i = pair.indexOf(":");
+      return [pair.slice(0, i).trim(), pair.slice(i + 1).trim()];
+    })
+    .filter(([k, v]) => k && v)
+);
+
 // wired from server.mjs
 let deps = {
   siteRoot: "/var/www/blackcrown",
@@ -294,7 +308,7 @@ The owner wrote in your channel. He may approve or reject asks by number, ask ab
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"reply":"**REGENT //** then 1-3 short lines","decisions":[{"id":"proposal id","action":"approve|reject","note":"short"}]}
-In "id" put the proposal's id string exactly as given in the asks list; when he refers to a number like "approve 6", match it to the ask with number 6 and use that ask's id. If he says retry or run it again about an approved item whose execution failed, record it as an approve decision again. On approve say you are executing now and will confirm. Never claim a change is done before executing.`;
+A proposal page like "korvus:path/file.js" or "crown:path/file" targets that product's repo; its box deploys the push within a minute. In "id" put the proposal's id string exactly as given in the asks list; when he refers to a number like "approve 6", match it to the ask with number 6 and use that ask's id. If he says retry or run it again about an approved item whose execution failed, record it as an approve decision again. On approve say you are executing now and will confirm. Never claim a change is done before executing.`;
 
 // ---------------------------------------------------------------------------
 // intake: Corvid files proposals
@@ -355,11 +369,31 @@ function section(detail, label) {
 }
 
 async function executeSiteEdit(p) {
-  const file = String(p.page || "").trim();
-  if (!/^[a-z0-9._-]+\.(html|xml|txt|css|js)$/i.test(file)) {
-    return { ok: false, msg: `page "${file}" is not a site file I can edit` };
+  let file = String(p.page || "").trim();
+  // "korvus:engine/feed.js" or "crown:server/config.json" routes to that repo;
+  // a bare file name means the brand site.
+  let rootKey = "site";
+  const ci = file.indexOf(":");
+  if (ci > 0) {
+    const maybe = file.slice(0, ci);
+    if (REPO_ROOTS[maybe]) {
+      rootKey = maybe;
+      file = file.slice(ci + 1).trim();
+    }
   }
-  const full = path.join(deps.siteRoot, file);
+  const rootDir = rootKey === "site" ? deps.siteRoot : REPO_ROOTS[rootKey];
+  if (!rootDir || !fs.existsSync(rootDir)) {
+    return { ok: false, msg: `repo "${rootKey}" is not set up on this server yet` };
+  }
+  if (
+    !/^[a-z0-9._\/-]+\.(html|xml|txt|css|js|mjs|cjs|ts|tsx|jsx|json|md|py|yml|yaml|conf|sh)$/i.test(file) ||
+    file.includes("..") ||
+    file.startsWith("/") ||
+    /(^|\/)\.env/i.test(file)
+  ) {
+    return { ok: false, msg: `"${file}" is not a file I can edit` };
+  }
+  const full = path.join(rootDir, file);
   let html;
   try {
     html = fs.readFileSync(full, "utf8");
@@ -436,14 +470,14 @@ async function executeSiteEdit(p) {
   let sync = "repo sync skipped";
   try {
     const { execFileSync } = await import("child_process");
-    execFileSync("git", ["-C", deps.siteRoot, "add", file], { timeout: 15000 });
+    execFileSync("git", ["-C", rootDir, "add", file], { timeout: 15000 });
     execFileSync(
       "git",
-      ["-C", deps.siteRoot, "-c", "user.email=regent@blackcrownvxj.com", "-c", "user.name=Regent", "commit", "-m", `Regent: apply approved #${p.number} ${p.summary}`.slice(0, 120)],
+      ["-C", rootDir, "-c", "user.email=regent@blackcrownvxj.com", "-c", "user.name=Regent", "commit", "-m", `Regent: apply approved #${p.number} ${p.summary}`.slice(0, 120)],
       { timeout: 15000 }
     );
     try {
-      execFileSync("git", ["-C", deps.siteRoot, "push", "origin", "main"], { timeout: 30000 });
+      execFileSync("git", ["-C", rootDir, "push", "origin", "main"], { timeout: 30000 });
       sync = "repo committed and pushed";
     } catch {
       sync = "committed locally, push needs repo credentials";
@@ -453,7 +487,7 @@ async function executeSiteEdit(p) {
   }
   let score = "";
   try {
-    const pages = deps.audit ? deps.audit() : [];
+    const pages = rootKey === "site" && deps.audit ? deps.audit() : [];
     const pg = pages.find((x) => x.file === file);
     if (pg) score = `, new score ${pg.score}`;
   } catch {
