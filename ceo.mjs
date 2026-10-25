@@ -376,16 +376,86 @@ export async function receiveProposals(filed) {
   }
   saveState();
   if (endorsed.length) {
-    const lines = [`**REGENT // ASK** · ${etDayKey()}`];
     for (const p of endorsed) {
-      const gl = (p.detail.match(/GREEN LIGHT MEANS:\s*([^\n]+)/i) || [])[1] || "see Agent HQ";
-      lines.push(`**#${p.number}** ${p.page} · ${p.summary}`);
-      lines.push(`GREEN LIGHT: ${gl.trim()}`);
+      await sendAskCard(p);
     }
-    lines.push(`say approve N or reject N`);
-    await send(lines.join("\n"));
   }
   state.status = "watching";
+  saveState();
+}
+
+// one card per ask, check and X pre-attached: a reaction is a ruling
+const OWNER_ID = (process.env.DISCORD_OWNER_ID || "").trim();
+async function sendAskCard(p) {
+  const gl = ((p.detail.match(/GREEN LIGHT MEANS:\s*([^\n]+)/i) || [])[1] || "see Agent HQ").trim();
+  const content = [
+    `**REGENT // ASK** · #${p.number} · ${etDayKey()}`,
+    `${p.page} · ${p.summary}${p.author && p.author !== "Corvid" ? `  (filed by ${p.author})` : ""}`,
+    `**GREEN LIGHT MEANS**`,
+    gl,
+    `**YOUR MOVE**`,
+    `React with the check to approve or the X to reject. Words work too: approve ${p.number}.`,
+  ].join("\n");
+  if (!(BOT_TOKEN && CEO_CHANNEL)) {
+    await send(content);
+    return;
+  }
+  try {
+    const r = await fetch(`https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bot ${BOT_TOKEN}` },
+      body: JSON.stringify({ content: "", embeds: buildEmbeds(content, 0xf2c94c, "Regent, CEO") }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.id) {
+      await send(content);
+      return;
+    }
+    for (const emoji of ["✅", "❌"]) {
+      await fetch(
+        `https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages/${j.id}/reactions/${encodeURIComponent(emoji)}/@me`,
+        { method: "PUT", headers: { authorization: `Bot ${BOT_TOKEN}` } }
+      ).catch(() => {});
+    }
+    state.askMsgs = (state.askMsgs || []).slice(-24);
+    state.askMsgs.push({ msgId: j.id, pid: p.id, number: p.number });
+    saveState();
+  } catch (e) {
+    log("error", `ask card failed (${e.message || e}), sending plain`);
+    await send(content);
+  }
+}
+
+async function checkAskReactions() {
+  if (!(BOT_TOKEN && CEO_CHANNEL)) return;
+  const live = (state.askMsgs || []).filter((x) => {
+    const p = findProposal(x.pid);
+    return p && p.status === "pending";
+  });
+  state.askMsgs = live;
+  for (const x of live) {
+    for (const [emoji, action] of [
+      ["✅", "approve"],
+      ["❌", "reject"],
+    ]) {
+      try {
+        const r = await fetch(
+          `https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages/${x.msgId}/reactions/${encodeURIComponent(emoji)}?limit=10`,
+          { headers: { authorization: `Bot ${BOT_TOKEN}` } }
+        );
+        if (!r.ok) continue;
+        const users = await r.json();
+        const human = Array.isArray(users) && users.find((u) => !u.bot && (!OWNER_ID || u.id === OWNER_ID));
+        if (human) {
+          log("ruling", `#${x.number} ${action} via reaction`);
+          await ownerDecision(x.pid, action, "", "reaction");
+          break;
+        }
+      } catch {
+        // next poll catches it
+      }
+    }
+  }
   saveState();
 }
 
@@ -869,8 +939,15 @@ export function startCeo() {
   if (BOT_TOKEN && CEO_CHANNEL && CEO_CHANNEL !== SEO_CHANNEL) {
     setInterval(async () => {
       if (!state.enabled) return;
+      await checkAskReactions().catch(() => {});
       const msgs = await fetchNew();
       if (msgs.length) await react(msgs);
+    }, POLL_SECONDS * 1000);
+  } else if (BOT_TOKEN && CEO_CHANNEL) {
+    // shared channel: Corvid answers the words there, Regent still reads reactions
+    setInterval(async () => {
+      if (!state.enabled) return;
+      await checkAskReactions().catch(() => {});
     }, POLL_SECONDS * 1000);
   }
   log(

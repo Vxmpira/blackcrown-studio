@@ -223,8 +223,10 @@ export function discordMode() {
 }
 
 // branded embeds: the first **HEADER** line becomes the card title, the
-// body renders as the description, the house color bars the left edge,
-// and the agent signs the footer. Deliveries carry their art in the card.
+// crown marks the author row and footer, ALL CAPS bold section leads
+// (**PULSE**, **LEARNED**, **GREEN LIGHT MEANS**) become spaced fields so
+// nothing reads cramped, and deliveries carry their art in the card.
+const EMBED_ICON = (process.env.EMBED_ICON_URL || "https://blackcrownvxj.com/crown-mark.png").trim();
 export function buildEmbeds(content, color, signature, opts = {}) {
   const text = String(content).trim();
   const m = text.match(/^\*\*([^\n]+?)\*\*(\s*·\s*([^\n]*))?\n*/);
@@ -234,8 +236,42 @@ export function buildEmbeds(content, color, signature, opts = {}) {
     title = (m[1] + (m[3] ? " · " + m[3] : "")).replace(/\*\*/g, "").trim().slice(0, 256);
     rest = text.slice(m[0].length);
   }
-  const parts = [];
   let body = rest.length ? rest : text;
+  const base = {
+    color,
+    author: { name: "BLACKCROWNVXJ LLC", icon_url: EMBED_ICON },
+    footer: { text: signature, icon_url: EMBED_ICON },
+  };
+  // section layout: a line that LEADS with short all caps bold starts a field
+  const fields = [];
+  const pre = [];
+  let cur = null;
+  for (const ln of body.split("\n")) {
+    const sm = ln.match(/^\*\*([A-Z][A-Z0-9 /&-]{1,28})\*\*:?\s*(.*)$/);
+    if (sm) {
+      if (cur) fields.push(cur);
+      cur = { name: sm[1].trim(), value: sm[2] ? sm[2].trim() : "" };
+    } else if (cur) {
+      cur.value += (cur.value ? "\n" : "") + ln;
+    } else {
+      pre.push(ln);
+    }
+  }
+  if (cur) fields.push(cur);
+  if (fields.length && fields.length <= 24 && fields.every((f) => f.value.length <= 1000)) {
+    return [
+      {
+        ...base,
+        title: title || undefined,
+        description: pre.join("\n").trim() || undefined,
+        fields: fields.map((f) => ({ name: f.name, value: f.value.trim() || "•", inline: false })),
+        timestamp: new Date().toISOString(),
+        image: opts.image ? { url: opts.image } : undefined,
+      },
+    ];
+  }
+  // long or unstructured content: description pages
+  const parts = [];
   if (!body.trim()) body = " ";
   while (body.length > 3900) {
     parts.push(body.slice(0, 3900));
@@ -243,10 +279,9 @@ export function buildEmbeds(content, color, signature, opts = {}) {
   }
   parts.push(body);
   return parts.slice(0, 10).map((d, i) => ({
+    ...base,
     title: i === 0 && title ? title : undefined,
     description: d.trim() || undefined,
-    color,
-    footer: { text: `BLACKCROWNVXJ LLC · ${signature}` },
     timestamp: i === parts.length - 1 ? new Date().toISOString() : undefined,
     image: i === 0 && opts.image ? { url: opts.image } : undefined,
   }));
