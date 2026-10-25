@@ -278,6 +278,7 @@ let feeds = {
   revenue: null, // async () => stripe summary or null
   money: null, // () => expense/income month summary
   engine: null, // async () => live TikTok Engine config text or null
+  trends: null, // async () => trending hashtags text or null
 };
 export function wireFeeds(f) {
   feeds = { ...feeds, ...f };
@@ -473,7 +474,8 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "discord": "the daily update, exactly in the template"
 }
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
-When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.`;
+When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
+DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative" carousel, built from the current data and TIKTOK TRENDS when available. Fold at most one genuinely fitting trend tag into the 4 hashtags, never force one. The daily creative counts as something worth sending, so the discord update goes out with it.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -524,6 +526,19 @@ export async function runCycle(trigger = "schedule") {
     } catch {
       engine = null;
     }
+    let trends = null;
+    try {
+      trends = feeds.trends ? await feeds.trends() : null;
+    } catch {
+      trends = null;
+    }
+    const today = etDayKey();
+    const creativeToday = state.proposals.some(
+      (p) =>
+        p.kind === "creative" &&
+        (p.status === "pending" ||
+          new Date(p.createdAt).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === today)
+    );
     const pending = state.proposals.filter((p) => p.status === "pending");
     const nextNumber =
       state.proposals.reduce((a, p) => Math.max(a, p.number || 0), 0) + 1;
@@ -546,6 +561,8 @@ export async function runCycle(trigger = "schedule") {
       }`,
       `EXPENSES this month (manual ledger): ${money ? JSON.stringify(money) : "none logged"}`,
       `TIKTOK ENGINE (live config): ${engine ? engine.slice(0, 3200) : "Make read key not set, see brain [[TikTok-Engine]] for the design"}`,
+      `TIKTOK TRENDS: ${trends ? trends.slice(0, 1200) : "feed unavailable today, use your own judgment on tags"}`,
+      `CREATIVE FILED TODAY: ${creativeToday ? "yes" : "no"}`,
       `AUDIT (worst first): ${JSON.stringify(
         audit
           .slice()

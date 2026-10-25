@@ -1387,6 +1387,60 @@ async function readEngine() {
   }
 }
 
+// ----- TikTok trending hashtags (Creative Center, best effort) --------------
+let trendsCache = { at: 0, text: null };
+async function readTrends() {
+  if (trendsCache.text && Date.now() - trendsCache.at < 6 * 3600 * 1000) {
+    return trendsCache.text;
+  }
+  const headers = {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+    referer:
+      "https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en",
+    accept: "application/json",
+    lang: "en",
+  };
+  for (const period of [7, 30]) {
+    try {
+      const r = await fetch(
+        `https://ads.tiktok.com/creative_radar_api/v1/popular_trend/hashtag/list?page=1&limit=20&period=${period}&country_code=US&sort_by=popular`,
+        { headers }
+      );
+      if (!r.ok) continue;
+      const j = await r.json();
+      const list = j?.data?.list;
+      if (!Array.isArray(list) || !list.length) continue;
+      const lines = list
+        .slice(0, 20)
+        .map((h, i) => {
+          const name = h.hashtag_name || h.hashtagName || h.name;
+          if (!name) return null;
+          const posts = h.publish_cnt || h.publishCnt || h.video_views || "";
+          return `${i + 1}. #${name}${posts ? ` (${posts} posts)` : ""}`;
+        })
+        .filter(Boolean);
+      if (!lines.length) continue;
+      trendsCache = {
+        at: Date.now(),
+        text: `US TikTok trending hashtags, last ${period} days:\n${lines.join("\n")}`,
+      };
+      try {
+        fs.writeFileSync(
+          path.join(brainDirPath(), "TikTok-Trends.md"),
+          `# TikTok-Trends\n\nAuto refreshed from TikTok Creative Center, best effort. Pair one trend with niche tags only when it genuinely fits the post.\n\n${trendsCache.text}\n`
+        );
+      } catch {
+        // vault write best effort
+      }
+      return trendsCache.text;
+    } catch {
+      // try next period or give up
+    }
+  }
+  return trendsCache.text;
+}
+
 // hand the agent the same data the admin sees, business wide, read only
 wireFeeds({
   stats: () => loadStats(),
@@ -1422,6 +1476,7 @@ wireFeeds({
     return { month: key, income: Math.round(income * 100) / 100, expense: Math.round(expense * 100) / 100 };
   },
   engine: readEngine,
+  trends: readTrends,
 });
 // ----- brain sync: push the vaults to a git repo so Obsidian stays live ----
 // Set BRAIN_SYNC=1 and point AGENT_BRAIN_DIR / CEO_BRAIN_DIR inside a cloned
