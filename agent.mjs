@@ -264,6 +264,11 @@ async function discordFetchNew() {
 // ---------------------------------------------------------------------------
 // data feeds (injected from server.mjs so the agent sees what the admin sees)
 // ---------------------------------------------------------------------------
+let hooks = { onFiled: null, ownerDecision: null };
+export function wireHooks(h) {
+  hooks = { ...hooks, ...h };
+}
+
 let feeds = {
   stats: () => null, // () => parsed studio-stats.json
   uptime: () => null, // () => uptime summary
@@ -382,9 +387,9 @@ Daily update template, follow it exactly, max 16 lines total:
 - {max 2 bullets, each under 12 words, data backed}
 **ON IT**
 - {max 2 bullets, each under 10 words}
-**YOUR CALL**
-#{n} {page}: {summary under 10 words} · say approve {n} or reject {n}
-(omit YOUR CALL entirely when there is nothing new to decide; omit LEARNED when data is flat and say so in one PULSE word)
+**FILED**
+#{n} {page}: {summary under 10 words} · with Regent
+(omit FILED entirely when there are no new proposals; omit LEARNED when data is flat and say so in one PULSE word. You never ask for approvals yourself; Regent, the CEO agent, reviews your filings and takes them to the owner.)
 
 Replies in chat: start with **CORVID //** then 1 to 3 short lines. No greetings, no filler, no restating his message.`;
 
@@ -395,7 +400,7 @@ CURRENT: {exact current text, or "none"}
 NEW: {exact final text, ready to paste}
 GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
 
-kinds: "title" and "meta" (site tag rewrites; green light means the owner pastes NEW into the file), "content" (page copy), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Corvid renders the slides through Bloom, which spends Bloom credits, and posts the package to this channel for the owner to post manually).`;
+kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (an edit to the TikTok Engine prompt or briefs in Make; CURRENT and NEW are the exact prompt text; green light means the owner pastes NEW into Make), "campaign" (a plan), "creative" (a new TikTok carousel; ALSO include "slides": ["one image prompt per slide, single line, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"], "caption": "keyword first line, 2-3 short lines, Link in bio plus destination, exactly 4 hashtags", "brand": "korvus" or "default"; green light means Regent renders the slides through Bloom, which spends Bloom credits, and posts the package for the owner to post manually).`;
 
 const CYCLE_SYSTEM = `${IDENTITY}
 
@@ -429,7 +434,7 @@ Respond with ONLY one JSON object:
  "new_tasks": [{"title":"max 7 words"}],
  "focus": "max 8 words, or the same"
 }
-On approving a title or meta: put the exact final NEW text in the reply. On approving a creative: say it is rendering via Bloom and the package lands here. On a change request: acknowledge in one line; the reworked version comes in the next cycle.`;
+If he makes a decision, acknowledge in one line that it goes to Regent, who executes and confirms; never state the change as done yourself. On a change request: acknowledge in one line; the reworked version comes in the next cycle.`;
 
 // ---------------------------------------------------------------------------
 // the daily cycle
@@ -542,6 +547,10 @@ export async function runCycle(trigger = "schedule") {
       });
     }
     state.proposals = state.proposals.slice(-60);
+    const filedNow = state.proposals.filter((p) => p.number >= nextNumber);
+    if (filedNow.length && hooks.onFiled) {
+      hooks.onFiled(filedNow).catch((e) => log("error", `Regent intake failed: ${e.message || e}`));
+    }
 
     // daily note in the vault
     const note = [
@@ -657,10 +666,18 @@ export function decideProposal(id, action, note = "", via = "admin") {
   );
   log("decision", `#${p.number} ${p.status}${p.note ? `: ${p.note}` : ""}`);
   saveState();
-  if (p.status === "approved" && p.kind === "creative") {
-    executeCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
-  }
   return p;
+}
+export function findProposal(id) {
+  return (
+    state.proposals.find((x) => x.id === id || String(x.number) === String(id)) || null
+  );
+}
+export async function renderCreative(p) {
+  return executeCreative(p);
+}
+export function agentLog(kind, text) {
+  log(kind, text);
 }
 export function retryCreative(id) {
   const p = state.proposals.find((x) => x.id === id || String(x.number) === String(id));
@@ -686,7 +703,8 @@ async function reactToMessages(msgs) {
     ].join("\n\n");
     const out = await think(REACT_SYSTEM, user, 1600);
     for (const d of Array.isArray(out.decisions) ? out.decisions : []) {
-      decideProposal(d.id, d.action, d.note, "discord");
+      if (hooks.ownerDecision) await hooks.ownerDecision(d.id, d.action, d.note, "discord");
+      else decideProposal(d.id, d.action, d.note, "discord");
     }
     for (const t of Array.isArray(out.new_tasks) ? out.new_tasks.slice(0, 5) : []) {
       if (t.title)

@@ -11,3 +11,6 @@ studio-money.json
 studio-seo.json
 studio-agent.json
 brain/
+studio-ceo.json
+brain-ceo/
+*.bak-*

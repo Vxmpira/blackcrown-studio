@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Sidebar, type TabId } from "./components/Sidebar";
 import { Seo } from "./views/Seo";
+import { Ceo } from "./views/Ceo";
 import { Command } from "./views/Command";
 import { Stats } from "./views/Stats";
 import { Settings } from "./views/Settings";
@@ -42,6 +43,7 @@ export const App: React.FC = () => {
       <main className="main">
         {tab === "dashboard" ? <Dashboard /> : null}
         {tab === "seo" ? <Seo /> : null}
+        {tab === "ceo" ? <Ceo /> : null}
         {tab === "command" ? <Command /> : null}
         {tab === "stats" ? <Stats /> : null}
         {tab === "settings" ? <Settings /> : null}

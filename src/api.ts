@@ -423,6 +423,58 @@ export async function getBrainFile(name: string): Promise<string> {
 }
 export const brainDownloadUrl = `${BASE}/api/agent/brain.tgz`;
 
+// ----- regent (ceo) ---------------------------------------------------------
+export type CeoExec = { number: number; summary: string; at: number; ok: boolean; result: string };
+export type CeoState = {
+  name: string;
+  enabled: boolean;
+  status: string;
+  model: string;
+  channel: "own" | "shared" | "none";
+  asks: { id: string; number: number; page: string; kind: string; summary: string; detail: string; status: string }[];
+  executed: CeoExec[];
+  log: AgentLogItem[];
+};
+export async function getCeo(): Promise<CeoState | null> {
+  try {
+    const r = await fetch(`${BASE}/api/ceo`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+export async function ceoEnabled(on: boolean): Promise<void> {
+  await fetch(`${BASE}/api/ceo/enabled`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on }),
+  });
+}
+export async function getCeoBrainList(): Promise<BrainFileMeta[]> {
+  try {
+    const r = await fetch(`${BASE}/api/ceo/brain`);
+    if (!r.ok) return [];
+    return (await r.json()).files || [];
+  } catch {
+    return [];
+  }
+}
+export async function getCeoBrainFile(name: string): Promise<string> {
+  const r = await fetch(`${BASE}/api/ceo/brain/file?name=${encodeURIComponent(name)}`);
+  if (!r.ok) return "";
+  return (await r.json()).body || "";
+}
+export async function ceoBrainSaveFile(name: string, body: string): Promise<void> {
+  const r = await fetch(`${BASE}/api/ceo/brain/file`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, body }),
+  });
+  if (!r.ok) throw new Error("Save failed");
+}
+export const ceoBrainDownloadUrl = `${BASE}/api/ceo/brain.tgz`;
+
 // ----- auth -----------------------------------------------------------------
 export type Me = { authed: boolean; user: string | null; setup: boolean };
 

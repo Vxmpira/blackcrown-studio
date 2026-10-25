@@ -26,7 +26,20 @@ import {
   brainFile,
   brainSave,
   brainDirPath,
+  wireHooks,
 } from "./agent.mjs";
+import {
+  startCeo,
+  wireCeo,
+  receiveProposals,
+  ownerDecision,
+  ceoState,
+  ceoSetEnabled,
+  ceoBrainList,
+  ceoBrainFile,
+  ceoBrainSave,
+  ceoVaultPath,
+} from "./ceo.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1242,8 +1255,8 @@ app.post("/api/agent/test", async (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/agent/proposal/:id", (req, res) => {
-  const p = decideProposal(
+app.post("/api/agent/proposal/:id", async (req, res) => {
+  const p = await ownerDecision(
     req.params.id,
     String(req.body?.action || ""),
     String(req.body?.note || ""),
@@ -1251,6 +1264,31 @@ app.post("/api/agent/proposal/:id", (req, res) => {
   );
   if (!p) return res.status(400).json({ error: "unknown proposal or action" });
   res.json({ proposal: p });
+});
+
+// ----- Regent, the CEO agent -----------------------------------------------
+app.get("/api/ceo", (_req, res) => res.json(ceoState()));
+app.post("/api/ceo/enabled", (req, res) => {
+  ceoSetEnabled(Boolean(req.body?.on));
+  res.json({ ok: true, state: ceoState() });
+});
+app.get("/api/ceo/brain", (_req, res) => res.json({ files: ceoBrainList() }));
+app.get("/api/ceo/brain/file", (req, res) => {
+  res.json(ceoBrainFile(String(req.query.name || "")));
+});
+app.post("/api/ceo/brain/file", (req, res) => {
+  const out = ceoBrainSave(String(req.body?.name || ""), String(req.body?.body || ""));
+  if (!out) return res.status(400).json({ error: "only .md files inside the vault" });
+  res.json(out);
+});
+app.get("/api/ceo/brain.tgz", (_req, res) => {
+  const dir = ceoVaultPath();
+  res.set("Content-Type", "application/gzip");
+  res.set("Content-Disposition", 'attachment; filename="regent-brain.tgz"');
+  execFileCb("tar", ["-czf", "-", "-C", dir, "."], { maxBuffer: 64 * 1024 * 1024, encoding: "buffer" }, (err, stdout) => {
+    if (err) return res.status(500).end();
+    res.end(stdout);
+  });
 });
 
 app.get("/api/agent/brain", (_req, res) => {
@@ -1385,7 +1423,10 @@ wireFeeds({
   },
   engine: readEngine,
 });
+wireCeo({ siteRoot: SITE_ROOT, audit: () => doAudit().pages });
+wireHooks({ onFiled: receiveProposals, ownerDecision });
 startAgent();
+startCeo();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
