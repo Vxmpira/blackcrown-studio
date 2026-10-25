@@ -574,7 +574,7 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "focus": "max 8 words",
  "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
- "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video: shots, motion, on-screen text, 10 to 15 seconds vertical","slides":["..."],"caption":"...","brand":"korvus"}],
  "brain_notes": [{"name":"Keywords.md","body":"full markdown content"}],
  "delegations": [{"minion":"scout|scribe|analyst","task":"one focused job","context":"what it needs to know"}],
  "discord": "the daily update, exactly in the template"
@@ -586,7 +586,7 @@ STRATEGY EVOLUTION: when the data says your Strategy itself should change, file 
 MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per cycle) for jobs a specialist does better: scout for research questions, scribe for finished copy, analyst for digging into the numbers. Their reports land in the vault Minions folder and come back to you next cycle.
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
-DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative" carousel, built from the current data and TIKTOK TRENDS when available. Fold at most one genuinely fitting trend tag into the 4 hashtags, never force one. The daily creative counts as something worth sending, so the discord update goes out with it.`;
+DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative", built from the current data and TIKTOK TRENDS when available. Prefer "format":"video" (one vertical clip with a video direction in "video") over "slides"; stills are the fallback. Every creative MUST declare "target": the ONE destination this post sells, brand (blackcrownvxj.com), korvus (korvus.industries), crown (blackcrown-intelligence.com), eclipse (the free Discord), or lodestone (the indicator). On render, Herald the sales agent finalizes the caption and hashtags for that target, so focus your energy on the visual concept. The daily creative counts as something worth sending, so the discord update goes out with it.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -734,6 +734,9 @@ export async function runCycle(trigger = "schedule") {
           : undefined,
         caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
         brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
+        target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
+        format: p.format === "video" ? "video" : undefined,
+        video: p.video ? String(p.video).slice(0, 1200) : undefined,
         status: "pending",
         createdAt: Date.now(),
       });
@@ -812,6 +815,31 @@ async function executeCreative(p) {
     );
     return;
   }
+  // sales pass: Herald finalizes the caption and hashtags for the post's target
+  if (hooks.copyPass) {
+    try {
+      const polished = await hooks.copyPass({
+        target: p.target || (p.brand === "korvus" ? "korvus" : "brand"),
+        format: p.format === "video" ? "video" : "slides",
+        caption: p.caption || "",
+        slides: Array.isArray(p.slides) ? p.slides : [],
+      });
+      if (polished && polished.caption) {
+        let cap = String(polished.caption).slice(0, 600);
+        if (Array.isArray(polished.hashtags) && polished.hashtags.length) {
+          cap += "\n" + polished.hashtags.slice(0, 5).map((h) => "#" + String(h).replace(/^#+/, "").replace(/\s+/g, "")).join(" ");
+        }
+        p.caption = cap;
+        saveState();
+        log("render", `#${p.number} caption and tags finalized by Herald for target ${p.target || "korvus"}`);
+      }
+    } catch (e) {
+      log("error", `Herald copy pass failed, shipping the draft caption: ${e.message || e}`);
+    }
+  }
+  if (p.format === "video") {
+    return executeVideo(p);
+  }
   const slides = Array.isArray(p.slides) ? p.slides : [];
   if (!slides.length) {
     log("error", `#${p.number} has no slide prompts to render`);
@@ -862,6 +890,90 @@ async function executeCreative(p) {
   ];
   await discordSend(lines.join("\n"));
   log("render", `#${p.number} delivered ${good.length}/${slides.length} slides`);
+}
+
+// video track: Bloom's generations API. Model discovered once from the
+// catalog (Seedance preferred), overridable with BLOOM_VIDEO_MODEL in .env.
+let videoModelCache = { at: 0, id: null };
+async function bloomVideoModel() {
+  const forced = (process.env.BLOOM_VIDEO_MODEL || "").trim();
+  if (forced) return forced;
+  if (videoModelCache.id && Date.now() - videoModelCache.at < 12 * 3600 * 1000) return videoModelCache.id;
+  const r = await fetch("https://www.trybloom.ai/api/v1/models?type=video&limit=20", {
+    headers: { "x-api-key": BLOOM_KEY },
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j?.error?.message || `model catalog refused (${r.status})`);
+  const models = (j?.data?.models || []).filter((m) => (m.capabilities || []).includes("text-to-video"));
+  const pick = models.find((m) => /seedance/i.test(m.id)) || models[0];
+  if (!pick) throw new Error("no text-to-video model available on this Bloom plan");
+  videoModelCache = { at: Date.now(), id: pick.id };
+  return pick.id;
+}
+
+async function executeVideo(p) {
+  const prompt = [p.video || "", ...(Array.isArray(p.slides) ? p.slides : [])]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 2400);
+  if (!prompt) {
+    log("error", `#${p.number} has no video direction to render`);
+    return;
+  }
+  const brandSessionId = BLOOM_BRANDS[p.brand === "korvus" ? "korvus" : "default"];
+  log("render", `#${p.number} rendering a video via Bloom, this takes minutes`);
+  try {
+    const model = await bloomVideoModel();
+    const start = (input) =>
+      fetch("https://www.trybloom.ai/api/v1/generations", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": BLOOM_KEY },
+        body: JSON.stringify({ brandSessionId, model, input }),
+      });
+    let r = await start({ prompt, aspect_ratio: "9:16" });
+    let j = await r.json();
+    if (r.status === 400) {
+      // model schema may not take aspect_ratio; retry with the prompt alone
+      r = await start({ prompt });
+      j = await r.json();
+    }
+    const genId = j?.data?.id;
+    if (!r.ok || !genId) throw new Error(j?.error?.message || `video generation refused (${r.status})`);
+    let final = null;
+    for (let i = 0; i < 6; i++) {
+      const g = await fetch(`https://www.trybloom.ai/api/v1/generations/${genId}?wait=true&timeout=120`, {
+        headers: { "x-api-key": BLOOM_KEY },
+      });
+      const gj = await g.json();
+      const st = gj?.data?.status;
+      if (st === "completed") {
+        final = gj.data;
+        break;
+      }
+      if (st === "failed") {
+        throw new Error(gj?.data?.failure?.message || "video generation failed");
+      }
+    }
+    const url = final?.outputs?.find((o) => o.available && o.url)?.url;
+    if (!url) throw new Error("video did not finish within 12 minutes, check Bloom and tell me to retry");
+    p.rendered = [url];
+    saveState();
+    const lines = [
+      `**CORVID // DELIVERY** · #${p.number} ${p.page}`,
+      `Video ready${p.target ? `, selling ${p.target}` : ""}:`,
+      url,
+      ``,
+      `**CAPTION**`,
+      p.caption || "(no caption stored)",
+      ``,
+      `Post manually. Video by Bloom.`,
+    ];
+    await discordSend(lines.join("\n"));
+    log("render", `#${p.number} video delivered`);
+  } catch (e) {
+    log("error", `#${p.number} video render failed: ${e.message || e}`);
+    await discordSend(`**CORVID //** #${p.number} video render failed: ${String(e.message || e).slice(0, 240)}. Say retry ${p.number} to run it again.`);
+  }
 }
 
 export function decideProposal(id, action, note = "", via = "admin") {
@@ -1046,6 +1158,9 @@ export function fileProposals(list, author = "staff") {
       slides: Array.isArray(p.slides) ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480)) : undefined,
       caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
       brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
+      target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
+      format: p.format === "video" ? "video" : undefined,
+      video: p.video ? String(p.video).slice(0, 1200) : undefined,
       status: "pending",
       createdAt: Date.now(),
     };

@@ -73,7 +73,7 @@ const ProposalCard: React.FC<{
           <pre className="prop-detail">{p.detail}</pre>
           {p.kind === "creative" ? (
             <div className="prop-meta" style={{ color: "#f2c94c" }}>
-              Green light renders {p.slides?.length || 0} slides via Bloom (spends credits) and posts the package to Discord.
+              Green light renders this creative via Bloom (spends credits), Herald finalizes the caption for its target, and the package posts to Discord.
             </div>
           ) : null}
           {p.status === "pending" ? (

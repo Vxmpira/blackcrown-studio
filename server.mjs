@@ -41,7 +41,7 @@ import {
   ceoVaultPath,
   REPO_ROOTS,
 } from "./ceo.mjs";
-import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask } from "./staff.mjs";
+import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass } from "./staff.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1704,7 +1704,12 @@ wireStaff({
 });
 
 wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages });
-wireHooks({ onFiled: receiveProposals, ownerDecision });
+wireHooks({
+  onFiled: receiveProposals,
+  ownerDecision,
+  // every approved creative passes through the sales desk before it ships
+  copyPass: async (input) => heraldCopyPass({ ...input, trends: await readTrends().catch(() => null) }),
+});
 startAgent();
 startCeo();
 startStaff();

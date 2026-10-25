@@ -273,7 +273,7 @@ const CYCLE_SCHEMA = `Output STRICT JSON only:
  "message": "the Discord report in your template, or empty string when nothing is worth saying",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "brain_notes": [{"name":"Projects.md","body":"full markdown content"}],
- "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video","slides":["..."],"caption":"...","brand":"korvus"}],
  "delegations": [{"minion":"...","task":"one focused job","context":"what it needs"}],
  "assignments": [{"to":"corvid|herald","task":"max 12 words"}],
  "community_post": "a post for the Eclipse-X community channel, or empty string"
@@ -468,6 +468,28 @@ export function staffRunCycle(key) {
   if (!ROLES[key]) return Promise.resolve({ ok: false, error: "no such agent" });
   return runStaffCycle(key, "owner pressed Run cycle now");
 }
+// Herald's copy pass: called by the render pipeline before any creative
+// ships, so every caption and tag set is tuned to the one destination the
+// post is selling. Returns {caption, hashtags} or null to keep the draft.
+const TARGET_CTA = {
+  brand: "blackcrownvxj.com",
+  korvus: "korvus.industries, start with the free Observer account",
+  crown: "blackcrown-intelligence.com",
+  eclipse: "the free Eclipse-X Discord, link in bio",
+  lodestone: "the LodeStone indicator, included with Korvus Operator at korvus.industries",
+};
+export async function heraldCopyPass(input) {
+  const target = TARGET_CTA[input.target] ? input.target : "korvus";
+  const sys = ROLES.herald.system + '\n\nOutput STRICT JSON only: {"caption":"...","hashtags":["","","",""]}. Caption rules: under 140 characters, hook first, one clear call to action pointing at ' + TARGET_CTA[target] + ', no emoji, no double quotes inside the caption, never an em dash. Exactly 4 hashtags, lowercase, no spaces: one broad, two niche futures or trading tags, one brand tag. Fold in at most one provided trend tag and only when it truly fits.';
+  const user = "Finalize the caption and hashtags for a TikTok " + (input.format || "post") + " selling " + target + ".\nDRAFT CAPTION: " + (input.caption || "(none)") + "\nVISUAL OR SCRIPT:\n" + (Array.isArray(input.slides) ? input.slides.join("\n") : "").slice(0, 1200) + "\nTIKTOK TRENDS:\n" + String(input.trends || "none available").slice(0, 700);
+  const out = await think(sys, user, 500);
+  if (out && out.caption) {
+    log("herald", "copy", "finalized caption for a " + (input.format || "post") + " selling " + target);
+    return out;
+  }
+  return null;
+}
+
 export function staffAddTask(key, title) {
   if (!state[key]) return null;
   const t = { id: crypto.randomBytes(4).toString("hex"), title: String(title || "").slice(0, 120), status: "open" };
