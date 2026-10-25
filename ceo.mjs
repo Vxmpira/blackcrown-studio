@@ -191,6 +191,63 @@ async function fetchNew() {
 // ---------------------------------------------------------------------------
 // thinking
 // ---------------------------------------------------------------------------
+
+// Models sometimes put literal newlines inside JSON strings. Walk the text
+// and escape control characters that appear inside string literals so
+// JSON.parse survives.
+function repairJson(text) {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (const ch of String(text)) {
+    if (esc) {
+      out += ch;
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      esc = inStr;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      out += ch;
+      continue;
+    }
+    if (inStr && ch === "\n") {
+      out += "\\n";
+      continue;
+    }
+    if (inStr && ch === "\r") continue;
+    if (inStr && ch === "\t") {
+      out += "\\t";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function parseModelJson(text) {
+  const tries = [];
+  tries.push(text);
+  tries.push(repairJson(text));
+  const m = text.match(/\{[\s\S]*\}/);
+  if (m) {
+    tries.push(m[0]);
+    tries.push(repairJson(m[0]));
+  }
+  for (const t of tries) {
+    try {
+      return JSON.parse(t);
+    } catch {
+      // next
+    }
+  }
+  throw new Error("agent returned no parseable JSON");
+}
+
 async function think(system, user, maxTokens = 1400) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing");
@@ -219,13 +276,7 @@ async function think(system, user, maxTokens = 1400) {
     .replace(/```$/i, "")
     .trim()
     .replace(/\u2014|\u2013/g, ", ");
-  try {
-    return JSON.parse(text);
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("no JSON from Regent");
-    return JSON.parse(m[0]);
-  }
+  return parseModelJson(text);
 }
 
 const IDENTITY = `You are ${CEO_NAME}, the chief executive agent of BlackCrownVxJ LLC. The owner is Vxmpira.N. Corvid, the SEO agent, files proposals with you; you review them against the Charter, veto what wastes the owner's time or money, take the rest to him on Discord, and once he green lights, you execute and confirm. You never execute without his word. You are direct, brief, and final. Never use em dashes or en dashes. He reads on his phone.`;
@@ -234,14 +285,14 @@ const REVIEW_SYSTEM = `${IDENTITY}
 
 Review each filed proposal. Veto anything off brand, not data backed, duplicate, or spend without a reason. Endorse the rest, amending the summary for clarity if needed.
 
-Respond ONLY with JSON:
+Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
 The owner wrote in your channel. He may approve or reject asks by number, ask about an execution, or give a directive. Only record decisions he clearly made.
 
-Respond ONLY with JSON:
+Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"reply":"**REGENT //** then 1-3 short lines","decisions":[{"id":"proposal id","action":"approve|reject","note":"short"}]}
 On approve say you are executing now and will confirm. Never claim a change is done before executing.`;
 

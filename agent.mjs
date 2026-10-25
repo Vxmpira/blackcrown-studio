@@ -326,6 +326,63 @@ function aggregates() {
 // ---------------------------------------------------------------------------
 // anthropic
 // ---------------------------------------------------------------------------
+
+// Models sometimes put literal newlines inside JSON strings. Walk the text
+// and escape control characters that appear inside string literals so
+// JSON.parse survives.
+function repairJson(text) {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (const ch of String(text)) {
+    if (esc) {
+      out += ch;
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      esc = inStr;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      out += ch;
+      continue;
+    }
+    if (inStr && ch === "\n") {
+      out += "\\n";
+      continue;
+    }
+    if (inStr && ch === "\r") continue;
+    if (inStr && ch === "\t") {
+      out += "\\t";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function parseModelJson(text) {
+  const tries = [];
+  tries.push(text);
+  tries.push(repairJson(text));
+  const m = text.match(/\{[\s\S]*\}/);
+  if (m) {
+    tries.push(m[0]);
+    tries.push(repairJson(m[0]));
+  }
+  for (const t of tries) {
+    try {
+      return JSON.parse(t);
+    } catch {
+      // next
+    }
+  }
+  throw new Error("agent returned no parseable JSON");
+}
+
 async function think(system, user, maxTokens = 2000) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
@@ -357,13 +414,7 @@ async function think(system, user, maxTokens = 2000) {
     .replace(/```$/i, "")
     .trim()
     .replace(/\u2014|\u2013/g, ", ");
-  try {
-    return JSON.parse(text);
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("agent returned no JSON");
-    return JSON.parse(m[0]);
-  }
+  return parseModelJson(text);
 }
 
 const IDENTITY = `You are ${AGENT_NAME}, the autonomous SEO and growth agent of BlackCrownVxJ LLC. You run every day on the company server. Your owner is Vxmpira.N; you report to him in a private Discord channel and in the admin panel.
@@ -410,7 +461,7 @@ ${PROPOSAL_RULES}
 
 Daily cycle. You get: the week's analytics, Stripe revenue, the expense ledger, the site audit, uptime, the TikTok Engine config, your brain, open tasks, pending proposals.
 
-Respond with ONLY one JSON object, no fences:
+Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside every string value write line breaks as \\n, never as a real newline.
 {
  "thought": "max 2 sentences",
  "focus": "max 8 words",
@@ -427,7 +478,7 @@ ${FORMAT_RULES}
 
 The owner wrote in the channel. He may approve or reject by number, ask for a change, ask a question, or hand you a task. Only record decisions he clearly made.
 
-Respond with ONLY one JSON object:
+Respond with ONLY one JSON object that passes JSON.parse (line breaks inside strings written as \\n):
 {
  "reply": "**CORVID //** then 1-3 short lines",
  "decisions": [{"id":"proposal id","action":"approve|reject|change","note":"his words, short"}],
