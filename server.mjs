@@ -1178,7 +1178,7 @@ app.post("/api/seo/review", async (req, res) => {
       .map((b) => b.text)
       .join("\n")
       .trim()
-      .replace(/\s*[—–]\s*/g, ", ");
+      .replace(/\s*[\u2014\u2013]\s*/g, ", ");
     seo.reviews = seo.reviews || {};
     seo.reviews[file] = { at: Date.now(), text: review };
     saveSeo(seo);
