@@ -564,8 +564,8 @@ async function executeSiteEdit(p) {
     if (curNF !== "(new file)" || !body.trim()) {
       return { ok: false, msg: `${file} not found in ${rootDir}. To create a brand new page, set CURRENT to exactly (new file) and NEW to the complete document` };
     }
-    if (rootKey === "korvus") {
-      return { ok: false, msg: "new korvus pages need a server route before they serve; ask the owner to route it first, then file again" };
+    if (rootKey === "korvus" && !/^pages\/[a-z0-9][a-z0-9-]{0,60}\.html$/.test(file)) {
+      return { ok: false, msg: "new korvus pages only serve from the pages folder: use page korvus:pages/<name>.html (lowercase, digits, hyphens) and it goes live at /p/<name>" };
     }
     if (!/^[\w][\w./-]*$/.test(file) || file.includes("..")) {
       return { ok: false, msg: "refusing that path for a new file" };
