@@ -589,7 +589,7 @@ export function institutionBlock() {
       instCache = {
         at: Date.now(),
         text: body.trim()
-          ? "\n\nINSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 7000)
+          ? "\n\nINSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 9500)
           : "",
       };
     } catch {

@@ -43,3 +43,6 @@ Wings: Entrance Hall (welcome, lounges, off topic), Server Information (verify, 
 
 ## Contact and support
 Business contact: BlackCrownVxJ.LLC@outlook.com. The brand site's support form sends through the company's own AWS SES relay, chosen over third party form services to keep the privacy promise. Unknown first calls to the business line are screened; email is the channel.
+
+## Company goals and history
+Korvus is income source number one, Crown is number two; both are pre profit and media advertising is the chosen growth engine. Standing quotas the owner set for Herald, no deadline, Herald invents the ways: 50 korvus.industries signups and 100 new Eclipse-X Discord joins. The owner's stated end state: the whole BlackCrown brand running automatically on these desks, work delegated instead of piled up, him ruling on asks from his phone. Creative direction that lands for Korvus: the all seeing watcher angle, 24/7 surveillance of the market while the trader sleeps; anime audio tie ins (an omniscient perception line) have been used on TikTok and fit the brand. Every approval must state exactly what it triggers; manual TikTok posting is the owner's deliberate choice, not a gap.
