@@ -2096,6 +2096,12 @@ async function publishPost({ platform, content, media, number, summary }) {
   if (platform === "youtube" && !media) {
     return { ok: false, msg: "youtube posts need MEDIA carrying the video url" };
   }
+  if (media && !/^https?:\/\/\S+$/i.test(String(media))) {
+    return {
+      ok: false,
+      msg: `MEDIA must be the full https link to the rendered file, not "${String(media).slice(0, 40)}". Refile with the exact video url from the render delivery`,
+    };
+  }
   if (!PUBLISH_WEBHOOK) {
     return {
       ok: false,
