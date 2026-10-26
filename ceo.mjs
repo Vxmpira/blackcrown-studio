@@ -554,13 +554,30 @@ async function executeSiteEdit(p) {
   const loc = resolveSiteFile(p.page);
   if (loc.err) return { ok: false, msg: loc.err };
   const { rootKey, file, rootDir, full } = loc;
+  // fresh eyes first: fleet clones go stale whenever work ships from elsewhere
+  try {
+    const { execFileSync } = await import("child_process");
+    execFileSync("git", ["-C", rootDir, "pull", "--rebase", "--autostash", "origin", "main"], { timeout: 20000 });
+  } catch {}
   let html;
   let creating = false;
   try {
     html = fs.readFileSync(full, "utf8");
   } catch {
     const curNF = String(section(p.detail, "CURRENT") || "").trim().toLowerCase();
-    const body = String(section(p.detail, "NEW") || "");
+    let body = String(section(p.detail, "NEW") || "");
+    const fromNote = body.trim().match(/^FROM NOTE:\s*(.+)$/i);
+    if (fromNote) {
+      try {
+        body = String((brainFile(fromNote[1].trim()) || {}).body || "");
+      } catch {
+        body = "";
+      }
+      if (!body.trim()) {
+        return { ok: false, msg: `vault note ${fromNote[1].trim()} is empty or missing; have the minion write the full page there first` };
+      }
+      body = body.replace(/^```(html)?\s*/i, "").replace(/```\s*$/i, "");
+    }
     if (curNF !== "(new file)" || !body.trim()) {
       return { ok: false, msg: `${file} not found in ${rootDir}. To create a brand new page, set CURRENT to exactly (new file) and NEW to the complete document` };
     }
