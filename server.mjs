@@ -2080,6 +2080,7 @@ if (startGateway()) registerSlash();
 // the publisher: an approved post is handed to the owner's Make webhook,
 // where the owner's own platform connections (TikTok, X, wherever) post it
 const PUBLISH_WEBHOOK = (process.env.MAKE_PUBLISH_WEBHOOK || "").trim();
+const PUBLISH_SECRET = (process.env.PUBLISH_SECRET || "").trim();
 const PUBLISH_PLATFORMS = (process.env.PUBLISH_PLATFORMS || "youtube")
   .toLowerCase()
   .split(",")
@@ -2106,6 +2107,7 @@ async function publishPost({ platform, content, media, number, summary }) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        secret: PUBLISH_SECRET,
         platform,
         title: String(summary || "BlackCrown").replace(/[<>]/g, "").slice(0, 98),
         content: String(content).replace(/[<>]/g, ""),
