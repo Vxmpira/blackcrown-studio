@@ -695,7 +695,14 @@ async function executeSiteEdit(p) {
       execFileSync("git", ["-C", rootDir, "push", "origin", "main"], { timeout: 30000 });
       sync = "repo committed and pushed";
     } catch {
-      sync = "committed locally, push needs repo credentials";
+      // remote moved ahead or the wire blinked: pull its work under ours, push again
+      try {
+        execFileSync("git", ["-C", rootDir, "pull", "--rebase", "--autostash", "origin", "main"], { timeout: 30000 });
+        execFileSync("git", ["-C", rootDir, "push", "origin", "main"], { timeout: 30000 });
+        sync = "repo committed and pushed, after pulling newer remote work";
+      } catch {
+        sync = "committed locally, push blocked, check the repo's deploy key or rebase by hand";
+      }
     }
   } catch {
     sync = "live only, repo not synced";
