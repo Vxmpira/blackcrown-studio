@@ -17,7 +17,10 @@ import {
   addTask,
   buildEmbeds,
   recordSpend,
+  agentState,
+  spendSummary,
 } from "./agent.mjs";
+import { staffStates } from "./staff.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -334,7 +337,8 @@ Respond ONLY with JSON that passes JSON.parse (line breaks inside strings writte
 
 const REACT_SYSTEM = `${IDENTITY}
 
-The owner wrote in your channel. He may approve or reject asks by number, ask about an execution, or give a directive. Only record decisions he clearly made.
+The owner wrote in your channel. He may approve or reject asks by number, ask about an execution, ask how the agents are doing, or give a directive. Only record decisions he clearly made.
+Answer status and progress questions from the LIVE DESK STATUS data: each desk's state, open and done task counts, current focus, and today's token spend. A rejected or closed ask is finished business, never call it active or pending. If the data does not cover what he asked, say what you do not have instead of guessing.
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"reply":"**REGENT //** then 1-3 short lines","decisions":[{"id":"proposal id","action":"approve|reject","note":"short"}]}
@@ -888,6 +892,32 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   return p;
 }
 
+function deskSnapshot() {
+  const out = {};
+  try {
+    const a = agentState();
+    out.corvid = {
+      status: a.status,
+      focus: a.currentFocus || "",
+      openTasks: (a.tasks || []).filter((x) => x.status !== "done").map((x) => x.title).slice(0, 8),
+      doneTasks: (a.tasks || []).filter((x) => x.status === "done").length,
+      pendingAsks: (a.proposals || []).filter((x) => x.status === "pending").map((x) => `#${x.number} ${x.summary}`).slice(0, 6),
+    };
+  } catch {}
+  try {
+    for (const s of staffStates()) {
+      out[s.key] = {
+        status: s.status,
+        focus: s.focus || "",
+        openTasks: (s.tasks || []).filter((x) => x.status !== "done").map((x) => x.title).slice(0, 8),
+        doneTasks: (s.tasks || []).filter((x) => x.status === "done").length,
+      };
+    }
+  } catch {}
+  try { out.spend = spendSummary(); } catch {}
+  return out;
+}
+
 async function react(msgs) {
   const text = msgs.map((m) => `${m.author?.username || "owner"}: ${m.content}`).join("\n");
   log("inbound", text.slice(0, 300));
@@ -899,7 +929,8 @@ async function react(msgs) {
     const user = [
       `Owner: ${text}`,
       `Asks waiting: ${JSON.stringify(asks)}`,
-      `Recent executions: ${JSON.stringify(state.executed.slice(0, 3))}`,
+      `Recent executions: ${JSON.stringify(state.executed.slice(0, 6))}`,
+      `LIVE DESK STATUS: ${JSON.stringify(deskSnapshot())}`,
     ].join("\n\n");
     const out = await think(REACT_SYSTEM, user, 1400);
     if (out.reply) await send(String(out.reply));
