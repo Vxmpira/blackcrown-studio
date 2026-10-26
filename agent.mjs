@@ -581,8 +581,27 @@ export function nightFactor() {
   return h >= 1 && h < 7 ? 2 : 1;
 }
 
+let instCache = { at: 0, text: "" };
+export function institutionBlock() {
+  if (Date.now() - instCache.at > 600000) {
+    try {
+      const body = brainFile("Institution.md").body || "";
+      instCache = {
+        at: Date.now(),
+        text: body.trim()
+          ? "\n\nINSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 7000)
+          : "",
+      };
+    } catch {
+      instCache = { at: Date.now(), text: "" };
+    }
+  }
+  return instCache.text;
+}
+
 async function think(system, user, maxTokens = 2000, opts = {}) {
   const mdl = opts.model || MODEL;
+  system = system + institutionBlock();
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -624,6 +643,7 @@ async function think(system, user, maxTokens = 2000, opts = {}) {
 
 export async function thinkText(system, user, maxTokens = 1400, opts = {}) {
   const mdl = opts.model || MODEL;
+  system = system + institutionBlock();
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {

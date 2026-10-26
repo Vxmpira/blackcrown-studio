@@ -7,7 +7,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, recordSpend, nightFactor } from "./agent.mjs";
+import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, recordSpend, nightFactor, institutionBlock } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -253,6 +253,7 @@ async function fetchNew(key) {
 // anthropic
 // ---------------------------------------------------------------------------
 async function callModel(system, user, maxTokens) {
+  system = system + institutionBlock();
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {

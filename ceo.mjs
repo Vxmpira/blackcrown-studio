@@ -19,6 +19,7 @@ import {
   recordSpend,
   agentState,
   spendSummary,
+  institutionBlock,
 } from "./agent.mjs";
 import { staffStates } from "./staff.mjs";
 
@@ -295,6 +296,7 @@ function parseModelJson(text) {
 }
 
 async function think(system, user, maxTokens = 1400) {
+  system = system + institutionBlock();
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing");
   const r = await fetch("https://api.anthropic.com/v1/messages", {
