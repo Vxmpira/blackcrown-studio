@@ -428,15 +428,19 @@ Output STRICT JSON only:
  "delegation": {"minion":"...","task":"one focused job","context":"..."} optional,
  "note": {"name":"X.md","body":"full markdown"} optional vault write,
  "assignment": {"to":"corvid|herald","task":"max 12 words"} optional, Steward only,
+ "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, an approval, tomorrow's data), park it that long instead of burning steps on it,
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
-Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.`;
+Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing and park it. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.`;
 
 async function staffWorkTick(key) {
   const a = state[key];
   const role = ROLES[key];
   if (!a.enabled || a.status === "thinking") return;
-  const t = a.tasks.find((x) => x.status !== "done");
+  // round robin through the queue, skipping parked tasks, oldest step first
+  const nowMs = Date.now();
+  const open = a.tasks.filter((x) => x.status !== "done" && !(x.parkUntil && x.parkUntil > nowMs));
+  const t = open.sort((x, y) => (x.lastStepAt || 0) - (y.lastStepAt || 0))[0];
   if (!t) return;
   const day = dayKey();
   if (a.workDay !== day) {
@@ -464,6 +468,12 @@ async function staffWorkTick(key) {
     const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 2000);
     if (out.thought) a.thought = String(out.thought).slice(0, 700);
     t.status = out.status === "done" ? "done" : "doing";
+    t.lastStepAt = Date.now();
+    if (out.park_hours && t.status !== "done") {
+      const h = Math.min(24, Math.max(1, Number(out.park_hours) || 1));
+      t.parkUntil = Date.now() + h * 3600000;
+      log(key, "work", `parked ${h}h: ${t.title}`);
+    }
     if (out.proposal && out.proposal.summary) {
       const filed = fileProposals([out.proposal], role.name);
       if (filed.length) log(key, "filed", `#${filed[0].number} ${filed[0].summary}`);

@@ -773,6 +773,12 @@ async function execute(p) {
     renderCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
     return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
   }
+  // anything carrying a SCHEDULE line is a server job, whatever kind label
+  // the agent chose; the shape outranks the tag
+  if (deps.createJob && /SCHEDULE:\s*(daily|weekly)/i.test(String(p.detail || ""))) {
+    const r = deps.createJob(p);
+    if (r) return r;
+  }
   // the TikTok Engine: page "make" (or make:scenarioId) edits the live
   // Make scenario's content strings, with a server-side backup first
   if (/^make(:\d+)?$/i.test(String(p.page || "").trim()) && deps.makeEdit) {

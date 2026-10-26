@@ -1203,16 +1203,21 @@ Output STRICT JSON only:
  "delegation": {"minion":"scout|scribe|analyst","task":"one focused job","context":"what it needs"} optional,
  "note": {"name":"X.md","body":"full markdown"} optional vault write,
  "blocked_on": optional proposal number this task now waits on,
+ "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, new data tomorrow), park it that long instead of burning steps on it,
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
 
 function pickOpenTask() {
-  return state.tasks.find(
-    (t) =>
-      t.status !== "done" &&
-      !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
-  );
+  const nowMs = Date.now();
+  return state.tasks
+    .filter(
+      (t) =>
+        t.status !== "done" &&
+        !(t.parkUntil && t.parkUntil > nowMs) &&
+        !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
+    )
+    .sort((a, b) => (a.lastStepAt || 0) - (b.lastStepAt || 0))[0];
 }
 
 async function workTick() {
@@ -1251,6 +1256,12 @@ async function workTick() {
     const out = await think(WORK_SYSTEM, user, 2400);
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";
+    t.lastStepAt = Date.now();
+    if (out.park_hours && t.status !== "done") {
+      const h = Math.min(24, Math.max(1, Number(out.park_hours) || 1));
+      t.parkUntil = Date.now() + h * 3600000;
+      log("work", `parked ${h}h: ${t.title}`);
+    }
     if (out.proposal && out.proposal.summary) {
       const filed = fileProposals([out.proposal], AGENT_NAME);
       if (filed.length && t.status !== "done") t.wait = filed[0].number;
