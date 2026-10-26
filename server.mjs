@@ -2077,7 +2077,40 @@ app.post("/api/discord/expressions", async (_req, res) => {
 
 if (startGateway()) registerSlash();
 
-wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages, createJob: createJobFromProposal, makeEdit: applyMakeEdit });
+// the publisher: an approved post is handed to the owner's Make webhook,
+// where the owner's own platform connections (TikTok, X, wherever) post it
+const PUBLISH_WEBHOOK = (process.env.MAKE_PUBLISH_WEBHOOK || "").trim();
+async function publishPost({ platform, content, media, number, summary }) {
+  if (!PUBLISH_WEBHOOK) {
+    return {
+      ok: false,
+      msg: "the publisher is not wired yet: build a Make scenario starting with a Custom Webhook, route by platform to your connected accounts, and put the webhook url in .env as MAKE_PUBLISH_WEBHOOK",
+    };
+  }
+  try {
+    const r = await fetch(PUBLISH_WEBHOOK, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform, content, media: media || null, number, summary, from: "BlackCrown Regent" }),
+    });
+    if (!r.ok) return { ok: false, msg: `publisher webhook refused (${r.status}), check the Make scenario` };
+    return { ok: true, msg: `handed to the publisher for ${platform}; Make posts it through your own account connections` };
+  } catch (e) {
+    return { ok: false, msg: `publisher unreachable: ${String(e.message || e).slice(0, 120)}` };
+  }
+}
+
+wireCeo({
+  siteRoot: SITE_ROOT,
+  audit: async () => (await doAudit()).pages,
+  createJob: createJobFromProposal,
+  makeEdit: applyMakeEdit,
+  publish: publishPost,
+  staffChannels: {
+    Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
+    Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
+  },
+});
 wireHooks({
   onFiled: receiveProposals,
   ownerDecision,

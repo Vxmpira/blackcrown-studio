@@ -400,30 +400,36 @@ async function sendAskCard(p) {
     await send(content);
     return;
   }
-  try {
-    const r = await fetch(`https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bot ${BOT_TOKEN}` },
-      body: JSON.stringify({ content: "", embeds: buildEmbeds(content, 0xf2c94c, "Regent, CEO") }),
-    });
-    const j = await r.json().catch(() => null);
-    if (!r.ok || !j?.id) {
-      await send(content);
-      return;
+  // the card lands in the boardroom AND the filing desk's own channel,
+  // reactions armed in both: approve the work where you see it
+  const channels = [CEO_CHANNEL];
+  const deskCh = p.author && deps.staffChannels ? deps.staffChannels[p.author] : null;
+  if (deskCh && !channels.includes(deskCh)) channels.push(deskCh);
+  let posted = 0;
+  for (const ch of channels) {
+    try {
+      const r = await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${BOT_TOKEN}` },
+        body: JSON.stringify({ content: "", embeds: buildEmbeds(content, 0xf2c94c, "Regent, CEO") }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.id) continue;
+      posted++;
+      for (const emoji of ["✅", "❌"]) {
+        await fetch(
+          `https://discord.com/api/v10/channels/${ch}/messages/${j.id}/reactions/${encodeURIComponent(emoji)}/@me`,
+          { method: "PUT", headers: { authorization: `Bot ${BOT_TOKEN}` } }
+        ).catch(() => {});
+      }
+      state.askMsgs = (state.askMsgs || []).slice(-30);
+      state.askMsgs.push({ msgId: j.id, pid: p.id, number: p.number, ch });
+      saveState();
+    } catch (e) {
+      log("error", `ask card failed in a channel (${e.message || e})`);
     }
-    for (const emoji of ["✅", "❌"]) {
-      await fetch(
-        `https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages/${j.id}/reactions/${encodeURIComponent(emoji)}/@me`,
-        { method: "PUT", headers: { authorization: `Bot ${BOT_TOKEN}` } }
-      ).catch(() => {});
-    }
-    state.askMsgs = (state.askMsgs || []).slice(-24);
-    state.askMsgs.push({ msgId: j.id, pid: p.id, number: p.number });
-    saveState();
-  } catch (e) {
-    log("error", `ask card failed (${e.message || e}), sending plain`);
-    await send(content);
   }
+  if (!posted) await send(content);
 }
 
 async function checkAskReactions() {
@@ -440,7 +446,7 @@ async function checkAskReactions() {
     ]) {
       try {
         const r = await fetch(
-          `https://discord.com/api/v10/channels/${CEO_CHANNEL}/messages/${x.msgId}/reactions/${encodeURIComponent(emoji)}?limit=10`,
+          `https://discord.com/api/v10/channels/${x.ch || CEO_CHANNEL}/messages/${x.msgId}/reactions/${encodeURIComponent(emoji)}?limit=10`,
           { headers: { authorization: `Bot ${BOT_TOKEN}` } }
         );
         if (!r.ok) continue;
@@ -779,6 +785,25 @@ async function execute(p) {
   if (p.kind === "creative") {
     renderCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
     return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
+  }
+  // publishing to the outside web: a PLATFORM line (or kind post) hands the
+  // approved content to the owner's Make publisher webhook, which posts with
+  // the owner's own platform connections. The server never holds those keys.
+  const platformLine = (String(p.detail || "").match(/PLATFORM:\s*([a-z0-9 _-]+)/i) || [])[1];
+  if ((p.kind === "post" || platformLine) && deps.publish) {
+    const postBody = section(p.detail, "NEW");
+    if (!postBody) return { ok: false, msg: "post proposals need NEW carrying the exact final content" };
+    const media =
+      (String(p.detail).match(/MEDIA:\s*(\S+)/i) || [])[1] ||
+      (Array.isArray(p.rendered) && p.rendered[0]) ||
+      undefined;
+    return deps.publish({
+      platform: (platformLine || "unspecified").trim().toLowerCase(),
+      content: postBody,
+      media,
+      number: p.number,
+      summary: p.summary,
+    });
   }
   // anything carrying a SCHEDULE line is a server job, whatever kind label
   // the agent chose; the shape outranks the tag
