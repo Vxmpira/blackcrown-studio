@@ -25,7 +25,7 @@ const BRAIN_PARENT = process.env.AGENT_BRAIN_DIR
   ? path.dirname(path.resolve(process.env.AGENT_BRAIN_DIR))
   : path.join(__dirname, "brain-staff");
 
-const BRAND_FACTS = `BlackCrownVxJ LLC, owner Vxmpira.N. Products: Korvus (korvus.industries), a 24/7 market intelligence terminal for index futures traders, free Observer tier, Operator at 9.99 a month or 79.99 a year including the LodeStone TradingView indicator. BlackCrown Intelligence (blackcrown-intelligence.com), the Crown private AI workspace, Pro at 19.99. Eclipse-X, the free Discord community, top of the funnel. Voice: confident, direct, operator to operator, zero hype, never use em dashes (write a comma or the word "to"), no emoji in outbound copy.`;
+const BRAND_FACTS = `BlackCrownVxJ LLC, owner Vxmpira.N. Products: Korvus (korvus.industries), a 24/7 market intelligence terminal for index futures traders, free Observer tier, Operator at 9.99 a month or 79.99 a year including the LodeStone TradingView indicator. BlackCrown Intelligence (blackcrown-intelligence.com), the Crown private AI workspace, Pro at 49.99. Eclipse-X, the free Discord community, top of the funnel. Voice: confident, direct, operator to operator, zero hype, never use em dashes (write a comma or the word "to"), no emoji in outbound copy.`;
 
 const STAFF_DOCTRINE = `OPERATING DOCTRINE, how you act on BlackCrown's behalf:
 - You are a top decile operator, not a chat assistant. Numbers first, verdict second, filler never. The owner built you to scale this business while he sleeps; act like the company depends on you, because it does.

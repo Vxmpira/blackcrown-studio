@@ -10,7 +10,7 @@ Grow qualified traffic and paying customers. Primary money path: strangers find 
 One house, three edges, for independent operators (traders watching the open, solo founders shipping after hours).
 
 - **Korvus** (korvus.industries). The main revenue product. A 24/7 market intelligence terminal for index futures traders, strongest with beginners drowning in tabs. Scored news feed, futures board, cross index SMT divergence, session and macro context, assembled into a directional read. It explains why price moves. It never predicts price, never promises profit, never gives trading advice. Tiers: Observer (free), Operator (9.99 a month or 79.99 a year, includes the [[LodeStone]] TradingView indicator).
-- **Crown / BlackCrown Intelligence** (blackcrown-intelligence.com). Private AI workspace. Never trained on your data, Projects hold context, free tier with no card, Pro flat unlimited at 19.99 a month. Motto: Intelligence, Crowned. Hook: every AI tool forgets you and you do not trust it with your work.
+- **Crown / BlackCrown Intelligence** (blackcrown-intelligence.com). Private AI workspace. Never trained on your data, Projects hold context, free tier with no card, Pro flat unlimited at 49.99 a month. Motto: Intelligence, Crowned. Hook: every AI tool forgets you and you do not trust it with your work.
 - **Eclipse-X** (discord.gg/eclipse-x). The free Discord community and the top of the funnel. No gurus, no courses, no upsell, just the room. The old name The Collective is retired; never use it publicly (the analytics click key "collective" is legacy plumbing only).
 - **BlackCrown** (blackcrownvxj.com). The parent brand site. One house, three edges. Motto: a crown is not handed down, it is built.
 

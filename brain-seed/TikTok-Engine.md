@@ -12,7 +12,7 @@ The Make automation "BlackCrown | TikTok Content Engine" (scenario 5822164). Dai
 
 ## Product briefs (live copies land in [[TikTok-Engine-Live]] when the Make read key is set)
 - KORVUS: whole picture on one screen for beginner futures traders; explains why price moves; free account at korvus.industries; never predicts or promises.
-- CROWN: private AI that holds your context and is never trained on your data; free chat, no card; Pro unlimited 19.99.
+- CROWN: private AI that holds your context and is never trained on your data; free chat, no card; Pro unlimited 49.99.
 - ECLIPSE-X: building alone got slow; a room of people a step ahead; free, no upsell.
 - BLACKCROWN: house awareness, one house three edges; do not detail the AI workspace.
 
