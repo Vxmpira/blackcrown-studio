@@ -2080,7 +2080,21 @@ if (startGateway()) registerSlash();
 // the publisher: an approved post is handed to the owner's Make webhook,
 // where the owner's own platform connections (TikTok, X, wherever) post it
 const PUBLISH_WEBHOOK = (process.env.MAKE_PUBLISH_WEBHOOK || "").trim();
+const PUBLISH_PLATFORMS = (process.env.PUBLISH_PLATFORMS || "youtube")
+  .toLowerCase()
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 async function publishPost({ platform, content, media, number, summary }) {
+  if (!PUBLISH_PLATFORMS.includes(platform)) {
+    return {
+      ok: false,
+      msg: `platform "${platform}" is not wired in the publisher yet (wired: ${PUBLISH_PLATFORMS.join(", ")}). Refile for a wired platform, or wire it in Make and extend PUBLISH_PLATFORMS`,
+    };
+  }
+  if (platform === "youtube" && !media) {
+    return { ok: false, msg: "youtube posts need MEDIA carrying the video url" };
+  }
   if (!PUBLISH_WEBHOOK) {
     return {
       ok: false,
@@ -2091,7 +2105,15 @@ async function publishPost({ platform, content, media, number, summary }) {
     const r = await fetch(PUBLISH_WEBHOOK, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ platform, content, media: media || null, number, summary, from: "BlackCrown Regent" }),
+      body: JSON.stringify({
+        platform,
+        title: String(summary || "BlackCrown").replace(/[<>]/g, "").slice(0, 98),
+        content: String(content).replace(/[<>]/g, ""),
+        media: media || null,
+        number,
+        summary,
+        from: "BlackCrown Regent",
+      }),
     });
     if (!r.ok) return { ok: false, msg: `publisher webhook refused (${r.status}), check the Make scenario` };
     return { ok: true, msg: `handed to the publisher for ${platform}; Make posts it through your own account connections` };
