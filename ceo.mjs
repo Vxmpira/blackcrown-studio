@@ -16,6 +16,7 @@ import {
   brainSave,
   addTask,
   buildEmbeds,
+  recordSpend,
 } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,7 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CEO_NAME = "Regent";
 const STATE_PATH = path.join(__dirname, "studio-ceo.json");
 const VAULT = process.env.CEO_BRAIN_DIR || path.join(__dirname, "brain-ceo");
-const MODEL = process.env.CEO_MODEL || "claude-sonnet-4-6";
+const MODEL = process.env.CEO_MODEL || "claude-fable-5";
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const INITIATIVE_EVERY_H = Math.max(2, Number(process.env.CEO_CYCLE_EVERY_H || 6));
 
@@ -303,12 +304,13 @@ async function think(system, user, maxTokens = 1400) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: maxTokens,
-      system,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     }),
   });
   if (!r.ok) throw new Error(`Anthropic (${r.status})`);
   const data = await r.json();
+  recordSpend("regent", MODEL, data.usage);
   const text = (data.content || [])
     .filter((b) => b.type === "text")
     .map((b) => b.text)

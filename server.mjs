@@ -32,6 +32,8 @@ import {
   findProposal,
   bloomCredits,
   agentLog,
+  getSpend,
+  spendSummary,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
 import {
@@ -701,7 +703,7 @@ app.post("/api/generate", async (req, res) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
         max_tokens: 1500,
         system,
         messages: [
@@ -1260,7 +1262,7 @@ app.post("/api/seo/review", async (req, res) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
         max_tokens: 1200,
         system: SEO_SYSTEM,
         messages: [
@@ -1700,6 +1702,7 @@ app.post("/api/staff/:key/task", (req, res) => {
 
 const companyFeed = async (key) => {
     const lines = [];
+    try { lines.push(spendSummary()); } catch {}
     try {
       const s = loadStats();
       const dk = dayKey();
@@ -1876,6 +1879,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 app.get("/api/jobs", (_req, res) => res.json({ jobs: loadJobs() }));
+app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary() }));
 app.post("/api/jobs/:id/run", async (req, res) => {
   const job = loadJobs().find((x) => x.id === req.params.id);
   if (!job) return res.status(404).json({ error: "no such job" });

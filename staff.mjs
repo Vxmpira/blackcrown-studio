@@ -7,11 +7,11 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle } from "./agent.mjs";
+import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, recordSpend, nightFactor } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const MODEL = process.env.STAFF_MODEL || process.env.AGENT_MODEL || "claude-sonnet-4-6";
+const MODEL = process.env.STAFF_MODEL || "claude-haiku-5-5";
 const CYCLE_EVERY_H = Math.max(1, Number(process.env.STAFF_CYCLE_EVERY_H || 2));
 const POLL_SECONDS = Math.max(45, Number(process.env.STAFF_POLL_SECONDS || 75));
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
@@ -261,12 +261,13 @@ async function callModel(system, user, maxTokens) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: maxTokens,
-      system,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     }),
   });
   const j = await r.json();
   if (!r.ok) throw new Error(j?.error?.message || `model call failed (${r.status})`);
+  recordSpend("staff", MODEL, j.usage);
   return (j.content || []).map((c) => c.text || "").join("");
 }
 async function think(system, user, maxTokens = 3200) {
@@ -454,8 +455,8 @@ async function staffWorkTick(key) {
     a.workDay = day;
     a.workSteps = 0;
   }
-  if (WORK_DAILY_CAP && (a.workSteps || 0) >= WORK_DAILY_CAP) return;
-  if (a.lastWorkAt && Date.now() - a.lastWorkAt < WORK_GAP_MIN * 60000) return;
+  if (WORK_DAILY_CAP && (a.workSteps || 0) >= Math.floor(WORK_DAILY_CAP / nightFactor())) return;
+  if (a.lastWorkAt && Date.now() - a.lastWorkAt < WORK_GAP_MIN * nightFactor() * 60000) return;
   if (a.lastCycleAt && Date.now() - a.lastCycleAt < 2 * 60000) return;
   a.status = "thinking";
   a.lastWorkAt = Date.now();

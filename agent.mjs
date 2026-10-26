@@ -26,7 +26,8 @@ const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
 const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
 const CYCLE_MS = CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
-const MODEL = process.env.AGENT_MODEL || "claude-sonnet-4-6";
+const MODEL = process.env.AGENT_MODEL || "claude-fable-5";
+export const MINION_MODEL = process.env.MINION_MODEL || "claude-haiku-5-5";
 
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const CHANNEL_ID = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
@@ -539,7 +540,49 @@ export function parseModelJson(text) {
   throw new Error("agent returned no parseable JSON");
 }
 
-async function think(system, user, maxTokens = 2000) {
+// ---------------------------------------------------------------------------
+// token spend meter and night throttle
+// ---------------------------------------------------------------------------
+const SPEND_PATH = path.join(__dirname, "studio-spend.json");
+function loadSpend() {
+  try { return JSON.parse(fs.readFileSync(SPEND_PATH, "utf8")); } catch { return {}; }
+}
+export function recordSpend(who, model, usage) {
+  try {
+    if (!usage) return;
+    const all = loadSpend();
+    const d = etDayKey();
+    all[d] = all[d] || {};
+    const e = (all[d][who] = all[d][who] || { calls: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
+    e.calls += 1;
+    e.in += usage.input_tokens || 0;
+    e.out += usage.output_tokens || 0;
+    e.cacheRead += usage.cache_read_input_tokens || 0;
+    e.cacheWrite += usage.cache_creation_input_tokens || 0;
+    const keep = Object.keys(all).sort().slice(-14);
+    const trimmed = {};
+    for (const k of keep) trimmed[k] = all[k];
+    fs.writeFileSync(SPEND_PATH, JSON.stringify(trimmed));
+  } catch {}
+}
+export function getSpend() { return loadSpend(); }
+export function spendSummary() {
+  try {
+    const d = loadSpend()[etDayKey()] || {};
+    const k = (n) => (n >= 1000 ? Math.round(n / 1000) + "k" : String(n));
+    const parts = Object.entries(d).map(
+      ([w, e]) => `${w} ${k(e.in + e.cacheRead)} in (${k(e.cacheRead)} cached) ${k(e.out)} out over ${e.calls} calls`
+    );
+    return parts.length ? `TOKEN SPEND today: ${parts.join("; ")}` : "TOKEN SPEND today: nothing yet";
+  } catch { return "TOKEN SPEND: unavailable"; }
+}
+export function nightFactor() {
+  const h = etHour();
+  return h >= 1 && h < 7 ? 2 : 1;
+}
+
+async function think(system, user, maxTokens = 2000, opts = {}) {
+  const mdl = opts.model || MODEL;
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -550,9 +593,9 @@ async function think(system, user, maxTokens = 2000) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: mdl,
       max_tokens: maxTokens,
-      system,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     }),
   });
@@ -561,6 +604,7 @@ async function think(system, user, maxTokens = 2000) {
     throw new Error(`Anthropic (${r.status}): ${t.slice(0, 180)}`);
   }
   const data = await r.json();
+  recordSpend(opts.who || "corvid", mdl, data.usage);
   const text = (data.content || [])
     .filter((b) => b.type === "text")
     .map((b) => b.text)
@@ -578,7 +622,8 @@ async function think(system, user, maxTokens = 2000) {
   }
 }
 
-export async function thinkText(system, user, maxTokens = 1400) {
+export async function thinkText(system, user, maxTokens = 1400, opts = {}) {
+  const mdl = opts.model || MODEL;
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
   const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -589,14 +634,15 @@ export async function thinkText(system, user, maxTokens = 1400) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: mdl,
       max_tokens: maxTokens,
-      system,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     }),
   });
   if (!r.ok) throw new Error(`Anthropic (${r.status})`);
   const data = await r.json();
+  recordSpend(opts.who || "corvid", mdl, data.usage);
   return (data.content || [])
     .filter((b) => b.type === "text")
     .map((b) => b.text)
@@ -633,7 +679,7 @@ export function noteTitle(task, maxWords = 6) {
 async function runMinion(name, task, context) {
   const sys = MINIONS[name];
   if (!sys) return null;
-  const report = await thinkText(sys, `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}`, 1600);
+  const report = await thinkText(sys, `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}`, 1600, { model: MINION_MODEL, who: "minions" });
   state.minionSeq = (state.minionSeq || 0) + 1;
   const minionDir = name.charAt(0).toUpperCase() + name.slice(1);
   const file = path.join("Minions", minionDir, `${String(state.minionSeq).padStart(3, "0")} ${noteTitle(task)}.md`);
@@ -1244,8 +1290,8 @@ async function workTick() {
     state.workDay = day;
     state.workSteps = 0;
   }
-  if (WORK_DAILY_CAP && (state.workSteps || 0) >= WORK_DAILY_CAP) return;
-  if (state.lastWorkAt && Date.now() - state.lastWorkAt < WORK_GAP_MIN * 60000) return;
+  if (WORK_DAILY_CAP && (state.workSteps || 0) >= Math.floor(WORK_DAILY_CAP / nightFactor())) return;
+  if (state.lastWorkAt && Date.now() - state.lastWorkAt < WORK_GAP_MIN * nightFactor() * 60000) return;
   if (state.lastCycleAt && Date.now() - state.lastCycleAt < 2 * 60000) return;
   busy = true;
   state.lastWorkAt = Date.now();
