@@ -11,6 +11,7 @@ import {
   getUptime,
   runJobNow,
   toggleJob,
+  uploadExpressions,
   type MoneyData,
   type RevenueData,
   type ServerJob,
@@ -150,6 +151,36 @@ const Jobs: React.FC = () => {
           </button>
         </div>
       ))}
+    </div>
+  );
+};
+
+const Expressions: React.FC = () => {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string>("");
+  const go = async () => {
+    setBusy(true);
+    setResult("");
+    try {
+      const r = await uploadExpressions();
+      setResult([...r.emojis, ...r.stickers].join(" · "));
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : "Upload failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="bl">
+      <div className="bl-empty" style={{ marginBottom: 8 }}>
+        8 branded emojis (crown, raven, check, pulse...) and 3 stickers, uploaded to Eclipse-X by the
+        bot. Needs DISCORD_GUILD_ID in .env and Manage Expressions permission. Safe to re-run,
+        duplicates are skipped by Discord.
+      </div>
+      <button className="btn" onClick={go} disabled={busy} style={{ alignSelf: "flex-start" }}>
+        {busy ? "Uploading..." : "Stock the server"}
+      </button>
+      {result ? <div className="bl-empty" style={{ marginTop: 8 }}>{result}</div> : null}
     </div>
   );
 };
@@ -517,6 +548,11 @@ export const Command: React.FC = () => {
       <div className="sgroup" style={{ marginTop: 18 }}>
         <div className="sgroup-h">Scheduled jobs, the in-house automation engine</div>
         <Jobs />
+      </div>
+
+      <div className="sgroup" style={{ marginTop: 18 }}>
+        <div className="sgroup-h">Discord expression pack</div>
+        <Expressions />
       </div>
 
       <div className="sgroup" style={{ marginTop: 18 }}>

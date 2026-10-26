@@ -29,7 +29,11 @@ import {
   wireHooks,
   thinkText,
   buildEmbeds,
+  findProposal,
+  bloomCredits,
+  agentLog,
 } from "./agent.mjs";
+import { startGateway, wireGateway } from "./gateway.mjs";
 import {
   startCeo,
   wireCeo,
@@ -1894,6 +1898,184 @@ app.delete("/api/jobs/:id", (req, res) => {
   saveJobs(jobs);
   res.json({ ok: true });
 });
+
+// ----- the bot, alive: gateway presence + owner slash commands --------------
+const GUILD_ID = (process.env.DISCORD_GUILD_ID || "").trim();
+const OWNER_DISCORD_ID = (process.env.DISCORD_OWNER_ID || "").trim();
+const BOT = (process.env.DISCORD_BOT_TOKEN || "").trim();
+let discordAppId = null;
+async function getAppId() {
+  if (discordAppId || !BOT) return discordAppId;
+  try {
+    const r = await fetch("https://discord.com/api/v10/applications/@me", {
+      headers: { authorization: `Bot ${BOT}` },
+    });
+    const j = await r.json();
+    if (r.ok) discordAppId = j.id;
+  } catch {
+    // retried on next need
+  }
+  return discordAppId;
+}
+const SLASH = [
+  { name: "status", description: "Company pulse: traffic, money, agents", default_member_permissions: "8" },
+  {
+    name: "cycle",
+    description: "Run an agent's cycle now",
+    default_member_permissions: "8",
+    options: [
+      {
+        type: 3,
+        name: "agent",
+        description: "which agent",
+        required: true,
+        choices: [
+          { name: "corvid", value: "corvid" },
+          { name: "herald", value: "herald" },
+          { name: "steward", value: "steward" },
+        ],
+      },
+    ],
+  },
+  {
+    name: "approve",
+    description: "Approve an ask by number",
+    default_member_permissions: "8",
+    options: [{ type: 4, name: "number", description: "ask number", required: true }],
+  },
+  {
+    name: "reject",
+    description: "Reject an ask by number",
+    default_member_permissions: "8",
+    options: [{ type: 4, name: "number", description: "ask number", required: true }],
+  },
+  { name: "credits", description: "Bloom credit balance", default_member_permissions: "8" },
+];
+async function registerSlash() {
+  if (!GUILD_ID) {
+    agentLog("gateway", "DISCORD_GUILD_ID not set, slash commands skipped");
+    return;
+  }
+  const id = await getAppId();
+  if (!id) return;
+  try {
+    const r = await fetch(`https://discord.com/api/v10/applications/${id}/guilds/${GUILD_ID}/commands`, {
+      method: "PUT",
+      headers: { authorization: `Bot ${BOT}`, "content-type": "application/json" },
+      body: JSON.stringify(SLASH),
+    });
+    if (r.ok) agentLog("gateway", "slash commands live: /status /cycle /approve /reject /credits");
+    else agentLog("error", `slash registration refused (${r.status}), re-invite the bot with the applications.commands scope`);
+  } catch (e) {
+    agentLog("error", `slash registration failed: ${e.message || e}`);
+  }
+}
+async function slashReply(i, content) {
+  await fetch(`https://discord.com/api/v10/interactions/${i.id}/${i.token}/callback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: 4, data: { content: String(content).slice(0, 1900), flags: 64 } }),
+  }).catch(() => {});
+}
+wireGateway({
+  log: (k, t) => agentLog(k, t),
+  onInteraction: async (i) => {
+    if (i.type !== 2) return;
+    const uid = i.member?.user?.id || i.user?.id;
+    if (OWNER_DISCORD_ID && uid !== OWNER_DISCORD_ID) return slashReply(i, "Owner only.");
+    const name = i.data?.name;
+    const opt = (n) => (i.data?.options || []).find((o) => o.name === n)?.value;
+    if (name === "status") {
+      const s = loadStats();
+      const dk = dayKey();
+      const sum = (day, e) => Object.values((s[day] && s[day][e]) || {}).reduce((a, b) => a + b, 0);
+      const a = agentState();
+      const c = ceoState();
+      const staff = staffStates();
+      const rev = revenueCache.data;
+      return slashReply(
+        i,
+        [
+          "**BLACKCROWN // PULSE**",
+          `Visits today ${sum(dk, "visit")}, clicks ${sum(dk, "click")}`,
+          rev ? `MRR $${rev.mrr || 0}, ${rev.subscribers || 0} subscribers` : "Stripe not read yet",
+          `Corvid ${a.status} · Regent ${c.status}, ${c.asks.length} ask(s) waiting`,
+          ...staff.map((x) => `${x.name} ${x.status}, ${x.tasks.filter((t) => t.status !== "done").length} open task(s)`),
+        ].join("\n")
+      );
+    }
+    if (name === "cycle") {
+      const who = opt("agent");
+      if (who === "corvid") runCycle("owner slash command").catch(() => {});
+      else staffRunCycle(who).catch(() => {});
+      return slashReply(i, `${who} cycle fired. Watch the channel.`);
+    }
+    if (name === "approve" || name === "reject") {
+      const num = opt("number");
+      const p = findProposal(num);
+      if (!p) return slashReply(i, `No ask #${num}.`);
+      if (p.status !== "pending") return slashReply(i, `#${num} is already ${p.status}.`);
+      ownerDecision(p.id, name, "", "slash").catch(() => {});
+      return slashReply(i, `#${num} ${name === "approve" ? "approved" : "rejected"}. Regent is on it, confirmation lands in the channel.`);
+    }
+    if (name === "credits") {
+      const c = await bloomCredits(true);
+      return slashReply(i, c ? (c.unlimited ? "Bloom: unlimited plan." : `Bloom balance: ${c.balance} credits.`) : "Bloom balance unavailable.");
+    }
+    return slashReply(i, "Unknown command.");
+  },
+});
+
+// expression pack: the bot stocks the server with the branded emoji set
+const STICKER_META = {
+  blkc_approved: { description: "BlackCrown approval stamp", tags: "white_check_mark" },
+  blkc_onit: { description: "Corvid is on it", tags: "bird" },
+  blkc_filed: { description: "Filed with Regent", tags: "file_folder" },
+};
+app.post("/api/discord/expressions", async (_req, res) => {
+  if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
+  const out = { emojis: [], stickers: [] };
+  const edir = path.join(__dirname, "assets/discord/emoji");
+  for (const f of fs.existsSync(edir) ? fs.readdirSync(edir).filter((x) => x.endsWith(".png")) : []) {
+    const name = f.replace(/\.png$/, "");
+    try {
+      const b64 = fs.readFileSync(path.join(edir, f)).toString("base64");
+      const r = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/emojis`, {
+        method: "POST",
+        headers: { authorization: `Bot ${BOT}`, "content-type": "application/json" },
+        body: JSON.stringify({ name, image: `data:image/png;base64,${b64}` }),
+      });
+      const j = await r.json().catch(() => ({}));
+      out.emojis.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+    } catch (e) {
+      out.emojis.push(`${name}: ${e.message || e}`);
+    }
+  }
+  const sdir = path.join(__dirname, "assets/discord/stickers");
+  for (const f of fs.existsSync(sdir) ? fs.readdirSync(sdir).filter((x) => x.endsWith(".png")) : []) {
+    const name = f.replace(/\.png$/, "");
+    const meta = STICKER_META[name] || { description: "BlackCrown sticker", tags: "crown" };
+    try {
+      const fd = new FormData();
+      fd.append("name", name);
+      fd.append("description", meta.description);
+      fd.append("tags", meta.tags);
+      fd.append("file", new Blob([fs.readFileSync(path.join(sdir, f))], { type: "image/png" }), f);
+      const r = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/stickers`, {
+        method: "POST",
+        headers: { authorization: `Bot ${BOT}` },
+        body: fd,
+      });
+      const j = await r.json().catch(() => ({}));
+      out.stickers.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+    } catch (e) {
+      out.stickers.push(`${name}: ${e.message || e}`);
+    }
+  }
+  res.json(out);
+});
+
+if (startGateway()) registerSlash();
 
 wireCeo({ siteRoot: SITE_ROOT, audit: async () => (await doAudit()).pages, createJob: createJobFromProposal, makeEdit: applyMakeEdit });
 wireHooks({

@@ -473,6 +473,13 @@ export async function deleteJob(id: string): Promise<void> {
   await fetch(`${BASE}/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export async function uploadExpressions(): Promise<{ emojis: string[]; stickers: string[] }> {
+  const r = await fetch(`${BASE}/api/discord/expressions`, { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Upload failed (${r.status})`);
+  return j;
+}
+
 // ----- staff agents (Herald, Steward) ---------------------------------------
 export type StaffAgent = {
   key: string;

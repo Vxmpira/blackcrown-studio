@@ -42,7 +42,7 @@ const BLOOM_BRANDS = {
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
 let creditsCache = { at: 0, data: null };
-async function bloomCredits(fresh = false) {
+export async function bloomCredits(fresh = false) {
   if (!BLOOM_KEY) return null;
   if (!fresh && creditsCache.data && Date.now() - creditsCache.at < 30 * 60 * 1000) return creditsCache.data;
   try {
