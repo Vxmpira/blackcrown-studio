@@ -571,7 +571,13 @@ export function staffStates() {
     name: ROLES[key].name,
     title: ROLES[key].title,
     enabled: state[key].enabled,
-    status: state[key].enabled ? state[key].status : "paused",
+    status: !state[key].enabled
+      ? "paused"
+      : state[key].status === "thinking"
+      ? "thinking"
+      : state[key].tasks.some((t) => t.status !== "done")
+      ? "working the queue"
+      : state[key].status,
     lastCycleAt: state[key].lastCycleAt,
     cycleEveryH: CYCLE_EVERY_H,
     focus: state[key].focus,

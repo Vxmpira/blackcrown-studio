@@ -1344,7 +1344,19 @@ export function agentState() {
   return {
     name: AGENT_NAME,
     enabled: state.enabled,
-    status: state.enabled ? state.status : "paused",
+    status: !state.enabled
+      ? "paused"
+      : state.status === "thinking"
+      ? "thinking"
+      : state.tasks.some(
+          (t) =>
+            t.status !== "done" &&
+            !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
+        )
+      ? "working the queue"
+      : state.tasks.some((t) => t.status !== "done")
+      ? "waiting on your word"
+      : state.status,
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
     cycleEveryH: CYCLE_EVERY_H,
