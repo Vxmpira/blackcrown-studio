@@ -599,7 +599,7 @@ export function institutionBlock() {
   return instCache.text;
 }
 
-async function think(system, user, maxTokens = 2000, opts = {}) {
+async function think(system, user, maxTokens = 4000, opts = {}) {
   const mdl = opts.model || MODEL;
   system = system + institutionBlock();
   const key = process.env.ANTHROPIC_API_KEY;
@@ -636,6 +636,14 @@ async function think(system, user, maxTokens = 2000, opts = {}) {
   try {
     return parseModelJson(text);
   } catch (e) {
+    if (!opts.retried) {
+      return think(
+        system,
+        `${user}\n\nREMINDER: your whole reply must be ONLY the JSON object, starting with { and ending with }. Keep every string tight so the full object fits.`,
+        maxTokens,
+        { ...opts, retried: true }
+      );
+    }
     const head = text.slice(0, 140).replace(/\n/g, " ");
     throw new Error(`${e.message}. Output head: ${head}`);
   }
