@@ -2148,6 +2148,12 @@ wireCeo({
     Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
     Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
   },
+  jobNames: () => loadJobs().map((j) => j.name).filter(Boolean),
+  assignFix: (author, text) => {
+    const key = String(author || "").toLowerCase();
+    if (key === "herald" || key === "steward") return staffAddTask(key, text);
+    return addTask(text);
+  },
 });
 wireHooks({
   onFiled: receiveProposals,

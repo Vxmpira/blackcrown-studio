@@ -349,8 +349,93 @@ A proposal page like "korvus:path/file.js" or "crown:path/file" targets that pro
 // ---------------------------------------------------------------------------
 // intake: Corvid files proposals
 // ---------------------------------------------------------------------------
+// preflight: a filing that would predictably fail never reaches the owner.
+// It bounces straight back to the desk that filed it, with the reason.
+function preflightProposal(p) {
+  try {
+    const kind = String(p.kind || "").toLowerCase();
+    const detail = String(p.detail || "");
+    const page = String(p.page || "");
+    const cur = String(section(detail, "CURRENT") || "").trim();
+    const isNew = /^\(new file\)$/i.test(cur);
+    const plat = (detail.match(/PLATFORM:\s*(\S+)/i) || [])[1];
+    if (kind === "post" || plat) {
+      if (!plat) return "post asks need a PLATFORM line";
+      if (plat.toLowerCase() !== "youtube") return `platform ${plat} is not wired; youtube is the only wired platform`;
+      const media = (detail.match(/MEDIA:\s*(\S+)/i) || [])[1];
+      if (!media || !/^https?:\/\//i.test(media)) return "MEDIA must be the full https url of the rendered file";
+      return null;
+    }
+    if (kind === "job" || /SCHEDULE:/i.test(detail)) {
+      if (!/SCHEDULE:/i.test(detail)) return "job asks need a SCHEDULE line";
+      if (!/CHANNEL:/i.test(detail)) return "job asks need a CHANNEL line";
+      try {
+        const names = deps.jobNames ? deps.jobNames() : [];
+        const mine = String(p.summary || "").toLowerCase();
+        for (const n of names) {
+          if (n && (mine.includes(n.toLowerCase()) || n.toLowerCase().includes(mine))) {
+            return `a server job named "${n}" already covers this; never register duplicates`;
+          }
+        }
+      } catch {}
+      return null;
+    }
+    if (kind === "brain" || kind === "creative" || kind === "automation" || /^make(:|$)/i.test(page)) return null;
+    if (!page) return null;
+    const loc = resolveSiteFile(page);
+    if (loc.err) return loc.err;
+    const exists = fs.existsSync(loc.full);
+    if (!exists && !isNew) {
+      return `${loc.file} does not exist in that repo; target a page the audit lists, or create one with CURRENT exactly (new file)`;
+    }
+    if (isNew) {
+      let body = String(section(detail, "NEW") || "");
+      const fromNote = body.trim().match(/^FROM NOTE:\s*(.+)$/i);
+      if (fromNote) {
+        try {
+          body = String((brainFile(fromNote[1].trim()) || {}).body || "");
+        } catch {
+          body = "";
+        }
+        if (!body.trim()) return `vault note ${fromNote[1].trim()} is empty or missing; have the minion write the full page first`;
+        body = body.replace(/^```(html)?\s*/i, "").replace(/```\s*$/i, "");
+      }
+      if (/\.html?$/i.test(loc.file)) {
+        const b = body.trim();
+        if (!/^<!doctype html>/i.test(b) || !/<\/html>\s*$/i.test(b) || !/<title>[^<]{3,}<\/title>/i.test(b) || !/<\/head>/i.test(b)) {
+          return "the page is not a complete html document (doctype through closing html tag with head and title); finish it in the vault before filing";
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function receiveProposals(filed) {
   if (!state.enabled) return;
+  // bounce the predictable failures back to their desks before review
+  const bounced = [];
+  filed = filed.filter((p) => {
+    const why = preflightProposal(p);
+    if (!why) return true;
+    bounced.push({ p, why });
+    return false;
+  });
+  for (const { p, why } of bounced) {
+    try {
+      decideProposal(p.id, "reject", `preflight: ${why}`, "preflight");
+      log("ruling", `#${p.number} bounced in preflight: ${why}`);
+      if (deps.assignFix) deps.assignFix(p.author || "Corvid", `Refile #${p.number} correctly: ${why}`.slice(0, 180));
+      await send(`**REGENT // BOUNCED** · #${p.number} ${p.summary}\nNever reached the owner: ${why}. Fix it and refile; this is on your desk, not his.`);
+    } catch {}
+  }
+  if (!filed.length) {
+    state.status = "watching";
+    saveState();
+    return;
+  }
   state.status = "reviewing";
   saveState();
   log("intake", `Corvid filed ${filed.length} proposal(s)`);
@@ -946,6 +1031,12 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   vaultAppend("Ledger.md", `- ${etDayKey()}: #${p.number} ${p.summary} > ${r.ok ? "DONE" : "FAILED"}: ${r.msg.slice(0, 160)}`);
   log(r.ok ? "exec" : "error", `#${p.number} ${r.ok ? "done" : "failed"}: ${r.msg}`);
   await send(`**REGENT // ${r.ok ? "DONE" : "FAILED"}** · #${p.number} ${p.summary}\n${r.msg}`);
+  if (!r.ok && deps.assignFix) {
+    try {
+      deps.assignFix(p.author || "Corvid", `Fix and refile #${p.number}: ${r.msg.slice(0, 150)}`);
+      await send(`**REGENT //** Routed the fix to ${p.author || "Corvid"}'s desk; the owner does not debug.`);
+    } catch {}
+  }
   agentLog("regent", `#${p.number} ${r.ok ? "executed by Regent" : "execution failed"}`);
   return p;
 }
