@@ -1351,6 +1351,7 @@ export function agentState() {
     cycleEveryMin: CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN : 0,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
+    minionReports: (state.minionReports || []).slice(-6).reverse(),
     lastThought: state.lastThought,
     tasks: state.tasks,
     proposals: state.proposals.slice().reverse().slice(0, 25),

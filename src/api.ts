@@ -331,6 +331,7 @@ export type AgentState = {
   cycleHourEt: number;
   cycleEveryH?: number;
   cycleEveryMin?: number;
+  minionReports?: { t: number; minion: string; task: string }[];
   lastCycleAt: number | null;
   currentFocus: string;
   lastThought: string;
@@ -487,6 +488,7 @@ export type StaffAgent = {
   log: { t: number; kind: string; text: string }[];
   channel: "own" | "shared" | "none";
   community?: boolean;
+  minionReports?: { t: number; minion: string; task: string }[];
 };
 export async function getStaff(): Promise<StaffAgent[]> {
   try {

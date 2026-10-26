@@ -48,6 +48,13 @@ export const Dashboard: React.FC = () => {
     const t = window.setInterval(load, 60000);
     return () => window.clearInterval(t);
   }, []);
+  // inside a building, the dossier breathes: refresh fast while one is open
+  useEffect(() => {
+    if (!sel) return;
+    const t = window.setInterval(load, 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel]);
 
   const usd = (n: number) =>
     n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -125,6 +132,57 @@ export const Dashboard: React.FC = () => {
     you: { title: "You", lines: ["The owner. Everything above answers to you.", "Approvals happen in Discord or the CEO tab."] },
   };
 
+  // the interior: live mind of an agent building
+  const MINION_ROLES: Record<string, string> = {
+    scout: "research",
+    scribe: "copy",
+    analyst: "numbers",
+    pitch: "campaigns",
+    copy: "ad copy",
+    prospector: "audiences",
+    planner: "project steps",
+    crier: "community",
+    auditor: "operations",
+  };
+  const agoShort = (t: number) => {
+    const mn = Math.round((Date.now() - t) / 60000);
+    return mn < 1 ? "now" : mn < 60 ? `${mn}m` : `${Math.round(mn / 60)}h`;
+  };
+  type Interior = {
+    thought: string;
+    minions: { minion: string; task: string; t: number }[];
+    tasks: { title: string; status: string }[];
+    logs: { t: number; kind: string; text: string }[];
+  } | null;
+  const interior: Interior = (() => {
+    if (sel === "corvid" && agent) {
+      return {
+        thought: agent.lastThought || "",
+        minions: agent.minionReports || [],
+        tasks: agent.tasks.filter((t) => t.status !== "done").slice(0, 4),
+        logs: (agent.log || []).slice(0, 5),
+      };
+    }
+    if ((sel === "herald" || sel === "steward") && member(sel)) {
+      const a = member(sel)!;
+      return {
+        thought: a.thought || "",
+        minions: a.minionReports || [],
+        tasks: a.tasks.filter((t) => t.status !== "done").slice(0, 4),
+        logs: (a.log || []).slice(0, 5),
+      };
+    }
+    if (sel === "regent" && ceo) {
+      return {
+        thought: ceo.asks.length ? `Holding ${ceo.asks.length} ask(s) for the owner's word.` : "Watching the filings.",
+        minions: [],
+        tasks: [],
+        logs: (ceo.log || []).slice(0, 6),
+      };
+    }
+    return null;
+  })();
+
   return (
     <>
       <div className="page-head">
@@ -155,7 +213,7 @@ export const Dashboard: React.FC = () => {
           />
         </Suspense>
         {sel && details[sel] ? (
-          <div className="c3d-panel">
+          <div className={`c3d-panel${interior ? " deep" : ""}`}>
             <div className="c3d-panel-head">
               <span>{details[sel].title}</span>
               <button className="m-del" onClick={() => setSel(null)}>x</button>
@@ -163,6 +221,54 @@ export const Dashboard: React.FC = () => {
             {details[sel].lines.filter(Boolean).map((l, i) => (
               <div className="c3d-panel-line" key={i}>{l}</div>
             ))}
+            {interior ? (
+              <>
+                {interior.thought ? (
+                  <>
+                    <div className="c3d-sec">Thinking, live</div>
+                    <div className="c3d-think">{interior.thought}</div>
+                  </>
+                ) : null}
+                {interior.minions.length ? (
+                  <>
+                    <div className="c3d-sec">Minions on the floor</div>
+                    {interior.minions.map((mr, i) => (
+                      <div className="c3d-min" key={i}>
+                        <span className="c3d-min-name">
+                          {mr.minion}
+                          <em>{MINION_ROLES[mr.minion] ? ` · ${MINION_ROLES[mr.minion]}` : ""}</em>
+                        </span>
+                        <span className="c3d-min-task">{mr.task}</span>
+                        <span className="c3d-min-ago">{agoShort(mr.t)}</span>
+                      </div>
+                    ))}
+                  </>
+                ) : null}
+                {interior.tasks.length ? (
+                  <>
+                    <div className="c3d-sec">On the desk</div>
+                    {interior.tasks.map((t, i) => (
+                      <div className="c3d-panel-line" key={i}>
+                        <span className={`t-chip t-${t.status}`} style={{ marginRight: 6 }}>{t.status}</span>
+                        {t.title}
+                      </div>
+                    ))}
+                  </>
+                ) : null}
+                {interior.logs.length ? (
+                  <>
+                    <div className="c3d-sec">Wire</div>
+                    {interior.logs.map((l, i) => (
+                      <div className="c3d-log" key={i}>
+                        <span className="log-t">{new Date(l.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                        <span className={`log-k k-${l.kind}`}>{l.kind}</span>
+                        <span>{l.text}</span>
+                      </div>
+                    ))}
+                  </>
+                ) : null}
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>

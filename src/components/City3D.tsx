@@ -2,10 +2,12 @@ import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-// The Grid in three dimensions: a wireframe city on a dark plain, the
-// districts of the empire as lit towers, and data packets flying the
-// skyways between them. Built light: instanced towers, capped pixel
-// ratio, paused when the tab is hidden, static under reduced motion.
+// The Grid in three dimensions: a night city on a dark plain. Towers carry
+// lit window floors, setback crowns, and spires; each agent's building is
+// trimmed in its desk color. Click a building and the camera flies in,
+// click away and it pulls back. Built light: instanced background, one
+// shared window texture, capped pixel ratio, paused when hidden, static
+// under reduced motion.
 
 export type CityData = {
   trafficPackets: number;
@@ -44,9 +46,57 @@ const COLORS = {
   unknown: 0x85838f,
 };
 
+// each district's trim color: the agents wear their desk colors
+const ACCENT: Record<string, number> = {
+  world: COLORS.cyan,
+  site: COLORS.pink,
+  korvus: COLORS.pink,
+  crown: COLORS.pink,
+  eclipse: COLORS.pink,
+  stripe: COLORS.gold,
+  corvid: COLORS.pink,
+  herald: COLORS.cyan,
+  steward: COLORS.up,
+  regent: COLORS.gold,
+  you: 0xffffff,
+};
+
 function pos(key: string) {
   const d = DISTRICTS.find((x) => x.key === key)!;
   return new THREE.Vector3(d.x, 0, d.z);
+}
+
+// a canvas of lit windows: the night-office look, generated once
+function windowTexture(seed: number, warmth = 0.22) {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 128;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#060609";
+  g.fillRect(0, 0, 64, 128);
+  let s = seed;
+  const rng = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  const cols = 5;
+  const rows = 14;
+  const cw = 64 / cols;
+  const rh = 128 / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const roll = rng();
+      if (roll < 0.52) {
+        g.fillStyle = "#101018";
+      } else if (roll < 0.52 + warmth) {
+        g.fillStyle = rng() > 0.5 ? "rgba(255,45,149,0.75)" : "rgba(70,230,255,0.7)";
+      } else {
+        g.fillStyle = "rgba(235,225,255,0.55)";
+      }
+      g.fillRect(col * cw + 2, r * rh + 2.5, cw - 4, rh - 5);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) => void }> = ({
@@ -65,72 +115,112 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x030305, 30, 78);
+    scene.fog = new THREE.Fog(0x030305, 30, 82);
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.setClearColor(0x000000, 0);
     host.appendChild(renderer.domElement);
 
-    // ground
     const grid = new THREE.GridHelper(120, 60, 0xff2d95, 0xff2d95);
-    (grid.material as THREE.Material & { opacity: number; transparent: boolean }).opacity = 0.1;
+    (grid.material as THREE.Material & { opacity: number; transparent: boolean }).opacity = 0.08;
     (grid.material as THREE.Material & { transparent: boolean }).transparent = true;
     scene.add(grid);
 
-    // background towers, instanced, two layers: dark fill + wire glow
+    // shared window material set for every tower face
+    const winTexA = windowTexture(7);
+    const winTexB = windowTexture(1234, 0.3);
+    const darkMat = new THREE.MeshBasicMaterial({ color: 0x0a0a10 });
+    const sideA = new THREE.MeshBasicMaterial({ map: winTexA });
+    const sideB = new THREE.MeshBasicMaterial({ map: winTexB });
+    const facesOf = (side: THREE.Material) => [side, side, darkMat, darkMat, side, side];
+
+    // background skyline: instanced windowed blocks, no wires
     const COUNT = 150;
     const box = new THREE.BoxGeometry(1, 1, 1);
-    const fillMat = new THREE.MeshBasicMaterial({ color: 0x0a0a10 });
-    const wireMat = new THREE.MeshBasicMaterial({ color: COLORS.pink, wireframe: true, transparent: true, opacity: 0.16 });
-    const fills = new THREE.InstancedMesh(box, fillMat, COUNT);
-    const wires = new THREE.InstancedMesh(box, wireMat, COUNT);
+    const fills = new THREE.InstancedMesh(box, facesOf(sideA) as unknown as THREE.Material, COUNT);
     const m = new THREE.Matrix4();
-    const rng = (() => { let s = 7; return () => ((s = (s * 16807) % 2147483647) / 2147483647); })();
+    const rng = (() => {
+      let s = 7;
+      return () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    })();
     let placed = 0;
     while (placed < COUNT) {
       const x = (rng() - 0.5) * 70;
       const z = (rng() - 0.5) * 55;
-      if (DISTRICTS.some((d) => Math.hypot(d.x - x, d.z - z) < 4)) continue;
+      if (DISTRICTS.some((d) => Math.hypot(d.x - x, d.z - z) < 4.5)) continue;
       const h = 0.8 + rng() * 5.2;
       m.makeScale(0.9 + rng() * 1.4, h, 0.9 + rng() * 1.4);
       m.setPosition(x, h / 2, z);
       fills.setMatrixAt(placed, m);
-      wires.setMatrixAt(placed, m);
       placed++;
     }
     scene.add(fills);
-    scene.add(wires);
 
-    // district towers + status cores + labels
+    // district towers: windowed shaft, setback crown, colored trim, spire
     const labels: { el: HTMLDivElement; v: THREE.Vector3 }[] = [];
     const cores: Record<string, THREE.Mesh> = {};
-    const clickable: THREE.Mesh[] = [];
+    const roofLights: THREE.Mesh[] = [];
+    const clickable: THREE.Object3D[] = [];
     for (const d of DISTRICTS) {
-      const tower = new THREE.Mesh(
-        new THREE.BoxGeometry(d.big ? 2.4 : 1.8, d.h, d.big ? 2.4 : 1.8),
-        new THREE.MeshBasicMaterial({ color: 0x0c0c14 })
+      const w = d.big ? 2.6 : 2.0;
+      const accent = ACCENT[d.key] ?? COLORS.pink;
+      const g = new THREE.Group();
+      g.position.set(d.x, 0, d.z);
+
+      const shaftH = d.h * 0.78;
+      const shaft = new THREE.Mesh(new THREE.BoxGeometry(w, shaftH, w), facesOf(sideA));
+      shaft.position.y = shaftH / 2;
+      shaft.userData.key = d.key;
+      clickable.push(shaft);
+      g.add(shaft);
+      const shaftTrim = new THREE.LineSegments(
+        new THREE.EdgesGeometry(shaft.geometry),
+        new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.9 })
       );
-      tower.position.set(d.x, d.h / 2, d.z);
-      tower.userData.key = d.key;
-      clickable.push(tower);
-      scene.add(tower);
-      const wire = new THREE.Mesh(
-        tower.geometry,
-        new THREE.MeshBasicMaterial({ color: COLORS.pink, wireframe: true, transparent: true, opacity: 0.85 })
+      shaftTrim.position.copy(shaft.position);
+      g.add(shaftTrim);
+
+      const crownH = d.h * 0.22;
+      const crown = new THREE.Mesh(new THREE.BoxGeometry(w * 0.62, crownH, w * 0.62), facesOf(sideB));
+      crown.position.y = shaftH + crownH / 2;
+      crown.userData.key = d.key;
+      clickable.push(crown);
+      g.add(crown);
+      const crownTrim = new THREE.LineSegments(
+        new THREE.EdgesGeometry(crown.geometry),
+        new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.75 })
       );
-      wire.position.copy(tower.position);
-      scene.add(wire);
-      cores[d.key + "-wire"] = wire;
+      crownTrim.position.copy(crown.position);
+      g.add(crownTrim);
+
+      if (d.big) {
+        const spire = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.04, 0.09, 1.7, 6),
+          new THREE.MeshBasicMaterial({ color: accent })
+        );
+        spire.position.y = d.h + 0.85;
+        g.add(spire);
+      }
+      const roof = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 8, 8),
+        new THREE.MeshBasicMaterial({ color: COLORS.down })
+      );
+      roof.position.y = d.h + (d.big ? 1.75 : 0.12);
+      roofLights.push(roof);
+      g.add(roof);
+
       const core = new THREE.Mesh(
         new THREE.SphereGeometry(d.big ? 0.5 : 0.38, 12, 12),
-        new THREE.MeshBasicMaterial({ color: COLORS.pink })
+        new THREE.MeshBasicMaterial({ color: accent })
       );
-      core.position.set(d.x, d.h + 0.8, d.z);
+      core.position.y = d.h + 0.8;
       core.userData.key = d.key;
       clickable.push(core);
-      scene.add(core);
+      g.add(core);
       cores[d.key] = core;
+
+      scene.add(g);
 
       const el = document.createElement("div");
       el.className = "c3d-label" + (d.big ? " c3d-big" : "");
@@ -149,14 +239,11 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       const curve = new THREE.CatmullRomCurve3([a, mid, b]);
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(curve.getPoints(32)),
-        new THREE.LineBasicMaterial({ color: COLORS.pink, transparent: true, opacity: 0.14 })
+        new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.12 })
       );
       scene.add(line);
       for (let i = 0; i < n; i++) {
-        const mesh = new THREE.Mesh(
-          new THREE.SphereGeometry(0.28, 8, 8),
-          new THREE.MeshBasicMaterial({ color: tone })
-        );
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), new THREE.MeshBasicMaterial({ color: tone }));
         scene.add(mesh);
         packets.push({ mesh, curve, t: i / Math.max(1, n), speed, key });
       }
@@ -186,23 +273,38 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     ro.observe(host);
     setSize();
 
-    // hands on the city: drag to orbit, wheel to zoom, right-drag to pan
     camera.position.set(-10, 17, 28);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 2, -1);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.minDistance = 10;
+    controls.minDistance = 5;
     controls.maxDistance = 70;
     controls.maxPolarAngle = 1.42;
     controls.autoRotate = !reduced;
     controls.autoRotateSpeed = 0.45;
+
+    // fly-in: clicking a building sends the camera to it; clicking away
+    // pulls back to the overview. A hand on the controls cancels the flight.
+    const flight = { active: false, target: new THREE.Vector3(0, 2, -1), dist: 34 };
     controls.addEventListener("start", () => {
       controls.autoRotate = false;
+      flight.active = false;
     });
+    const flyTo = (key: string | null) => {
+      if (key) {
+        const d = DISTRICTS.find((x) => x.key === key)!;
+        flight.target.set(d.x, d.h * 0.55, d.z);
+        flight.dist = 11;
+      } else {
+        flight.target.set(0, 2, -1);
+        flight.dist = 34;
+      }
+      flight.active = true;
+      controls.autoRotate = false;
+    };
     renderer.domElement.style.cursor = "grab";
 
-    // click a district (short press, not a drag) to inspect it
     const ray = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     let downAt: { x: number; y: number } | null = null;
@@ -218,7 +320,9 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       ray.setFromCamera(ndc, camera);
       const hit = ray.intersectObjects(clickable, false)[0];
-      onSelectRef.current?.(hit ? (hit.object.userData.key as string) : null);
+      const key = hit ? (hit.object.userData.key as string) : null;
+      flyTo(key);
+      onSelectRef.current?.(key);
     };
     renderer.domElement.addEventListener("pointerdown", onDown);
     renderer.domElement.addEventListener("pointerup", onUp);
@@ -226,14 +330,15 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     const tmp = new THREE.Vector3();
     let raf = 0;
     const clock = new THREE.Clock();
+    let elapsed = 0;
 
     const applyData = () => {
       const d = dataRef.current;
-      const statusColor = (s: boolean | null | undefined) =>
-        s === true ? COLORS.up : s === false ? COLORS.down : COLORS.pink;
-      (cores["site"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.site));
-      (cores["korvus"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.korvus));
-      (cores["crown"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.crown));
+      const statusColor = (s: boolean | null | undefined, fallback: number) =>
+        s === true ? COLORS.up : s === false ? COLORS.down : fallback;
+      (cores["site"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.site, ACCENT.site));
+      (cores["korvus"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.korvus, ACCENT.korvus));
+      (cores["crown"].material as THREE.MeshBasicMaterial).color.setHex(statusColor(d.status.crown, ACCENT.crown));
       const subs: Record<string, string> = {
         world: d.worldSub,
         stripe: d.stripeSub,
@@ -255,14 +360,29 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
 
     const frame = () => {
       const dt = Math.min(clock.getDelta(), 0.05);
+      elapsed += dt;
+      if (flight.active) {
+        controls.target.lerp(flight.target, 0.07);
+        const dir = camera.position.clone().sub(controls.target);
+        const dist = dir.length();
+        const next = THREE.MathUtils.lerp(dist, flight.dist, 0.07);
+        camera.position.copy(controls.target).add(dir.normalize().multiplyScalar(next));
+        if (Math.abs(next - flight.dist) < 0.1 && controls.target.distanceTo(flight.target) < 0.1) {
+          flight.active = false;
+        }
+      }
       controls.update();
+      const blink = (Math.sin(elapsed * 2.4) + 1) / 2;
+      for (const r of roofLights) {
+        (r.material as THREE.MeshBasicMaterial).opacity = 0.25 + blink * 0.75;
+        (r.material as THREE.MeshBasicMaterial).transparent = true;
+      }
       for (const p of packets) {
         if (!p.mesh.visible) continue;
         p.t = (p.t + dt * p.speed * (dataRef.current.clicksActive || p.key !== "clicks" ? 1 : 0.35)) % 1;
         p.mesh.position.copy(p.curve.getPointAt(p.t));
       }
       applyData();
-      // project labels
       const w = host.clientWidth;
       const h = host.clientHeight;
       for (const l of labels) {
@@ -291,6 +411,8 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       renderer.domElement.removeEventListener("pointerup", onUp);
       controls.dispose();
       ro.disconnect();
+      winTexA.dispose();
+      winTexB.dispose();
       renderer.dispose();
       host.innerHTML = "";
     };

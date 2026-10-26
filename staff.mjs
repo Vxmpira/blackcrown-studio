@@ -107,6 +107,7 @@ function freshAgent() {
     thought: "",
     tasks: [],
     log: [],
+    minionReports: [],
     lastMessageId: null,
     communityDay: "",
     communityCount: 0,
@@ -273,6 +274,8 @@ async function runStaffMinion(key, minion, task, context) {
     1500
   );
   vaultWrite(key, path.join("Minions", `${dayKey()}-${minion}-${slugify(task)}.md`), `# ${minion}: ${task}\n\nFor [[${ROLES[key].name}]], ${dayKey()}.\n\n${report}\n`);
+  state[key].minionReports = (state[key].minionReports || []).slice(-5);
+  state[key].minionReports.push({ t: Date.now(), minion, task: String(task).slice(0, 100) });
   log(key, "minion", `${minion} finished: ${String(task).slice(0, 80)}`);
 }
 
@@ -556,6 +559,7 @@ export function staffStates() {
     focus: state[key].focus,
     thought: state[key].thought,
     tasks: state[key].tasks,
+    minionReports: (state[key].minionReports || []).slice(-6).reverse(),
     log: state[key].log.slice(-40).reverse(),
     channel: ROLES[key].channel
       ? ROLES[key].channel === SEO_CHANNEL || ROLES[key].channel === CEO_CHANNEL
