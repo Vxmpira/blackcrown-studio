@@ -7,7 +7,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds } from "./agent.mjs";
+import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle } from "./agent.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -290,7 +290,14 @@ async function runStaffMinion(key, minion, task, context) {
     `Task from ${ROLES[key].name}: ${task}\n\nContext:\n${String(context || "").slice(0, 2500)}`,
     1500
   );
-  vaultWrite(key, path.join("Minions", `${dayKey()}-${minion}-${slugify(task)}.md`), `# ${minion}: ${task}\n\nFor [[${ROLES[key].name}]], ${dayKey()}.\n\n${report}\n`);
+  state[key].minionSeq = (state[key].minionSeq || 0) + 1;
+  const minionDir = minion.charAt(0).toUpperCase() + minion.slice(1);
+  fs.mkdirSync(path.join(vaultDir(key), "Minions", minionDir), { recursive: true });
+  vaultWrite(
+    key,
+    path.join("Minions", minionDir, `${String(state[key].minionSeq).padStart(3, "0")} ${noteTitle(task)}.md`),
+    `# ${minionDir}: ${noteTitle(task, 10)}\n\nDate: ${dayKey()}\nTask: ${task}\nFor [[${ROLES[key].name}]].\n\n${report}\n`
+  );
   state[key].minionReports = (state[key].minionReports || []).slice(-5);
   state[key].minionReports.push({ t: Date.now(), minion, task: String(task).slice(0, 100) });
   log(key, "minion", `${minion} finished: ${String(task).slice(0, 80)}`);
@@ -357,7 +364,7 @@ async function runStaffCycle(key, trigger = "schedule") {
     }
     for (const note of Array.isArray(out.brain_notes) ? out.brain_notes.slice(0, 2) : []) {
       const nm = String(note.name || "").replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
-      if (nm && note.body) vaultWrite(key, nm.replace(/\.md$/i, "") + ".md", String(note.body).slice(0, 12000));
+      if (nm && note.body) vaultWrite(key, nm.replace(/\.?md$/i, "") + ".md", String(note.body).slice(0, 12000));
     }
     const filed = fileProposals(Array.isArray(out.proposals) ? out.proposals.slice(0, 2) : [], role.name);
     if (filed.length) log(key, "filed", filed.map((p) => `#${p.number} ${p.summary}`).join("; "));
@@ -480,7 +487,7 @@ async function staffWorkTick(key) {
     }
     if (out.note && out.note.name && out.note.body) {
       const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
-      if (nm) vaultWrite(key, nm.replace(/\.md$/i, "") + ".md", String(out.note.body).slice(0, 12000));
+      if (nm) vaultWrite(key, nm.replace(/\.?md$/i, "") + ".md", String(out.note.body).slice(0, 12000));
     }
     if (out.delegation && out.delegation.minion) {
       await runStaffMinion(key, String(out.delegation.minion).trim(), String(out.delegation.task || t.title).slice(0, 160), out.delegation.context);

@@ -618,13 +618,27 @@ function slugify(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "task";
 }
 
+// short sentence-case note titles: the graph stays readable
+export function noteTitle(task, maxWords = 6) {
+  const words = String(task)
+    .replace(/[^a-zA-Z0-9 ]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, maxWords)
+    .join(" ")
+    .toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Report";
+}
+
 async function runMinion(name, task, context) {
   const sys = MINIONS[name];
   if (!sys) return null;
   const report = await thinkText(sys, `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}`, 1600);
-  const file = path.join("Minions", `${etDayKey()}-${name}-${slugify(task)}.md`);
-  fs.mkdirSync(path.join(BRAIN_DIR, "Minions"), { recursive: true });
-  brainWrite(file, `# ${name}: ${task}\n\nFor [[Corvid]], ${etDayKey()}.\n\n${report}\n`);
+  state.minionSeq = (state.minionSeq || 0) + 1;
+  const minionDir = name.charAt(0).toUpperCase() + name.slice(1);
+  const file = path.join("Minions", minionDir, `${String(state.minionSeq).padStart(3, "0")} ${noteTitle(task)}.md`);
+  fs.mkdirSync(path.join(BRAIN_DIR, "Minions", minionDir), { recursive: true });
+  brainWrite(file, `# ${minionDir}: ${noteTitle(task, 10)}\n\nDate: ${etDayKey()}\nTask: ${task}\nFor [[Corvid]].\n\n${report}\n`);
   state.minionReports = (state.minionReports || []).slice(-5);
   state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file });
   log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
@@ -865,7 +879,7 @@ export async function runCycle(trigger = "schedule") {
     state.proposals = state.proposals.slice(-60);
     for (const note of Array.isArray(out.brain_notes) ? out.brain_notes.slice(0, 2) : []) {
       const nm = String(note.name || "").replace(/[^a-zA-Z0-9 _-]/g, "").trim();
-      if (nm && note.body) brainWrite(`${nm.replace(/\.md$/i, "")}.md`, String(note.body).slice(0, 12000));
+      if (nm && note.body) brainWrite(`${nm.replace(/\.?md$/i, "")}.md`, String(note.body).slice(0, 12000));
     }
     const delegations = Array.isArray(out.delegations) ? out.delegations.slice(0, 2) : [];
     // hand Regent only what THIS cycle pushed; staff filings already went
@@ -1269,7 +1283,7 @@ async function workTick() {
     if (out.blocked_on) t.wait = Number(out.blocked_on) || t.wait;
     if (out.note && out.note.name && out.note.body) {
       const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
-      if (nm) brainWrite(`${nm.replace(/\.md$/i, "")}.md`, String(out.note.body).slice(0, 12000));
+      if (nm) brainWrite(`${nm.replace(/\.?md$/i, "")}.md`, String(out.note.body).slice(0, 12000));
     }
     if (out.delegation && out.delegation.minion) {
       await runMinion(
