@@ -513,6 +513,24 @@ async function validateEdit(file, before, after) {
   if (!after || !after.trim()) return "the result would leave the file empty";
   const ext = ((file.match(/\.([a-z0-9]+)$/i) || [])[1] || "").toLowerCase();
   const count = (s, re) => (s.match(re) || []).length;
+  if (ext === "html" || ext === "htm") {
+    const dupIds = (s) => {
+      const seen = {};
+      const d = new Set();
+      for (const m of s.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)) {
+        if (seen[m[1]]) d.add(m[1]);
+        seen[m[1]] = 1;
+      }
+      return d;
+    };
+    const beforeDup = dupIds(before);
+    for (const id of dupIds(after)) {
+      if (!beforeDup.has(id)) return `the edit would create a duplicate id "${id}", that section already exists on the page`;
+    }
+    if (count(after, /<[^>]+>\s*$/) && /<\/body>[\s\S]*<section/i.test(after) && !/<\/body>[\s\S]*<section/i.test(before)) {
+      return "the edit would place a section after the closing body tag";
+    }
+  }
   if (ext === "json") {
     try {
       JSON.parse(after);
