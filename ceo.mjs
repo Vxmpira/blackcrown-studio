@@ -555,16 +555,39 @@ async function executeSiteEdit(p) {
   if (loc.err) return { ok: false, msg: loc.err };
   const { rootKey, file, rootDir, full } = loc;
   let html;
+  let creating = false;
   try {
     html = fs.readFileSync(full, "utf8");
   } catch {
-    return { ok: false, msg: `${file} not found in ${rootDir}` };
+    const curNF = String(section(p.detail, "CURRENT") || "").trim().toLowerCase();
+    const body = String(section(p.detail, "NEW") || "");
+    if (curNF !== "(new file)" || !body.trim()) {
+      return { ok: false, msg: `${file} not found in ${rootDir}. To create a brand new page, set CURRENT to exactly (new file) and NEW to the complete document` };
+    }
+    if (rootKey === "korvus") {
+      return { ok: false, msg: "new korvus pages need a server route before they serve; ask the owner to route it first, then file again" };
+    }
+    if (!/^[\w][\w./-]*$/.test(file) || file.includes("..")) {
+      return { ok: false, msg: "refusing that path for a new file" };
+    }
+    if (/\.html?$/i.test(file)) {
+      const b = body.trim();
+      if (!/^<!doctype html>/i.test(b) || !/<\/html>\s*$/i.test(b) || !/<title>[^<]{3,}<\/title>/i.test(b) || !/<\/head>/i.test(b) || !/<meta\s+name="viewport"/i.test(b)) {
+        return { ok: false, msg: "new page rejected: NEW must be one complete html document with doctype, head, title, viewport meta and a closing html tag" };
+      }
+    }
+    html = "";
+    creating = true;
   }
   const current = section(p.detail, "CURRENT");
   const next = section(p.detail, "NEW");
   if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
   let updated = null;
   let how = "";
+  if (creating) {
+    updated = next.trim() + "\n";
+    how = "new page created";
+  }
   if (/sitemap\.xml$/i.test(file) && /<\/urlset>/i.test(html) && /<url>/i.test(next)) {
     // sitemap append: insert only the <url> blocks whose <loc> is not already listed
     const blocks = next.match(/<url>[\s\S]*?<\/url>/gi) || [];
@@ -688,7 +711,7 @@ async function executeSiteEdit(p) {
     return { ok: false, msg: `safety guard blocked the write: ${invalid}` };
   }
   try {
-    fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
+    if (!creating) fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
     fs.writeFileSync(full, updated);
   } catch (e) {
     return { ok: false, msg: `write failed: ${e.message || e}` };
