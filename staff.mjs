@@ -271,7 +271,22 @@ async function callModel(system, user, maxTokens) {
   return (j.content || []).map((c) => c.text || "").join("");
 }
 async function think(system, user, maxTokens = 3200) {
-  return parseModelJson(await callModel(system, user, maxTokens));
+  const raw = await callModel(system, user, maxTokens);
+  try {
+    return parseModelJson(raw);
+  } catch (e) {
+    const second = await callModel(
+      system,
+      `${user}\n\nREMINDER: your whole reply must be ONLY the JSON object, starting with { and ending with }. No prose, no code fences.`,
+      maxTokens
+    );
+    try {
+      return parseModelJson(second);
+    } catch {
+      const head = String(raw).slice(0, 160).replace(/\n/g, " ");
+      throw new Error(`${e.message}. Output head: ${head}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
