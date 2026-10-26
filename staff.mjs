@@ -369,7 +369,7 @@ async function runStaffCycle(key, trigger = "schedule") {
       .filter(Boolean)
       .join("\n\n");
 
-    const out = await think(`${role.system}\n\n${CYCLE_SCHEMA}`, user);
+    const out = await think(`${role.system}\n\n${CYCLE_SCHEMA}`, user, 6000);
     a.thought = String(out.thought || "").slice(0, 700);
     a.focus = String(out.focus || a.focus).slice(0, 180);
     if (Array.isArray(out.tasks)) {
@@ -435,7 +435,8 @@ async function runStaffCycle(key, trigger = "schedule") {
     return { ok: true };
   } catch (e) {
     a.status = "watching";
-    log(key, "error", `cycle failed: ${String(e.message || e).slice(0, 200)}`);
+    a.lastCycleAt = Date.now() - CYCLE_EVERY_H * 3600000 + 15 * 60000;
+    log(key, "error", `cycle failed, retrying in 15 min: ${String(e.message || e).slice(0, 200)}`);
     saveState();
     return { ok: false, error: String(e.message || e) };
   }
@@ -492,7 +493,7 @@ async function staffWorkTick(key) {
     ]
       .filter(Boolean)
       .join("\n\n");
-    const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 2000);
+    const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 3500);
     if (out.thought) a.thought = String(out.thought).slice(0, 700);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
