@@ -1181,7 +1181,7 @@ async function doAudit() {
     if (key === "site" || !dir || !fs.existsSync(dir)) continue;
     const found = [];
     const walk = (d, depth) => {
-      if (depth > 2 || found.length >= 12) return;
+      if (depth > 2 || found.length >= 18) return;
       let entries = [];
       try {
         entries = fs.readdirSync(d, { withFileTypes: true });
@@ -1189,7 +1189,7 @@ async function doAudit() {
         return;
       }
       for (const f of entries) {
-        if (found.length >= 12) break;
+        if (found.length >= 18) break;
         if (f.name.startsWith(".") || f.name === "node_modules" || f.name === "dist") continue;
         const fp = path.join(d, f.name);
         if (f.isDirectory()) walk(fp, depth + 1);
