@@ -1704,6 +1704,10 @@ const companyFeed = async (key) => {
     const lines = [];
     try { lines.push(spendSummary()); } catch {}
     try {
+      const js = loadJobs();
+      if (js.length) lines.push(`SERVER JOBS already registered, never file duplicates: ${js.map((j) => `"${j.name}" (${j.schedule || "?"} to ${j.channel || "?"}${j.enabled === false ? ", off" : ""})`).join("; ")}`);
+    } catch {}
+    try {
       const s = loadStats();
       const dk = dayKey();
       const sum = (day, e) => Object.values((s[day] && s[day][e]) || {}).reduce((a, b) => a + b, 0);

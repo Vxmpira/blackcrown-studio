@@ -406,11 +406,9 @@ async function sendAskCard(p) {
     await send(content);
     return;
   }
-  // the card lands in the boardroom AND the filing desk's own channel,
-  // reactions armed in both: approve the work where you see it
+  // one approval desk: every ask lands in the boardroom only, so rulings
+  // never split across channels (owner's call, 2026-10-26)
   const channels = [CEO_CHANNEL];
-  const deskCh = p.author && deps.staffChannels ? deps.staffChannels[p.author] : null;
-  if (deskCh && !channels.includes(deskCh)) channels.push(deskCh);
   let posted = 0;
   for (const ch of channels) {
     try {
