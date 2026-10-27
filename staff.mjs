@@ -320,7 +320,7 @@ async function runStaffMinion(key, minion, task, context) {
     `# ${minionDir}: ${noteTitle(task, 10)}\n\nDate: ${dayKey()}\nTask: ${task}\nFor [[${ROLES[key].name}]].\n\n${report}\n`
   );
   state[key].minionReports = (state[key].minionReports || []).slice(-5);
-  state[key].minionReports.push({ t: Date.now(), minion, task: String(task).slice(0, 100) });
+  state[key].minionReports.push({ t: Date.now(), minion, task: String(task).slice(0, 100), gist: String(report).slice(0, 700) });
   log(key, "minion", `${minion} finished: ${String(task).slice(0, 80)}`);
 }
 
@@ -365,6 +365,7 @@ async function runStaffCycle(key, trigger = "schedule") {
       `YOUR Playbook.md:\n${vaultRead(key, "Playbook.md").slice(0, 1500) || "(not started)"}`,
       key === "steward" ? `YOUR Community.md:\n${vaultRead(key, "Community.md").slice(0, 1500) || "(not started)"}` : "",
       `OPEN TASKS: ${JSON.stringify(a.tasks.filter((t) => t.status !== "done"))}`,
+      `MINION REPORTS, the gist field IS the answer, use it directly: ${JSON.stringify((a.minionReports || []).slice(-3).map((m) => ({ minion: m.minion, task: m.task, gist: m.gist || "" })))}`,
       `COMMUNITY CHANNEL WIRED: ${role.community ? "yes" : "no"}. Posts already today: ${a.communityDay === dayKey() ? a.communityCount : 0} of 2.`,
     ]
       .filter(Boolean)

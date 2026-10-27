@@ -521,6 +521,29 @@ function repairJson(text) {
   return out;
 }
 
+function closeTruncated(text) {
+  let s = String(text);
+  const m = s.match(/\{[\s\S]*/);
+  if (m) s = m[0];
+  let inStr = false;
+  let esc = false;
+  const stack = [];
+  for (const ch of s) {
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = inStr; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (!inStr) {
+      if (ch === "{") stack.push("}");
+      else if (ch === "[") stack.push("]");
+      else if (ch === "}" || ch === "]") stack.pop();
+    }
+  }
+  if (inStr) s += '"';
+  s = s.replace(/,\s*$/, "");
+  while (stack.length) s += stack.pop();
+  return s;
+}
+
 export function parseModelJson(text) {
   const tries = [];
   tries.push(text);
@@ -530,6 +553,7 @@ export function parseModelJson(text) {
     tries.push(m[0]);
     tries.push(repairJson(m[0]));
   }
+  tries.push(closeTruncated(repairJson(text)));
   for (const t of tries) {
     try {
       return JSON.parse(t);
@@ -714,7 +738,7 @@ async function runMinion(name, task, context) {
   fs.mkdirSync(path.join(BRAIN_DIR, "Minions", minionDir), { recursive: true });
   brainWrite(file, `# ${minionDir}: ${noteTitle(task, 10)}\n\nDate: ${etDayKey()}\nTask: ${task}\nFor [[Corvid]].\n\n${report}\n`);
   state.minionReports = (state.minionReports || []).slice(-5);
-  state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file });
+  state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file, gist: String(report).slice(0, 700) });
   log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
   saveState();
   // a report that lands long after the cycle that ordered it deserves prompt attention
@@ -890,8 +914,8 @@ export async function runCycle(trigger = "schedule") {
       `REGENT LEDGER (what got executed, confirm wins against it): ${
         feeds.ledger ? feeds.ledger() || "nothing yet" : "n/a"
       }`,
-      `MINION REPORTS (recent, read the vault Minions folder for full text): ${JSON.stringify(
-        (state.minionReports || []).slice(-4).map((m) => ({ minion: m.minion, task: m.task, file: m.file }))
+      `MINION REPORTS, the gist field IS the answer, use it directly: ${JSON.stringify(
+        (state.minionReports || []).slice(-4).map((m) => ({ minion: m.minion, task: m.task, file: m.file, gist: m.gist || "" }))
       )}`,
       `AUDIT (worst first): ${JSON.stringify(
         audit
@@ -910,7 +934,7 @@ export async function runCycle(trigger = "schedule") {
       `Number NEW proposals starting at: ${nextNumber}`,
     ].join("\n\n");
 
-    const out = await think(CYCLE_SYSTEM, user, 6000);
+    const out = await think(CYCLE_SYSTEM, user, 8000);
 
     state.lastThought = String(out.thought || "").slice(0, 800);
     state.currentFocus = String(out.focus || state.currentFocus).slice(0, 200);
@@ -999,7 +1023,8 @@ export async function runCycle(trigger = "schedule") {
     return { ok: true };
   } catch (e) {
     state.status = "error";
-    log("error", `Cycle failed: ${e.message || e}`);
+    if (CYCLE_MS) state.lastCycleAt = Date.now() - CYCLE_MS + 15 * 60000;
+    log("error", `Cycle failed, retrying in 15 min: ${e.message || e}`);
     if (!state.lastErrorPingAt || Date.now() - state.lastErrorPingAt > 6 * 3600 * 1000) {
       state.lastErrorPingAt = Date.now();
       await discordSend(
