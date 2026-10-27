@@ -435,7 +435,7 @@ app.get("/api/track", (req, res) => {
     const k = String(req.query.k || "")
       .slice(0, 32)
       .replace(/[^a-z0-9_-]/gi, "");
-    if ((e === "visit" || e === "click") && k) {
+    if ((e === "visit" || e === "click" || e === "signup") && k) {
       const s = loadStats();
       const d = dayKey();
       s[d] = s[d] || {};
@@ -1728,7 +1728,10 @@ const companyFeed = async (key) => {
         v7 += sum(dayKey(i), "visit");
         c7 += sum(dayKey(i), "click");
       }
-      lines.push(`TRAFFIC: today ${sum(dk, "visit")} visits ${sum(dk, "click")} clicks; 7d ${v7} visits ${c7} clicks`);
+      let sg7 = 0;
+      for (let i = 0; i < 7; i++) sg7 += sum(dayKey(i), "signup");
+      const sgSrc = Object.entries((s[dk] && s[dk].signup) || {}).map(([a, b]) => `${a} ${b}`).join(", ");
+      lines.push(`TRAFFIC: today ${sum(dk, "visit")} visits ${sum(dk, "click")} clicks ${sum(dk, "signup")} korvus signups${sgSrc ? ` (${sgSrc})` : ""}; 7d ${v7} visits ${c7} clicks ${sg7} signups`);
     } catch {
       lines.push("TRAFFIC: unavailable");
     }
