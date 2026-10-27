@@ -1477,7 +1477,7 @@ async function workTick() {
       `BRAIN Strategy.md (excerpt):\n${brainRead("Strategy.md").slice(0, 1200)}`,
       `BRAIN Playbook.md (excerpt):\n${brainRead("Playbook.md").slice(0, 800)}`,
     ].join("\n\n");
-    const out = await think(WORK_SYSTEM, user, 2400);
+    const out = await think(WORK_SYSTEM, user, 5000);
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
