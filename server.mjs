@@ -1794,7 +1794,7 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed });
+wireStaff({ feed: companyFeed, wire: recordWire });
 
 // ----- scheduled jobs: the in-house automation engine -----------------------
 // Agents file kind "job" proposals; on approval Regent registers them here
@@ -2229,10 +2229,21 @@ async function forgeOverlay({ src, lines, name }) {
   return `${ADMIN_PUBLIC_URL}/renders/${clean}.mp4`;
 }
 
+// the wire: a live ledger of desk-to-desk handoffs, drawn in the city
+const WIRE = [];
+function recordWire(from, to, text) {
+  WIRE.unshift({ t: Date.now(), from: String(from).toLowerCase(), to: String(to).toLowerCase(), text: String(text).replace(/^From \w+: /, "").slice(0, 120) });
+  if (WIRE.length > 80) WIRE.length = 80;
+}
+app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
+
 wireHooks({
   forge: forgeOverlay,
   requestStaff: (to, title) => {
-    if (["herald", "steward", "bard"].includes(to)) staffAddTask(to, title);
+    if (["herald", "steward", "bard"].includes(to)) {
+      staffAddTask(to, title);
+      recordWire("corvid", to, title);
+    }
   },
   onFiled: receiveProposals,
   ownerDecision,

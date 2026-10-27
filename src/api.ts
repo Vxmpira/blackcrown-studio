@@ -497,6 +497,18 @@ export type StaffAgent = {
   community?: boolean;
   minionReports?: { t: number; minion: string; task: string }[];
 };
+export type WireEvent = { t: number; from: string; to: string; text: string };
+export async function getWire(): Promise<WireEvent[]> {
+  try {
+    const r = await fetch(`${BASE}/api/wire`, { cache: "no-store" });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return j.wire || [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getStaff(): Promise<StaffAgent[]> {
   try {
     const r = await fetch(`${BASE}/api/staff`, { cache: "no-store" });

@@ -1156,3 +1156,15 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .c3d-log{display:flex;gap:6px;font-size:10.5px;padding:2px 0;color:#bab6c9;align-items:baseline}
 .c3d-log .log-t{color:var(--mute,#8a8f9a);flex:none}
 .c3d-log .log-k{flex:none;font-size:9px;text-transform:uppercase;letter-spacing:.08em}
+
+/* ===== the wire: live desk-to-desk feed over the city ===== */
+.c3d-wire{position:absolute;left:14px;bottom:14px;max-width:420px;background:rgba(6,6,10,.82);border:1px solid rgba(255,45,149,.25);border-radius:10px;padding:10px 12px;backdrop-filter:blur(8px);z-index:5}
+.c3d-wire-head{font-family:var(--mono,monospace);font-size:10px;letter-spacing:.2em;color:#ff2d95;margin-bottom:6px}
+.c3d-wire-row{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#c9cdda;padding:3px 0;border-top:1px solid rgba(255,255,255,.05)}
+.c3d-wire-row:first-of-type{border-top:none}
+.w-tag{font-family:var(--mono,monospace);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.06);color:#ff2d95}
+.w-corvid{color:#ff2d95}.w-regent{color:#f2c94c}.w-herald{color:#46e6ff}.w-steward{color:#35e08f}.w-bard{color:#b15bff}
+.w-arrow{color:#6a6f80;font-size:10px}
+.w-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:#9aa0b2}
+.w-quiet{color:#6a6f80;font-style:italic}
+@media (max-width:700px){.c3d-wire{max-width:72vw}}

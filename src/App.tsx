@@ -67,6 +67,13 @@ export const App: React.FC = () => {
             blurb="Your project manager. Runs the board, hands work to the other agents, and grows Eclipse-X with its own minion crew."
           />
         ) : null}
+        {tab === "studio" ? (
+          <Staff
+            k="bard"
+            eyebrow="Studio"
+            blurb="Your video studio chief. Directs every clip, bakes exact brand text on with the forge, and pulls captions and angles from the other desks."
+          />
+        ) : null}
         {tab === "command" ? <Command /> : null}
         {tab === "stats" ? <Stats /> : null}
         {tab === "settings" ? <Settings /> : null}

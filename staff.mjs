@@ -438,6 +438,7 @@ async function runStaffCycle(key, trigger = "schedule") {
         if (to === "corvid") corvidAddTask(title);
         else if (ROLES[to]) staffAddTask(to, title);
         else continue;
+        deps.wire?.(key, to, ask);
         log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
       }
     }
@@ -447,6 +448,8 @@ async function runStaffCycle(key, trigger = "schedule") {
         if (!String(as.task || "").trim()) continue;
         if (as.to === "corvid") corvidAddTask(title);
         else if (as.to === "herald") staffAddTask("herald", title);
+        else continue;
+        deps.wire?.(key, as.to, String(as.task));
         log(key, "assign", `${as.to} <- ${String(as.task).slice(0, 80)}`);
       }
     }
@@ -567,7 +570,10 @@ async function staffWorkTick(key) {
         const title = `From ${role.name}: ${ask}`;
         if (to === "corvid") corvidAddTask(title);
         else if (ROLES[to]) staffAddTask(to, title);
-        if (to === "corvid" || ROLES[to]) log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
+        if (to === "corvid" || ROLES[to]) {
+          deps.wire?.(key, to, ask);
+          log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
+        }
       }
     }
     if (out.note && out.note.name && out.note.body) {

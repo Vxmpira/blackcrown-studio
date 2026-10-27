@@ -7,6 +7,8 @@ import {
   getStaff,
   getStats,
   getUptime,
+  getWire,
+  type WireEvent,
   type AgentState,
   type CeoState,
   type RevenueData,
@@ -29,6 +31,7 @@ export const Dashboard: React.FC = () => {
   const [seo, setSeo] = useState<SeoData | null>(null);
   const [stats, setStats] = useState<{ sources?: Record<string, number> } | null>(null);
   const [staff, setStaff] = useState<StaffAgent[]>([]);
+  const [wire, setWire] = useState<WireEvent[]>([]);
   const [sel, setSel] = useState<string | null>(null);
 
   const load = () => {
@@ -42,11 +45,16 @@ export const Dashboard: React.FC = () => {
     getAgent().then(setAgent);
     getSeo().then(setSeo);
     getStaff().then(setStaff);
+    getWire().then(setWire);
   };
   useEffect(() => {
     load();
     const t = window.setInterval(load, 60000);
-    return () => window.clearInterval(t);
+    const tw = window.setInterval(() => getWire().then(setWire), 12000);
+    return () => {
+      window.clearInterval(t);
+      window.clearInterval(tw);
+    };
   }, []);
   // inside a building, the dossier breathes: refresh fast while one is open
   useEffect(() => {
@@ -121,6 +129,7 @@ export const Dashboard: React.FC = () => {
     },
     herald: { title: "Herald, sales and advertising", lines: staffLines("herald") },
     steward: { title: "Steward, project manager", lines: staffLines("steward") },
+    bard: { title: "Bard, video studio", lines: staffLines("bard") },
     regent: {
       title: "Regent, CEO agent",
       lines: [
@@ -143,6 +152,9 @@ export const Dashboard: React.FC = () => {
     planner: "project steps",
     crier: "community",
     auditor: "operations",
+    director: "cinematography",
+    quill: "hooks and titles",
+    critic: "quality gate",
   };
   const agoShort = (t: number) => {
     const mn = Math.round((Date.now() - t) / 60000);
@@ -163,7 +175,7 @@ export const Dashboard: React.FC = () => {
         logs: (agent.log || []).slice(0, 5),
       };
     }
-    if ((sel === "herald" || sel === "steward") && member(sel)) {
+    if ((sel === "herald" || sel === "steward" || sel === "bard") && member(sel)) {
       const a = member(sel)!;
       return {
         thought: a.thought || "",
@@ -209,9 +221,23 @@ export const Dashboard: React.FC = () => {
               regentSub: asks ? `${asks} ask${asks === 1 ? "" : "s"} waiting` : "standing by",
               heraldSub: member("herald") ? (member("herald")!.enabled ? "on the desk" : "paused") : "",
               stewardSub: member("steward") ? (member("steward")!.enabled ? "running the board" : "paused") : "",
+              bardSub: member("bard") ? (member("bard")!.enabled ? "rolling cameras" : "paused") : "",
+              wire: wire.map((w) => ({ t: w.t, from: w.from, to: w.to })),
             }}
           />
         </Suspense>
+        <div className="c3d-wire">
+          <div className="c3d-wire-head">THE WIRE · desk to desk, live</div>
+          {wire.slice(0, 6).map((w, i) => (
+            <div className="c3d-wire-row" key={`${w.t}-${i}`}>
+              <span className={`w-tag w-${w.from}`}>{w.from}</span>
+              <span className="w-arrow">to</span>
+              <span className={`w-tag w-${w.to}`}>{w.to}</span>
+              <span className="w-text">{w.text}</span>
+            </div>
+          ))}
+          {!wire.length ? <div className="c3d-wire-row w-quiet">quiet, the desks are heads down</div> : null}
+        </div>
         {sel && details[sel] ? (
           <div className={`c3d-panel${interior ? " deep" : ""}`}>
             <div className="c3d-panel-head">

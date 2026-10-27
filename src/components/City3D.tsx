@@ -19,6 +19,8 @@ export type CityData = {
   regentSub: string;
   heraldSub?: string;
   stewardSub?: string;
+  bardSub?: string;
+  wire?: { t: number; from: string; to: string }[];
 };
 
 type District = { key: string; label: string; x: number; z: number; h: number; big?: boolean };
@@ -33,6 +35,7 @@ const DISTRICTS: District[] = [
   { key: "corvid", label: "CORVID", x: -9, z: -8, h: 4.6 },
   { key: "herald", label: "HERALD", x: -15, z: -4, h: 4.4 },
   { key: "steward", label: "STEWARD", x: -6, z: -14, h: 4.8 },
+  { key: "bard", label: "BARD", x: -13, z: -12, h: 4.6 },
   { key: "regent", label: "REGENT", x: -1, z: -11, h: 5.4 },
   { key: "you", label: "YOU", x: 4.5, z: -12.5, h: 6.8, big: true },
 ];
@@ -57,6 +60,7 @@ const ACCENT: Record<string, number> = {
   corvid: COLORS.pink,
   herald: COLORS.cyan,
   steward: COLORS.up,
+  bard: 0xb15bff,
   regent: COLORS.gold,
   you: 0xffffff,
 };
@@ -157,6 +161,38 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     }
     scene.add(fills);
 
+    // soft radial glow used for beacon halos
+    const glowTex = (() => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 64;
+      const g = c.getContext("2d")!;
+      const gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+      gr.addColorStop(0, "rgba(255,255,255,0.9)");
+      gr.addColorStop(0.35, "rgba(255,255,255,0.3)");
+      gr.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = gr;
+      g.fillRect(0, 0, 64, 64);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    })();
+
+    // drifting embers: the city breathes
+    const emberCount = 320;
+    const ep = new Float32Array(emberCount * 3);
+    for (let i = 0; i < emberCount; i++) {
+      ep[i * 3] = (Math.random() - 0.5) * 80;
+      ep[i * 3 + 1] = Math.random() * 16;
+      ep[i * 3 + 2] = (Math.random() - 0.5) * 60;
+    }
+    const emberGeo = new THREE.BufferGeometry();
+    emberGeo.setAttribute("position", new THREE.BufferAttribute(ep, 3));
+    const embers = new THREE.Points(
+      emberGeo,
+      new THREE.PointsMaterial({ color: 0xff2d95, size: 0.07, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    scene.add(embers);
+
     // district towers: windowed shaft, setback crown, colored trim, spire
     const labels: { el: HTMLDivElement; v: THREE.Vector3 }[] = [];
     const cores: Record<string, THREE.Mesh> = {};
@@ -219,6 +255,12 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       clickable.push(core);
       g.add(core);
       cores[d.key] = core;
+      const halo = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: glowTex, color: accent, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending })
+      );
+      halo.scale.setScalar(d.big ? 2.8 : 2.1);
+      halo.position.copy(core.position);
+      g.add(halo);
 
       scene.add(g);
 
@@ -261,6 +303,35 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
     addRoute("steward", "regent", COLORS.pink, "agents", 1, 0.12);
     addRoute("steward", "corvid", COLORS.cyan, "agents", 1, 0.09);
     addRoute("steward", "eclipse", COLORS.pink, "agents", 1, 0.05);
+    addRoute("bard", "regent", 0xb15bff, "agents", 1, 0.1);
+    addRoute("herald", "bard", COLORS.cyan, "agents", 1, 0.07);
+
+    // live wire: a spark flies between desks whenever agents hand work across
+    const sparks: { mesh: THREE.Mesh; curve: THREE.QuadraticBezierCurve3; t: number }[] = [];
+    const rings: { mesh: THREE.Mesh; age: number }[] = [];
+    const sparkGeo = new THREE.SphereGeometry(0.17, 6, 6);
+    let wireSeen = Date.now();
+    const spawnWire = () => {
+      const w = dataRef.current.wire || [];
+      let newest = wireSeen;
+      for (const ev of w) {
+        if (ev.t <= wireSeen) continue;
+        if (ev.t > newest) newest = ev.t;
+        const da = DISTRICTS.find((x) => x.key === ev.from);
+        const db = DISTRICTS.find((x) => x.key === ev.to);
+        if (!da || !db || da === db || sparks.length > 14) continue;
+        const pa = new THREE.Vector3(da.x, da.h + 0.8, da.z);
+        const pb = new THREE.Vector3(db.x, db.h + 0.8, db.z);
+        const mid = pa.clone().lerp(pb, 0.5);
+        mid.y += pa.distanceTo(pb) * 0.28 + 2.4;
+        const curve = new THREE.QuadraticBezierCurve3(pa, mid, pb);
+        const tone = ACCENT[ev.from] ?? COLORS.pink;
+        const mesh = new THREE.Mesh(sparkGeo, new THREE.MeshBasicMaterial({ color: tone }));
+        scene.add(mesh);
+        sparks.push({ mesh, curve, t: 0 });
+      }
+      wireSeen = newest;
+    };
 
     const setSize = () => {
       const w = host.clientWidth;
@@ -345,6 +416,7 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
         regent: d.regentSub,
         herald: d.heraldSub || "",
         steward: d.stewardSub || "",
+        bard: d.bardSub || "",
       };
       labels.forEach((l, i) => {
         const sub = subs[DISTRICTS[i].key];
@@ -377,6 +449,47 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
         (r.material as THREE.MeshBasicMaterial).opacity = 0.25 + blink * 0.75;
         (r.material as THREE.MeshBasicMaterial).transparent = true;
       }
+      spawnWire();
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i];
+        s.t += dt * 0.55;
+        if (s.t >= 1) {
+          const end = s.curve.getPointAt(1);
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(0.12, 0.2, 24),
+            new THREE.MeshBasicMaterial({ color: (s.mesh.material as THREE.MeshBasicMaterial).color.getHex(), transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+          );
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.set(end.x, 0.06, end.z);
+          scene.add(ring);
+          rings.push({ mesh: ring, age: 0 });
+          scene.remove(s.mesh);
+          (s.mesh.material as THREE.Material).dispose();
+          sparks.splice(i, 1);
+          continue;
+        }
+        s.mesh.position.copy(s.curve.getPointAt(s.t));
+        s.mesh.scale.setScalar(1 + Math.sin(s.t * Math.PI) * 0.9);
+      }
+      for (let i = rings.length - 1; i >= 0; i--) {
+        const r0 = rings[i];
+        r0.age += dt;
+        const k = r0.age / 1.1;
+        r0.mesh.scale.setScalar(1 + k * 9);
+        (r0.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.85 * (1 - k));
+        if (k >= 1) {
+          scene.remove(r0.mesh);
+          (r0.mesh.material as THREE.Material).dispose();
+          rings.splice(i, 1);
+        }
+      }
+      const earr = emberGeo.attributes.position.array as Float32Array;
+      for (let i = 0; i < emberCount; i++) {
+        earr[i * 3 + 1] += dt * (0.14 + (i % 5) * 0.04);
+        if (earr[i * 3 + 1] > 17) earr[i * 3 + 1] = 0;
+      }
+      emberGeo.attributes.position.needsUpdate = true;
+      (grid.material as THREE.Material & { opacity: number }).opacity = 0.06 + blink * 0.05;
       for (const p of packets) {
         if (!p.mesh.visible) continue;
         p.t = (p.t + dt * p.speed * (dataRef.current.clicksActive || p.key !== "clicks" ? 1 : 0.35)) % 1;
@@ -413,6 +526,8 @@ export const City3D: React.FC<{ data: CityData; onSelect?: (key: string | null) 
       ro.disconnect();
       winTexA.dispose();
       winTexB.dispose();
+      glowTex.dispose();
+      emberGeo.dispose();
       renderer.dispose();
       host.innerHTML = "";
     };
