@@ -803,7 +803,7 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "focus": "max 8 words",
  "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
- "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video: shots, motion, on-screen text, 10 to 15 seconds vertical","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video: shots, motion, pacing, 10 to 15 seconds vertical, NEVER any words or typography in the footage","slides":["..."],"caption":"...","brand":"korvus"}],
  "brain_notes": [{"name":"Keywords.md","body":"full markdown content"}],
  "delegations": [{"minion":"scout|scribe|analyst","task":"one focused job","context":"what it needs to know"}],
  "discord": "the daily update, exactly in the template"
@@ -818,7 +818,7 @@ STRATEGY EVOLUTION: when the data says your Strategy itself should change, file 
 MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per cycle) for jobs a specialist does better: scout for research questions, scribe for finished copy, analyst for digging into the numbers. Their reports land in the vault Minions folder and come back to you next cycle.
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
-DAILY CREATIVE: if CREATIVE FILED TODAY is no, one of this cycle's proposals MUST be a "creative", built from the current data and TIKTOK TRENDS when available. Prefer "format":"video" (one vertical clip with a video direction in "video") over "slides"; stills are the fallback. Every creative MUST declare "target": the ONE destination this post sells, brand (blackcrownvxj.com), korvus (korvus.industries), crown (blackcrown-intelligence.com), eclipse (the free Discord), or lodestone (the indicator). On render, Herald the sales agent finalizes the caption and hashtags for that target, so focus your energy on the visual concept.
+CREATIVE IS BARD'S DESK: Bard the studio agent owns all video creatives (two a day) and slide stills are retired. Never file kind "creative" proposals yourself. When the data shows a creative opportunity (a trend, an angle, a page worth a clip), hand it to Bard with a "request". Your job is the angle and the destination page; the studio does the rest.
 CREATIVE BUDGET: the company has 200 Bloom credits a month and a video costs several times a still. Watch BLOOM CREDITS in your feed and pace the month deliberately: video for the strongest concept, slides for routine posts, and when the balance runs ahead of the calendar, file slides or skip a day. Running dry mid-month is a failure; ending the month with credits unspent on weak posts is not. The daily creative counts as something worth sending, so the discord update goes out with it.`;
 
 const REACT_SYSTEM = `${IDENTITY}
@@ -1160,10 +1160,12 @@ async function bloomVideoModel() {
 }
 
 async function executeVideo(p) {
-  const prompt = [p.video || "", ...(Array.isArray(p.slides) ? p.slides : [])]
+  const NO_TEXT_LAW =
+    " HARD RULE: no words, letters, numbers, logos, captions, subtitles, or typography of any kind anywhere in the footage; pure visuals only, all messaging is added outside the generated video.";
+  const prompt = ([p.video || "", ...(Array.isArray(p.slides) ? p.slides : [])]
     .filter(Boolean)
     .join("\n")
-    .slice(0, 2400);
+    .slice(0, 2200) + NO_TEXT_LAW).trim();
   if (!prompt) {
     log("error", `#${p.number} has no video direction to render`);
     return;
@@ -1321,6 +1323,7 @@ Output STRICT JSON only:
  "note": {"name":"X.md","body":"full markdown"} optional vault write,
  "blocked_on": optional proposal number this task now waits on,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, new data tomorrow), park it that long instead of burning steps on it,
+ "request": {"to":"herald|steward|bard","ask":"what you need from that desk, max 14 words"} optional,
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
@@ -1394,6 +1397,12 @@ async function workTick() {
         String(out.delegation.task || t.title).slice(0, 160),
         out.delegation.context
       );
+    }
+    if (out.request && out.request.ask && hooks.requestStaff) {
+      try {
+        hooks.requestStaff(String(out.request.to || "").toLowerCase(), `From Corvid: ${String(out.request.ask).slice(0, 120)}`);
+        log("work", `request -> ${out.request.to}: ${String(out.request.ask).slice(0, 80)}`);
+      } catch {}
     }
     if (out.say && String(out.say).trim()) {
       await discordSend(`**CORVID //** ${String(out.say).slice(0, 300)}`);

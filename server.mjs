@@ -2170,6 +2170,9 @@ wireCeo({
   },
 });
 wireHooks({
+  requestStaff: (to, title) => {
+    if (["herald", "steward", "bard"].includes(to)) staffAddTask(to, title);
+  },
   onFiled: receiveProposals,
   ownerDecision,
   // every approved creative passes through the sales desk before it ships

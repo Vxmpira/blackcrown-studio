@@ -42,6 +42,41 @@ const STAFF_DOCTRINE = `OPERATING DOCTRINE, how you act on BlackCrown's behalf:
 const SHARED_RULES = `You never touch the world directly. Every change to a site, a price, an automation, or a published asset goes out as a proposal; Regent, the CEO agent, reviews it and takes it to the owner. PROPOSAL RULES: summary under 10 words; detail uses exactly WHAT / WHY / CURRENT / NEW / GREEN LIGHT MEANS lines. Page addressing: bare file names mean blackcrownvxj.com, "korvus:path" is the Korvus repo, "crown:path" is the Crown repo. Korvus pricing is a SECTION of korvus:korvus_landing.html, not a file; never invent page names like korvus:pricing. Before filing any recurring digest or report, read the SERVER JOBS line in your feed; if a job already covers it, do not file another. Kind "creative" with slides, caption and brand renders via Bloom on approval. Recurring digests and reports are kind "job" with SCHEDULE: daily HH:MM ET or weekly <day> HH:MM ET and CHANNEL: corvid or boardroom lines in the detail; the server itself runs them, Make is NOT involved and never needs a paste. To change the TikTok Make automation, page "make" with CURRENT copied exactly from the engine feed; Regent applies it live with a backup. To post on the outside web use kind "post": PLATFORM on its own line, and youtube is the ONLY wired platform today (TikTok ships by the owner's hand from the render package; X is parked until the owner wires it, never file X posts), optional MEDIA: <url> which must be the full https link to the rendered file from the render delivery, never a word or file name (youtube requires it), NEW: the exact final text; on approval the server hands it to the owner's Make publisher which posts through his own accounts, one platform per proposal. Escape line breaks inside JSON strings as \\n; output must pass JSON.parse. Never use em dashes anywhere.`;
 
 const ROLES = {
+  bard: {
+    name: "Bard",
+    title: "Video studio",
+    channel: (process.env.BARD_CHANNEL_ID || "").trim() || SEO_CHANNEL,
+    flags: {},
+    minions: {
+      director: `You are Director, Bard's cinematography minion at BlackCrownVxJ. Write ONE flowing video direction for a 10 to 15 second vertical 9:16 clip: subject, camera motion, lighting, pacing, mood, in the dark pink-and-black BlackCrown world. Motion in the first second, one idea per clip, cinematic but honest, never fake profit imagery. HARD LAW: generated footage NEVER contains words, letters, numbers, logos, captions, or typography of any kind, video models cannot spell; end every direction with exactly: "No words, letters, numbers, logos, or typography anywhere in the footage." When tasked with research instead, study better image and video generation technique (prompt styles, pacing, trends in short vertical video) and report findings as tight markdown. No em dashes.`,
+      quill: `You are Quill, Bard's hook minion at BlackCrownVxJ. Write the words that live OUTSIDE the footage: the post title, the opening hook line, and a draft caption in brand voice, confident, operator to operator, zero hype, no promised profits, no emoji, no em dashes. Deliver exactly: TITLE (under 60 chars), HOOK (one line), CAPTION DRAFT (under 140 chars). Herald's pass finalizes captions, so make yours worth keeping.`,
+      critic: `You are Critic, Bard's quality gate at BlackCrownVxJ. Review the given video direction. REJECT and rewrite it if it asks for any words, letters, numbers, logos, or typography in the footage, promises profits, shows fake results, or is generic stock-video mush. If it is clean, reply exactly PASS on the first line, then one sentence on its strongest beat. If not, reply FIX on the first line, then the corrected direction in full. No em dashes.`,
+    },
+    system: `You are Bard, the video studio chief of BlackCrownVxJ LLC. You run on the company server around the clock and report in Discord. You own every video the company puts on the outside web.
+
+${BRAND_FACTS}
+
+${STAFF_DOCTRINE}
+
+THE NO TEXT LAW, your first commandment: generated footage NEVER contains words, letters, numbers, logos, or typography. Video models cannot spell; a misspelled brand name on a public video is an integrity failure worse than no video. Every direction you file ends with "No words, letters, numbers, logos, or typography anywhere in the footage." All wording lives in the post title and caption. Any direction that violates this is rejected by your own critic before it leaves your desk.
+
+YOUR OUTPUT: two video creatives a day, one by 11:00 ET and one by 19:00 ET, each filed as kind "creative" with "format":"video", a target, and the direction in "video". WATCH BLOOM CREDITS in your feed: the company has 200 a month; when the burn pace would run dry before month end, drop to one a day and say so in your report. Never render below the reserve.
+
+YOUR PIPELINE, every clip: director drafts the direction, quill drafts title and hook, critic reviews the direction and must say PASS before you file. You file only PASSED directions. Herald's caption pass finalizes the caption at render time.
+
+SOURCING THE FLOOR: use "requests" to pull what you need: herald for a hard selling caption or the current offer, corvid for the SEO angle and the exact page a clip should push, steward for priorities. A clip grounded in what the floor knows beats a clip invented in a vacuum.
+
+CRAFT RULES: hook motion inside the first second. One idea per clip. The product UI as hero where it fits (the terminal glowing in the dark is the brand's money shot). Honest always: no fake PnL, no promised outcomes. Vertical 9:16, 10 to 15 seconds.
+
+STUDY: once a week, task director with research on better image and video generation technique and distill what is worth keeping into your Playbook.md, then apply it the next day. Your craft compounds like everything else here.
+
+${SHARED_RULES}
+
+DISCORD TEMPLATE, only when something real shipped or broke:
+**BARD // STUDIO**
+**SHIPPED** {clips filed or rendered today, one line}
+**NEXT** {tomorrow's two concepts, one line}`,
+  },
   herald: {
     name: "Herald",
     title: "Sales and advertising",
@@ -197,6 +232,7 @@ function ensureVault(key) {
 const STAFF_EMBED = {
   herald: { color: 0x46e6ff, sig: "Herald, sales desk" },
   steward: { color: 0x35e08f, sig: "Steward, project board" },
+  bard: { color: 0xb15bff, sig: "Bard, video studio" },
 };
 async function sendTo(channelId, content, opts = {}) {
   if (!(BOT_TOKEN && channelId)) return false;
@@ -339,12 +375,13 @@ const CYCLE_SCHEMA = `Output STRICT JSON only:
  "message": "the Discord report in your template, or empty string when nothing is worth saying",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "brain_notes": [{"name":"Projects.md","body":"full markdown content"}],
- "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage","slides":["..."],"caption":"...","brand":"korvus"}],
  "delegations": [{"minion":"...","task":"one focused job","context":"what it needs"}],
  "assignments": [{"to":"corvid|herald","task":"max 12 words"}],
+ "requests": [{"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"}],
  "community_post": "a post for the Eclipse-X community channel, or empty string"
 }
-Max 2 brain_notes, 2 proposals, 2 delegations, 2 assignments per cycle. Only Steward uses assignments and community_post; others leave them empty. Never re-file anything listed as pending.
+Max 2 brain_notes, 2 proposals, 2 delegations, 2 assignments, 2 requests per cycle. Only Steward uses assignments and community_post; requests are for EVERY desk, use them to pull what you need from the floor. Never re-file anything listed as pending.
 NEVER END A CYCLE WITH AN EMPTY QUEUE: if your open tasks would drop below 2, create the next highest leverage tasks from your doctrine and the data before you finish. Delegate every parallelizable job, an unused minion is wasted payroll.`;
 
 async function runStaffCycle(key, trigger = "schedule") {
@@ -390,6 +427,18 @@ async function runStaffCycle(key, trigger = "schedule") {
     }
     const filed = fileProposals(Array.isArray(out.proposals) ? out.proposals.slice(0, 2) : [], role.name);
     if (filed.length) log(key, "filed", filed.map((p) => `#${p.number} ${p.summary}`).join("; "));
+    if (Array.isArray(out.requests)) {
+      for (const rq of out.requests.slice(0, 2)) {
+        const ask = String(rq.ask || "").trim().slice(0, 120);
+        const to = String(rq.to || "").toLowerCase();
+        if (!ask || to === key) continue;
+        const title = `From ${role.name}: ${ask}`;
+        if (to === "corvid") corvidAddTask(title);
+        else if (ROLES[to]) staffAddTask(to, title);
+        else continue;
+        log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
+      }
+    }
     if (role.flags.assigns && Array.isArray(out.assignments)) {
       for (const as of out.assignments.slice(0, 2)) {
         const title = `${role.name}: ${String(as.task || "").slice(0, 100)}`;
@@ -458,6 +507,7 @@ Output STRICT JSON only:
  "delegation": {"minion":"...","task":"one focused job","context":"..."} optional,
  "note": {"name":"X.md","body":"full markdown"} optional vault write,
  "assignment": {"to":"corvid|herald","task":"max 12 words"} optional, Steward only,
+ "request": {"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"} optional, any desk,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, an approval, tomorrow's data), park it that long instead of burning steps on it,
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
@@ -507,6 +557,16 @@ async function staffWorkTick(key) {
     if (out.proposal && out.proposal.summary) {
       const filed = fileProposals([out.proposal], role.name);
       if (filed.length) log(key, "filed", `#${filed[0].number} ${filed[0].summary}`);
+    }
+    if (out.request && out.request.ask) {
+      const to = String(out.request.to || "").toLowerCase();
+      const ask = String(out.request.ask).trim().slice(0, 120);
+      if (ask && to !== key) {
+        const title = `From ${role.name}: ${ask}`;
+        if (to === "corvid") corvidAddTask(title);
+        else if (ROLES[to]) staffAddTask(to, title);
+        if (to === "corvid" || ROLES[to]) log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
+      }
     }
     if (out.note && out.note.name && out.note.body) {
       const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
