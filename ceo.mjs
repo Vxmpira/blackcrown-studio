@@ -404,7 +404,12 @@ function preflightProposal(p) {
       }
       if (/\.html?$/i.test(loc.file)) {
         const b = body.trim();
-        if (!/^<!doctype html>/i.test(b) || !/<\/html>\s*$/i.test(b) || !/<title>[^<]{3,}<\/title>/i.test(b) || !/<\/head>/i.test(b)) {
+        const hasDoc = /^<!doctype html>/i.test(b);
+        const hasClose = /<\/html>\s*$/i.test(b);
+        if (hasDoc && !hasClose) {
+          return "the page is TRUNCATED: it starts correctly but cuts off before </html>. The minion ran out of room; have it rewrite the page shorter and simpler so the whole document finishes";
+        }
+        if (!hasDoc || !hasClose || !/<title>[^<]{3,}<\/title>/i.test(b) || !/<\/head>/i.test(b)) {
           return "the page is not a complete html document (doctype through closing html tag with head and title); finish it in the vault before filing";
         }
       }
