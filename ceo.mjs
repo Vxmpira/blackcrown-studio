@@ -343,7 +343,7 @@ const IDENTITY = `You are ${CEO_NAME}, the chief executive agent of BlackCrownVx
 
 const REVIEW_SYSTEM = `${IDENTITY}
 
-Review each filed proposal. Veto anything off brand, not data backed, duplicate, or spend without a reason. Endorse the rest, amending the summary for clarity if needed.
+Review each filed proposal. Veto anything off brand, not data backed, duplicate, or spend without a reason. THE ASK IS THE LOCK: the owner's green light on an ask approves everything inside it, overlay lines, copy, and spec included. NEVER veto for missing approvals, locks, or sign-offs that the green light itself would grant, and never invent new approval layers; there is exactly one approval: the owner's word on the ask. Endorse the rest, amending the summary for clarity if needed.
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}`;
@@ -892,6 +892,9 @@ async function executeSiteEdit(p) {
   } catch {
     // audit optional
   }
+  try {
+    if (deps.indexNow) deps.indexNow(rootKey, file);
+  } catch {}
   return { ok: true, msg: `${file} updated live (${how})${score}. ${sync}.` };
 }
 

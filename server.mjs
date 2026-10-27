@@ -1713,12 +1713,67 @@ app.post("/api/staff/:key/task", (req, res) => {
   res.json({ ok: true, task: t });
 });
 
+// eclipse-x pulse: the agents learn the server as a whole, members, channels, heat
+let eclipseCache = { at: 0, line: "" };
+async function eclipsePulse() {
+  const tok = (process.env.DISCORD_BOT_TOKEN || "").trim();
+  const gid = (process.env.DISCORD_GUILD_ID || "").trim();
+  if (!tok || !gid) return "";
+  if (Date.now() - eclipseCache.at < 30 * 60 * 1000) return eclipseCache.line;
+  try {
+    const H = { authorization: `Bot ${tok}` };
+    const g = await (await fetch(`https://discord.com/api/v10/guilds/${gid}?with_counts=true`, { headers: H })).json();
+    const chans = await (await fetch(`https://discord.com/api/v10/guilds/${gid}/channels`, { headers: H })).json();
+    const now = Date.now();
+    const ageDays = (snow) => (snow ? (now - (Number(BigInt(snow) >> 22n) + 1420070400000)) / 864e5 : 999);
+    const texts = (Array.isArray(chans) ? chans : []).filter((c) => c.type === 0);
+    const hot = texts.filter((c) => ageDays(c.last_message_id) < 1).map((c) => `#${c.name}`);
+    const cold = texts.filter((c) => ageDays(c.last_message_id) > 3).map((c) => `#${c.name}`);
+    eclipseCache = {
+      at: Date.now(),
+      line: `ECLIPSE-X SERVER: ${g.approximate_member_count || "?"} members, ${g.approximate_presence_count || "?"} online now; ${texts.length} text channels; active in the last day: ${hot.slice(0, 10).join(" ") || "none"}; quiet 3d+: ${cold.slice(0, 8).join(" ") || "none"}`,
+    };
+  } catch {
+    eclipseCache = { at: Date.now(), line: "" };
+  }
+  return eclipseCache.line;
+}
+
+// indexnow: every page an agent ships is pushed to the engines that accept
+// pushes (Bing, Yandex). Google discovers via robots sitemaps and GSC.
+const INDEXNOW_KEY = "bc1f4e2a7d5946c8a3b0e6d1f8279c4b";
+const INDEXNOW_HOSTS = { site: "blackcrownvxj.com", korvus: "korvus.industries" };
+function submitIndexNow(rootKey, file) {
+  try {
+    const host = INDEXNOW_HOSTS[rootKey];
+    if (!host) return;
+    let url = null;
+    if (rootKey === "site" && /\.html?$/i.test(file)) {
+      url = `https://${host}/${file === "index.html" ? "" : file}`;
+    } else if (rootKey === "korvus") {
+      const m = file.match(/^pages\/([a-z0-9-]+)\.html$/i);
+      if (m) url = `https://${host}/p/${m[1]}`;
+    }
+    if (!url) return;
+    fetch("https://api.indexnow.org/indexnow", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host, key: INDEXNOW_KEY, keyLocation: `https://${host}/${INDEXNOW_KEY}.txt`, urlList: [url] }),
+    }).catch(() => {});
+    console.log("indexnow pushed:", url);
+  } catch {}
+}
+
 const companyFeed = async (key) => {
     const lines = [];
     try { lines.push(spendSummary()); } catch {}
     try {
       const js = loadJobs();
       if (js.length) lines.push(`SERVER JOBS already registered, never file duplicates: ${js.map((j) => `"${j.name}" (${j.schedule || "?"} to ${j.channel || "?"}${j.enabled === false ? ", off" : ""})`).join("; ")}`);
+    } catch {}
+    try {
+      const ep = await eclipsePulse();
+      if (ep) lines.push(ep);
     } catch {}
     try {
       const s = loadStats();
@@ -2209,6 +2264,7 @@ async function publishPost({ platform, content, media, number, summary }) {
 }
 
 wireCeo({
+  indexNow: submitIndexNow,
   siteRoot: SITE_ROOT,
   audit: async () => (await doAudit()).pages,
   createJob: createJobFromProposal,
