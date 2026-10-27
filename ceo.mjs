@@ -79,11 +79,22 @@ function loadState() {
   try {
     return { ...freshState(), ...JSON.parse(fs.readFileSync(STATE_PATH, "utf8")) };
   } catch {
-    return freshState();
+    try {
+      const s = JSON.parse(fs.readFileSync(STATE_PATH + ".snap", "utf8"));
+      console.log("regent state restored from snapshot");
+      return { ...freshState(), ...s };
+    } catch {
+      return freshState();
+    }
   }
 }
+let ceoSnapAt = 0;
 function saveState() {
   try {
+    if (Date.now() - ceoSnapAt > 3600000) {
+      ceoSnapAt = Date.now();
+      try { fs.writeFileSync(STATE_PATH + ".snap", JSON.stringify(state)); } catch {}
+    }
     fs.writeFileSync(STATE_PATH, JSON.stringify(state));
   } catch {
     // best effort

@@ -82,7 +82,14 @@ function loadState() {
     const s = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
     return { ...freshState(), ...s };
   } catch {
-    return freshState();
+    // immune system: a corrupted state file restores from the last snapshot
+    try {
+      const s = JSON.parse(fs.readFileSync(STATE_PATH + ".snap", "utf8"));
+      console.log("corvid state restored from snapshot");
+      return { ...freshState(), ...s };
+    } catch {
+      return freshState();
+    }
   }
 }
 function saveState() {
@@ -412,6 +419,85 @@ export function wireFeeds(f) {
 let cycleAsap = "";
 let lastPulse = null;
 let lastEventCycleAt = 0;
+// ---------------------------------------------------------------------------
+// the immune system: heal() runs every few minutes from the server. It cannot
+// fix everything, nothing can, but every failure it has seen once it never
+// lets page the owner twice: snapshot and restore state, unstick dead tasks,
+// kickstart silent cycles, expire stale asks, and turn repeated errors into
+// written lessons the agents read on every call.
+// ---------------------------------------------------------------------------
+function errSig(text) {
+  return String(text).toLowerCase().replace(/[0-9#]+/g, "n").replace(/[^a-z n]+/g, "").slice(0, 90);
+}
+export function heal() {
+  const report = [];
+  try {
+    // 1. snapshot good state so corruption can never cost more than an hour
+    try {
+      JSON.parse(JSON.stringify(state));
+      fs.writeFileSync(STATE_PATH + ".snap", JSON.stringify(state));
+    } catch {}
+    const now = Date.now();
+    // 2. unstick: a task "doing" with no step in 4h and no park or wait is dead air
+    for (const tk of state.tasks || []) {
+      if (tk.status === "done") continue;
+      const parked = tk.parkUntil && tk.parkUntil > now;
+      const waiting = tk.wait && (state.proposals || []).some((p) => p.number === tk.wait && p.status === "pending");
+      if (!parked && !waiting && tk.lastStepAt && now - tk.lastStepAt > 4 * 3600000) {
+        tk.lastStepAt = 0;
+        tk.parkUntil = 0;
+        report.push(`requeued stale task: ${tk.title}`);
+      }
+    }
+    // 3. expire asks nobody answered in 48h, the desk can refile what still matters
+    for (const pr of state.proposals || []) {
+      if (pr.status === "pending" && now - (pr.createdAt || pr.at || pr.t || now) > 48 * 3600000) {
+        pr.status = "rejected";
+        pr.note = "healer: expired after 48h unanswered, refile if it still matters";
+        report.push(`expired stale ask #${pr.number}`);
+      }
+    }
+    // 4. kickstart: enabled but silent for 3x the cadence means the clock died
+    if (state.enabled && CYCLE_MS > 0 && state.lastCycleAt && now - state.lastCycleAt > CYCLE_MS * 3 + 10 * 60000) {
+      pokeCycle("healer kickstart, the cycle clock went silent");
+      report.push("kickstarted a silent cycle clock");
+    }
+    // 5. lessons: three identical errors in a day become written doctrine
+    state.heal = state.heal || { sigs: {} };
+    for (const l of (state.log || []).slice(-60)) {
+      if (l.kind !== "error") continue;
+      const sig = errSig(l.text);
+      const rec = (state.heal.sigs[sig] = state.heal.sigs[sig] || { n: 0, last: 0, taught: false, sample: l.text.slice(0, 160) });
+      if (l.t > rec.last) {
+        rec.n += 1;
+        rec.last = l.t;
+      }
+      if (rec.n >= 3 && !rec.taught && now - rec.last < 24 * 3600000) {
+        rec.taught = true;
+        try {
+          brainAppend(
+            "Patterns.md",
+            `- HEALER LESSON ${etDayKey()}: this error has now struck ${rec.n} times, stop walking into it: ${rec.sample}`
+          );
+          report.push(`taught a lesson from a repeating error`);
+        } catch {}
+      }
+    }
+    // keep the signature ledger lean
+    const sigs = Object.entries(state.heal.sigs);
+    if (sigs.length > 60) {
+      state.heal.sigs = Object.fromEntries(sigs.sort((a, b) => b[1].last - a[1].last).slice(0, 40));
+    }
+    if (report.length) {
+      log("heal", report.join("; ").slice(0, 400));
+      saveState();
+    }
+  } catch (e) {
+    console.log("healer (corvid) stumbled:", e.message || e);
+  }
+  return report;
+}
+
 export function pokeCycle(reason) {
   cycleAsap = String(reason || "something changed").slice(0, 140);
 }

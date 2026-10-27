@@ -175,7 +175,12 @@ let state = {};
 try {
   state = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
 } catch {
-  state = {};
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_PATH + ".snap", "utf8"));
+    console.log("staff state restored from snapshot");
+  } catch {
+    state = {};
+  }
 }
 for (const key of Object.keys(ROLES)) {
   state[key] = { ...freshAgent(), ...(state[key] || {}) };
@@ -732,6 +737,41 @@ export async function heraldCopyPass(input) {
     return out;
   }
   return null;
+}
+
+export function staffHeal() {
+  const report = [];
+  try {
+    try {
+      JSON.parse(JSON.stringify(state));
+      fs.writeFileSync(STATE_PATH + ".snap", JSON.stringify(state));
+    } catch {}
+    const now = Date.now();
+    for (const key of Object.keys(ROLES)) {
+      const a = state[key];
+      if (!a) continue;
+      for (const tk of a.tasks || []) {
+        if (tk.status === "done") continue;
+        const parked = tk.parkUntil && tk.parkUntil > now;
+        if (!parked && tk.lastStepAt && now - tk.lastStepAt > 4 * 3600000) {
+          tk.lastStepAt = 0;
+          tk.parkUntil = 0;
+          report.push(`${key}: requeued stale task ${String(tk.title).slice(0, 50)}`);
+        }
+      }
+      if (a.enabled && a.lastCycleAt && now - a.lastCycleAt > CYCLE_EVERY_H * 3600000 * 3 + 10 * 60000) {
+        a.lastCycleAt = 0;
+        report.push(`${key}: kickstarted a silent cycle clock`);
+      }
+    }
+    if (report.length) {
+      saveState();
+      log(Object.keys(ROLES)[0], "heal", report.join("; ").slice(0, 300));
+    }
+  } catch (e) {
+    console.log("healer (staff) stumbled:", e.message || e);
+  }
+  return report;
 }
 
 export function staffAddTask(key, title) {

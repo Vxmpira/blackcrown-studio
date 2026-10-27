@@ -34,6 +34,7 @@ import {
   agentLog,
   getSpend,
   spendSummary,
+  heal as corvidHeal,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
 import {
@@ -49,7 +50,7 @@ import {
   ceoVaultPath,
   REPO_ROOTS,
 } from "./ceo.mjs";
-import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass } from "./staff.mjs";
+import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal } from "./staff.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1795,6 +1796,36 @@ const companyFeed = async (key) => {
     return lines.join("\n");
 };
 wireStaff({ feed: companyFeed, wire: recordWire });
+
+// ---------------------------------------------------------------------------
+// the immune system: every 10 minutes the healer makes the floor whole again.
+// It cannot fix the unknown, but nothing known gets to break twice, and
+// nothing transient gets to page the owner at all.
+// ---------------------------------------------------------------------------
+process.on("unhandledRejection", (e) => console.log("unhandled rejection, absorbed:", e?.message || e));
+process.on("uncaughtException", (e) => console.log("uncaught exception, absorbed:", e?.message || e));
+function diskHygiene() {
+  try {
+    const cutoff = Date.now() - 7 * 864e5;
+    for (const root of Object.values(REPO_ROOTS || {})) {
+      try {
+        for (const f of fs.readdirSync(root)) {
+          if (/\.bak-\d+$/.test(f)) {
+            const fp = path.join(root, f);
+            if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp);
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+}
+function runHealer() {
+  try { corvidHeal(); } catch (e) { console.log("healer corvid:", e?.message || e); }
+  try { staffHeal(); } catch (e) { console.log("healer staff:", e?.message || e); }
+  try { diskHygiene(); } catch {}
+}
+setTimeout(runHealer, 90 * 1000);
+setInterval(runHealer, 10 * 60 * 1000);
 
 // ----- scheduled jobs: the in-house automation engine -----------------------
 // Agents file kind "job" proposals; on approval Regent registers them here
