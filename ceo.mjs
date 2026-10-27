@@ -399,6 +399,8 @@ function preflightProposal(p) {
         }
         if (!body.trim()) return `vault note ${fromNote[1].trim()} is empty or missing; have the minion write the full page first`;
         body = body.replace(/^```(html)?\s*/i, "").replace(/```\s*$/i, "");
+        const doc = body.match(/<!doctype html>[\s\S]*<\/html>/i);
+        if (doc) body = doc[0];
       }
       if (/\.html?$/i.test(loc.file)) {
         const b = body.trim();
@@ -680,6 +682,8 @@ async function executeSiteEdit(p) {
         return { ok: false, msg: `vault note ${fromNote[1].trim()} is empty or missing; have the minion write the full page there first` };
       }
       body = body.replace(/^```(html)?\s*/i, "").replace(/```\s*$/i, "");
+      const doc = body.match(/<!doctype html>[\s\S]*<\/html>/i);
+      if (doc) body = doc[0];
     }
     if (curNF !== "(new file)" || !body.trim()) {
       return { ok: false, msg: `${file} not found in ${rootDir}. To create a brand new page, set CURRENT to exactly (new file) and NEW to the complete document` };

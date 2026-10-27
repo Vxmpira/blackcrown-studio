@@ -1671,6 +1671,17 @@ async function syncBrains() {
     brainGit(["push", "origin", "main"], 45000);
     brainSyncFailed = false;
   } catch (e) {
+    // a conflicted rebase leaves the repo stuck and every later sync dead:
+    // abort whatever is half done, merge with local wins, push again
+    try { brainGit(["rebase", "--abort"]); } catch {}
+    try { brainGit(["merge", "--abort"]); } catch {}
+    try {
+      brainGit(["pull", "--no-rebase", "-X", "ours"]);
+      brainGit(["push", "origin", "main"], 45000);
+      console.log("brain sync recovered after conflict");
+      brainSyncFailed = false;
+      return;
+    } catch {}
     if (!brainSyncFailed) {
       brainSyncFailed = true;
       console.log("brain sync failed:", e.message || e);
