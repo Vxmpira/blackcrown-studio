@@ -372,9 +372,18 @@ function preflightProposal(p) {
     const plat = (detail.match(/PLATFORM:\s*(\S+)/i) || [])[1];
     if (kind === "post" || plat) {
       if (!plat) return "post asks need a PLATFORM line";
-      if (plat.toLowerCase() !== "youtube") return `platform ${plat} is not wired; youtube is the only wired platform`;
+      const pl = plat.toLowerCase();
+      if (pl !== "youtube" && pl !== "x") return `platform ${plat} is not wired; wired platforms: youtube, x`;
       const media = (detail.match(/MEDIA:\s*(\S+)/i) || [])[1];
-      if (!media || !/^https?:\/\//i.test(media)) return "MEDIA must be the full https url of the rendered file";
+      if (pl === "youtube") {
+        if (!media || !/^https?:\/\//i.test(media)) return "MEDIA must be the full https url of the rendered file";
+      } else {
+        if (media && !/^https?:\/\//i.test(media)) return "MEDIA, when present, must be the full https url of the rendered file";
+        const body = String(section(detail, "NEW") || "").trim();
+        if (!body) return "x posts need NEW carrying the exact final text";
+        const len = body.replace(/https?:\/\/\S+/g, "x".repeat(23)).length;
+        if (len > 280) return `x posts cap at 280 characters (every link counts as 23); this one weighs ${len}. Tighten the text`;
+      }
       return null;
     }
     if (kind === "job" || /SCHEDULE:/i.test(detail)) {

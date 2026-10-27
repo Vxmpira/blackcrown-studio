@@ -2219,6 +2219,109 @@ const PUBLISH_PLATFORMS = (process.env.PUBLISH_PLATFORMS || "youtube")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+if (!PUBLISH_PLATFORMS.includes("x")) PUBLISH_PLATFORMS.push("x");
+
+// --- X, posted direct with the owner's own developer keys. No Make, no
+// middleman service; the keys live in .env and never leave this machine.
+// Free tier covers roughly 500 posts a month, far above the desks' cadence.
+const X_KEYS = {
+  key: (process.env.X_API_KEY || "").trim(),
+  secret: (process.env.X_API_SECRET || "").trim(),
+  token: (process.env.X_ACCESS_TOKEN || "").trim(),
+  tokenSecret: (process.env.X_ACCESS_SECRET || "").trim(),
+};
+const xConfigured = () => !!(X_KEYS.key && X_KEYS.secret && X_KEYS.token && X_KEYS.tokenSecret);
+const pctEnc = (s) =>
+  encodeURIComponent(s).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+function oauth1Header(method, url) {
+  const u = new URL(url);
+  const params = {
+    oauth_consumer_key: X_KEYS.key,
+    oauth_nonce: crypto.randomBytes(16).toString("hex"),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
+    oauth_token: X_KEYS.token,
+    oauth_version: "1.0",
+  };
+  const all = { ...params };
+  u.searchParams.forEach((v, k) => {
+    all[k] = v;
+  });
+  const paramStr = Object.keys(all)
+    .sort()
+    .map((k) => `${pctEnc(k)}=${pctEnc(all[k])}`)
+    .join("&");
+  const baseStr = [method.toUpperCase(), pctEnc(u.origin + u.pathname), pctEnc(paramStr)].join("&");
+  const signKey = `${pctEnc(X_KEYS.secret)}&${pctEnc(X_KEYS.tokenSecret)}`;
+  params.oauth_signature = crypto.createHmac("sha1", signKey).update(baseStr).digest("base64");
+  return (
+    "OAuth " +
+    Object.keys(params)
+      .sort()
+      .map((k) => `${pctEnc(k)}="${pctEnc(params[k])}"`)
+      .join(", ")
+  );
+}
+const X_UPLOAD = "https://upload.twitter.com/1.1/media/upload.json";
+async function xUploadVideo(mediaUrl) {
+  const dl = await fetch(mediaUrl);
+  if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
+  const buf = Buffer.from(await dl.arrayBuffer());
+  if (buf.length > 512 * 1024 * 1024) throw new Error("video exceeds the 512MB X limit");
+  const q = (o) => X_UPLOAD + "?" + new URLSearchParams(o).toString();
+  let url = q({
+    command: "INIT",
+    total_bytes: String(buf.length),
+    media_type: "video/mp4",
+    media_category: "tweet_video",
+  });
+  let r = await fetch(url, { method: "POST", headers: { authorization: oauth1Header("POST", url) } });
+  let j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`media INIT refused (${r.status}): ${JSON.stringify(j.errors || j).slice(0, 140)}`);
+  const mediaId = j.media_id_string;
+  const CH = 4 * 1024 * 1024;
+  for (let i = 0; i * CH < buf.length; i++) {
+    const fd = new FormData();
+    fd.append("media", new Blob([buf.subarray(i * CH, Math.min((i + 1) * CH, buf.length))]));
+    url = q({ command: "APPEND", media_id: mediaId, segment_index: String(i) });
+    r = await fetch(url, { method: "POST", headers: { authorization: oauth1Header("POST", url) }, body: fd });
+    if (!r.ok && r.status !== 204) throw new Error(`media APPEND chunk ${i} refused (${r.status})`);
+  }
+  url = q({ command: "FINALIZE", media_id: mediaId });
+  r = await fetch(url, { method: "POST", headers: { authorization: oauth1Header("POST", url) } });
+  j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`media FINALIZE refused (${r.status}): ${JSON.stringify(j.errors || j).slice(0, 140)}`);
+  const t0 = Date.now();
+  let wait = j.processing_info?.check_after_secs || 0;
+  while (j.processing_info && j.processing_info.state !== "succeeded") {
+    if (j.processing_info.state === "failed")
+      throw new Error(`X video processing failed: ${j.processing_info.error?.message || "unknown"}`);
+    if (Date.now() - t0 > 180000) throw new Error("X video processing timed out after 3 minutes");
+    await new Promise((res) => setTimeout(res, Math.max(wait, 2) * 1000));
+    url = q({ command: "STATUS", media_id: mediaId });
+    r = await fetch(url, { headers: { authorization: oauth1Header("GET", url) } });
+    j = await r.json().catch(() => ({}));
+    wait = j.processing_info?.check_after_secs || 3;
+  }
+  return mediaId;
+}
+async function postToX({ content, media }) {
+  let text = String(content || "").trim();
+  const weight = () => text.replace(/https?:\/\/\S+/g, "x".repeat(23)).length;
+  while (weight() > 280 && /\s/.test(text)) text = text.replace(/\s+\S+$/, "");
+  const payload = { text };
+  if (media) payload.media = { media_ids: [await xUploadVideo(media)] };
+  const url = "https://api.twitter.com/2/tweets";
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { authorization: oauth1Header("POST", url), "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok)
+    throw new Error(`X refused the post (${r.status}): ${JSON.stringify(j.errors || j.detail || j).slice(0, 160)}`);
+  return j.data?.id || "";
+}
 async function publishPost({ platform, content, media, number, summary }) {
   if (!PUBLISH_PLATFORMS.includes(platform)) {
     return {
@@ -2234,6 +2337,20 @@ async function publishPost({ platform, content, media, number, summary }) {
       ok: false,
       msg: `MEDIA must be the full https link to the rendered file, not "${String(media).slice(0, 40)}". Refile with the exact video url from the render delivery`,
     };
+  }
+  if (platform === "x") {
+    if (!xConfigured()) {
+      return {
+        ok: false,
+        msg: "X posting needs X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET in the server .env; the owner creates these once in the X developer console, then restarts the service",
+      };
+    }
+    try {
+      const id = await postToX({ content, media });
+      return { ok: true, msg: `posted to X with the brand account${id ? ` (post ${id})` : ""}` };
+    } catch (e) {
+      return { ok: false, msg: `X publish failed: ${String(e.message || e).slice(0, 160)}` };
+    }
   }
   if (!PUBLISH_WEBHOOK) {
     return {
