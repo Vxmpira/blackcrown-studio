@@ -682,6 +682,7 @@ async function executeSiteEdit(p) {
   } catch {}
   let html;
   let creating = false;
+  let createBody = "";
   try {
     html = fs.readFileSync(full, "utf8");
   } catch {
@@ -718,6 +719,7 @@ async function executeSiteEdit(p) {
     }
     html = "";
     creating = true;
+    createBody = body;
   }
   const current = section(p.detail, "CURRENT");
   const next = section(p.detail, "NEW");
@@ -725,7 +727,7 @@ async function executeSiteEdit(p) {
   let updated = null;
   let how = "";
   if (creating) {
-    updated = next.trim() + "\n";
+    updated = (createBody || next).trim() + "\n";
     how = "new page created";
   }
   if (/sitemap\.xml$/i.test(file) && /<\/urlset>/i.test(html) && /<url>/i.test(next)) {
