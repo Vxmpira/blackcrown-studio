@@ -969,6 +969,7 @@ export async function runCycle(trigger = "schedule") {
           ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480))
           : undefined,
         caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
+        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 3).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5 })) : undefined,
         brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
         target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
         format: p.format === "video" ? "video" : undefined,
@@ -1208,9 +1209,26 @@ async function executeVideo(p) {
     if (!url) throw new Error("video did not finish within 12 minutes, check Bloom and tell me to retry");
     p.rendered = [url];
     saveState();
+    let finalUrl = url;
+    let forgedNote = "";
+    if (Array.isArray(p.overlay) && p.overlay.length && hooks.forge) {
+      try {
+        log("render", `#${p.number} baking brand text onto the footage`);
+        const forged = await hooks.forge({ src: url, lines: p.overlay, name: `clip-${p.number}-${Date.now() % 100000}` });
+        if (forged) {
+          finalUrl = forged;
+          p.rendered = [forged, url];
+          forgedNote = " Brand text baked on by the forge, spelling exact.";
+          saveState();
+        }
+      } catch (e) {
+        log("error", `#${p.number} forge overlay failed, shipping raw footage: ${String(e.message || e).slice(0, 160)}`);
+        forgedNote = " Overlay failed, this is the raw footage; captions carry the words.";
+      }
+    }
     const lines = [
       `**CORVID // DELIVERY** · #${p.number} ${p.page}`,
-      `Video ready${p.target ? `, selling ${p.target}` : ""}, player above.`,
+      `Video ready${p.target ? `, selling ${p.target}` : ""}, player above.${forgedNote}`,
       ``,
       `**CAPTION**`,
       p.caption || "(no caption stored)",
@@ -1219,7 +1237,7 @@ async function executeVideo(p) {
     ];
     const after = await bloomCredits(true);
     if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
-    await discordSend(lines.join("\n"), { link: url });
+    await discordSend(lines.join("\n"), { link: finalUrl });
     log("render", `#${p.number} video delivered`);
   } catch (e) {
     log("error", `#${p.number} video render failed: ${e.message || e}`);
@@ -1543,6 +1561,7 @@ export function fileProposals(list, author = "staff") {
       detail: String(p.detail || "").slice(0, 2400),
       slides: Array.isArray(p.slides) ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480)) : undefined,
       caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
+        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 3).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5 })) : undefined,
       brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
       target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
       format: p.format === "video" ? "video" : undefined,

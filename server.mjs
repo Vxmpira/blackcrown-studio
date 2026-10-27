@@ -2169,7 +2169,68 @@ wireCeo({
     return addTask(text);
   },
 });
+// ---------------------------------------------------------------------------
+// the forge: deterministic brand text baked onto generated footage. Words on
+// video come from literal strings through ffmpeg, never from a video model,
+// so spelling is perfect every time.
+// ---------------------------------------------------------------------------
+const RENDERS_DIR = path.join(__dirname, "renders");
+try { fs.mkdirSync(RENDERS_DIR, { recursive: true }); } catch {}
+app.use("/renders", express.static(RENDERS_DIR, { maxAge: "7d" }));
+const ADMIN_PUBLIC_URL = (process.env.ADMIN_PUBLIC_URL || "https://admin.blackcrownvxj.com").replace(/\/$/, "");
+const FORGE_FONT = path.join(__dirname, "assets", "fonts", "DejaVuSans-Bold.ttf");
+function forgeEscape(s) {
+  return String(s)
+    .replace(/[\\'"]/g, "")
+    .replace(/:/g, "\\:")
+    .replace(/%/g, "\\%")
+    .replace(/[\u2014\u2013]/g, ", ")
+    .slice(0, 48)
+    .trim();
+}
+async function forgeOverlay({ src, lines, name }) {
+  const safe = (Array.isArray(lines) ? lines : [])
+    .map((l) => ({
+      text: forgeEscape(l.text || ""),
+      t: Math.max(0, Number(l.t) || 0),
+      d: Math.min(15, Math.max(0.8, Number(l.d) || 2.5)),
+    }))
+    .filter((l) => l.text)
+    .slice(0, 3);
+  if (!safe.length) return null;
+  const clean = String(name).replace(/[^a-z0-9-]/gi, "").slice(0, 40) || `clip-${Date.now()}`;
+  const srcFile = path.join(RENDERS_DIR, `${clean}-src.mp4`);
+  const outFile = path.join(RENDERS_DIR, `${clean}.mp4`);
+  const r = await fetch(src);
+  if (!r.ok) throw new Error(`source download failed (${r.status})`);
+  fs.writeFileSync(srcFile, Buffer.from(await r.arrayBuffer()));
+  const filters = safe
+    .map(
+      (l) =>
+        `drawtext=fontfile='${FORGE_FONT}':text='${l.text}':fontcolor=0xF6F8FF:fontsize=h/15:borderw=4:bordercolor=0x0A0A0D:box=1:boxcolor=0x0A0A0D@0.35:boxborderw=14:x=(w-text_w)/2:y=h*0.70:enable='between(t,${l.t},${l.t + l.d})'`
+    )
+    .join(",");
+  const { default: ffmpegPath } = await import("ffmpeg-static");
+  const { execFileSync } = await import("child_process");
+  execFileSync(
+    ffmpegPath,
+    ["-y", "-i", srcFile, "-vf", filters, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", outFile],
+    { timeout: 240000 }
+  );
+  try { fs.unlinkSync(srcFile); } catch {}
+  // keep the folder lean: drop forged clips older than 14 days
+  try {
+    const cutoff = Date.now() - 14 * 864e5;
+    for (const f of fs.readdirSync(RENDERS_DIR)) {
+      const fp = path.join(RENDERS_DIR, f);
+      if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp);
+    }
+  } catch {}
+  return `${ADMIN_PUBLIC_URL}/renders/${clean}.mp4`;
+}
+
 wireHooks({
+  forge: forgeOverlay,
   requestStaff: (to, title) => {
     if (["herald", "steward", "bard"].includes(to)) staffAddTask(to, title);
   },

@@ -340,7 +340,7 @@ Respond ONLY with JSON that passes JSON.parse (line breaks inside strings writte
 const REACT_SYSTEM = `${IDENTITY}
 
 The owner wrote in your channel. He may approve or reject asks by number, ask about an execution, ask how the agents are doing, or give a directive. Only record decisions he clearly made.
-Answer status and progress questions from the LIVE DESK STATUS data: each desk's state, open and done task counts, current focus, and today's token spend. A rejected or closed ask is finished business, never call it active or pending. If the data does not cover what he asked, say what you do not have instead of guessing.
+Answer status and progress questions from the LIVE DESK STATUS data: each desk's state, open and done task counts, current focus, and today's token spend. A rejected or closed ask is finished business, never call it active or pending. A note starting "preflight:" means the ask BOUNCED before the owner ever saw it; bounced asks cannot be retried, the fix already sits on the filing desk as a task, say so when asked. If the data does not cover what he asked, say what you do not have instead of guessing.
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
 {"reply":"**REGENT //** then 1-3 short lines","decisions":[{"id":"proposal id","action":"approve|reject","note":"short"}]}
@@ -1055,6 +1055,10 @@ function deskSnapshot() {
       openTasks: (a.tasks || []).filter((x) => x.status !== "done").map((x) => x.title).slice(0, 8),
       doneTasks: (a.tasks || []).filter((x) => x.status === "done").length,
       pendingAsks: (a.proposals || []).filter((x) => x.status === "pending").map((x) => `#${x.number} ${x.summary}`).slice(0, 6),
+      recentlyDecided: (a.proposals || [])
+        .filter((x) => x.status !== "pending")
+        .slice(0, 6)
+        .map((x) => `#${x.number} ${x.status}${x.note ? `: ${String(x.note).slice(0, 70)}` : ""}`),
     };
   } catch {}
   try {

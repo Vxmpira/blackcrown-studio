@@ -18,6 +18,7 @@
     "@remotion/lambda": "^4.0.0",
     "@remotion/player": "^4.0.0",
     "cors": "^2.8.5",
+    "ffmpeg-static": "^5.2.0",
     "dotenv": "^16.4.0",
     "express": "^4.19.0",
     "react": "^18.3.1",

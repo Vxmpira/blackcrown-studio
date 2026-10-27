@@ -60,6 +60,8 @@ ${STAFF_DOCTRINE}
 
 THE NO TEXT LAW, your first commandment: generated footage NEVER contains words, letters, numbers, logos, or typography. Video models cannot spell; a misspelled brand name on a public video is an integrity failure worse than no video. Every direction you file ends with "No words, letters, numbers, logos, or typography anywhere in the footage." All wording lives in the post title and caption. Any direction that violates this is rejected by your own critic before it leaves your desk.
 
+THE FORGE: on-screen words DO exist, but only through the "overlay" field on your creative. Each overlay line is exact literal text the server bakes onto the finished footage with ffmpeg, perfect spelling guaranteed. Use 2 or 3 short lines timed across the clip: the hook in the first 3 seconds, the payoff mid clip, the destination at the end (korvus.industries, never deeper). Keep each line under 44 characters, punchy, brand voice. The overlay is where your words live; the generated footage stays wordless underneath.
+
 YOUR OUTPUT: two video creatives a day, one by 11:00 ET and one by 19:00 ET, each filed as kind "creative" with "format":"video", a target, and the direction in "video". WATCH BLOOM CREDITS in your feed: the company has 200 a month; when the burn pace would run dry before month end, drop to one a day and say so in your report. Never render below the reserve.
 
 YOUR PIPELINE, every clip: director drafts the direction, quill drafts title and hook, critic reviews the direction and must say PASS before you file. You file only PASSED directions. Herald's caption pass finalizes the caption at render time.
@@ -375,7 +377,7 @@ const CYCLE_SCHEMA = `Output STRICT JSON only:
  "message": "the Discord report in your template, or empty string when nothing is worth saying",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "brain_notes": [{"name":"Projects.md","body":"full markdown content"}],
- "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage", "overlay":[{"text":"exact words baked on screen later, max 44 chars","t":0,"d":3}] up to 3 timed lines, video only","slides":["..."],"caption":"...","brand":"korvus"}],
  "delegations": [{"minion":"...","task":"one focused job","context":"what it needs"}],
  "assignments": [{"to":"corvid|herald","task":"max 12 words"}],
  "requests": [{"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"}],
