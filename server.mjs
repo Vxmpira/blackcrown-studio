@@ -35,6 +35,7 @@ import {
   getSpend,
   spendSummary,
   heal as corvidHeal,
+  librarian as corvidLibrarian,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
 import {
@@ -50,7 +51,7 @@ import {
   ceoVaultPath,
   REPO_ROOTS,
 } from "./ceo.mjs";
-import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal } from "./staff.mjs";
+import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1826,6 +1827,30 @@ function runHealer() {
 }
 setTimeout(runHealer, 90 * 1000);
 setInterval(runHealer, 10 * 60 * 1000);
+
+// the librarian: daily at 04:40 ET, old minion notes condense into digests
+let librarianDay = "";
+async function runLibrarian() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date());
+    const hr = parseInt(parts, 10) % 24;
+    const day = dayKey();
+    if (hr !== 4 || librarianDay === day) return;
+    librarianDay = day;
+    const a = await corvidLibrarian();
+    const b = await staffLibrarian();
+    console.log("librarian pass:", a, b.join(", ") || "staff vaults lean");
+  } catch (e) {
+    console.log("librarian:", e?.message || e);
+  }
+}
+setInterval(runLibrarian, 10 * 60 * 1000);
+// run one catch-up pass shortly after boot since the vaults are already heavy
+setTimeout(async () => {
+  try {
+    console.log("librarian catch-up:", await corvidLibrarian(), (await staffLibrarian()).join(", "));
+  } catch {}
+}, 4 * 60 * 1000);
 
 // ----- scheduled jobs: the in-house automation engine -----------------------
 // Agents file kind "job" proposals; on approval Regent registers them here

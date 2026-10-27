@@ -498,6 +498,51 @@ export function heal() {
   return report;
 }
 
+// the librarian: once a day, old minion notes are distilled into a digest
+// and removed, so the vault compounds knowledge instead of hoarding exhaust.
+const LIBRARIAN_SYSTEM = `You are the Librarian of BlackCrownVxJ. You condense a batch of old minion work notes into the few lines worth keeping forever. Keep: concrete findings, numbers, outcomes, decisions, reusable copy or specs, anything a future agent would regret losing. Discard: process chatter, retrieval runs, restatements of tasks, anything already obvious from doctrine. Output ONLY markdown bullets, one line each, dense and specific, at most one bullet per source note and skip notes with nothing durable. No em dashes.`;
+export async function librarian() {
+  try {
+    const minRoot = path.join(BRAIN_DIR, "Minions");
+    if (!fs.existsSync(minRoot)) return "no minions folder";
+    const cutoff = Date.now() - 48 * 3600000;
+    const pendingText = (state.proposals || [])
+      .filter((x) => x.status === "pending")
+      .map((x) => String(x.detail || ""))
+      .join("\n");
+    const files = [];
+    for (const dir of fs.readdirSync(minRoot)) {
+      const dp = path.join(minRoot, dir);
+      if (!fs.statSync(dp).isDirectory()) continue;
+      for (const f of fs.readdirSync(dp)) {
+        if (!f.endsWith(".md")) continue;
+        const fp = path.join(dp, f);
+        const st = fs.statSync(fp);
+        if (st.mtimeMs > cutoff) continue;
+        if (pendingText.includes(f)) continue; // a pending ask still points here
+        files.push({ fp, rel: `Minions/${dir}/${f}` });
+      }
+    }
+    if (files.length < 6) return `only ${files.length} old notes, not worth a pass`;
+    const batch = files.sort((a, b) => fs.statSync(a.fp).mtimeMs - fs.statSync(b.fp).mtimeMs).slice(0, 30);
+    const corpus = batch
+      .map((x) => `### ${x.rel}\n${fs.readFileSync(x.fp, "utf8").slice(0, 1200)}`)
+      .join("\n\n")
+      .slice(0, 60000);
+    const digest = await thinkText(LIBRARIAN_SYSTEM, corpus, 2500, { model: MINION_MODEL, who: "librarian" });
+    if (!digest || !digest.trim()) return "librarian produced nothing, notes kept";
+    brainAppend("Minions-Digest.md", `\n## ${etDayKey()} (${batch.length} notes condensed)\n${digest.trim()}\n`);
+    for (const x of batch) {
+      try { fs.unlinkSync(x.fp); } catch {}
+    }
+    log("heal", `librarian condensed ${batch.length} old minion notes into Minions-Digest.md`);
+    return `condensed ${batch.length} notes`;
+  } catch (e) {
+    log("error", `librarian failed, nothing deleted: ${String(e.message || e).slice(0, 140)}`);
+    return "failed";
+  }
+}
+
 export function pokeCycle(reason) {
   cycleAsap = String(reason || "something changed").slice(0, 140);
 }

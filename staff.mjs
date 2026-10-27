@@ -739,6 +739,47 @@ export async function heraldCopyPass(input) {
   return null;
 }
 
+const STAFF_LIBRARIAN_SYSTEM = `You are the Librarian of BlackCrownVxJ. You condense a batch of old minion work notes into the few lines worth keeping forever. Keep: concrete findings, numbers, outcomes, decisions, reusable copy or specs, anything a future agent would regret losing. Discard: process chatter, retrieval runs, restatements of tasks, anything already obvious from doctrine. Output ONLY markdown bullets, one line each, dense and specific, at most one bullet per source note and skip notes with nothing durable. No em dashes.`;
+export async function staffLibrarian() {
+  const out = [];
+  for (const key of Object.keys(ROLES)) {
+    try {
+      const minRoot = path.join(vaultDir(key), "Minions");
+      if (!fs.existsSync(minRoot)) continue;
+      const cutoff = Date.now() - 48 * 3600000;
+      const files = [];
+      for (const dir of fs.readdirSync(minRoot)) {
+        const dp = path.join(minRoot, dir);
+        if (!fs.statSync(dp).isDirectory()) continue;
+        for (const f of fs.readdirSync(dp)) {
+          if (!f.endsWith(".md")) continue;
+          const fp = path.join(dp, f);
+          if (fs.statSync(fp).mtimeMs > cutoff) continue;
+          files.push({ fp, rel: `Minions/${dir}/${f}` });
+        }
+      }
+      if (files.length < 6) continue;
+      const batch = files.sort((a, b) => fs.statSync(a.fp).mtimeMs - fs.statSync(b.fp).mtimeMs).slice(0, 30);
+      const corpus = batch
+        .map((x) => `### ${x.rel}\n${fs.readFileSync(x.fp, "utf8").slice(0, 1200)}`)
+        .join("\n\n")
+        .slice(0, 60000);
+      const digest = await callModel(STAFF_LIBRARIAN_SYSTEM, corpus, 2500);
+      if (!digest || !digest.trim()) continue;
+      const prev = vaultRead(key, "Minions-Digest.md");
+      vaultWrite(key, "Minions-Digest.md", `${prev}\n## ${dayKey()} (${batch.length} notes condensed)\n${digest.trim()}\n`);
+      for (const x of batch) {
+        try { fs.unlinkSync(x.fp); } catch {}
+      }
+      log(key, "heal", `librarian condensed ${batch.length} old minion notes`);
+      out.push(`${key}: ${batch.length}`);
+    } catch (e) {
+      log(key, "error", `librarian failed, nothing deleted: ${String(e.message || e).slice(0, 120)}`);
+    }
+  }
+  return out;
+}
+
 export function staffHeal() {
   const report = [];
   try {
