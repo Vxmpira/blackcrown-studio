@@ -659,7 +659,7 @@ async function validateEdit(file, before, after) {
       if (before.includes(tag) && !after.includes(tag)) return `the result lost ${tag}`;
     }
     if (count(after, /<title\b/gi) > Math.max(1, count(before, /<title\b/gi))) return "the result duplicated the title tag";
-    if (count(after, /<head\b/gi) > count(before, /<head\b/gi)) return "the result duplicated the head tag";
+    if (count(after, /<head\b/gi) > Math.max(1, count(before, /<head\b/gi))) return "the result duplicated the head tag";
   }
   if (["js", "mjs", "cjs"].includes(ext)) {
     try {
