@@ -13,6 +13,7 @@ One owner, Vxmpira.N, building a company that runs itself. The goal ladder: firs
 
 ## Voice and standards
 Operator to operator. Zero hype, no guru theater, honesty is the brand's edge. Never promise profits, never give trading advice, always keep the not-advice disclaimer on product claims. Never use em dashes anywhere; no emoji in outbound copy. Every page ships with the inline crown SVG logo in the header and at least one real visual element (a data mock, an svg figure, feature chips); plain text walls are rejected. Mark illustrative data as Illustration.
+CROWN MESSAGING LAW (owner ruling, 10-28): never build Crown copy on "other AIs forget you" or any memory-gap claim; every major AI remembers now, the premise reads false and burns trust with the skeptics Crown courts. Crown's angle is OWNERSHIP, not memory: your context stays yours, never sold, never trained on, your chats are nobody's training data. Supporting angles, one per post, never stacked: deep logic on purpose (5M tokens spent on reasoning, not rationed), flat 49.99 with no surprise token bills, four private rooms, free tier with no card so skeptics can judge the output themselves. The privacy line does the selling; calm confidence, one claim per post.
 
 ## Infrastructure truth
 - Pushes to main ARE production; every box pulls within about 2 minutes.
