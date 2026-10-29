@@ -44,7 +44,7 @@ const BLOOM_BRANDS = {
 const BLOOM_DAILY_VIDEOS = Math.max(1, Number(process.env.BLOOM_DAILY_VIDEOS || 2));
 // clip length in seconds; Seedance accepts 4-30 and defaults to 5, which is
 // why every early clip came out 5s. Owner wants scroll-stopping length.
-const BLOOM_VIDEO_SECONDS = Math.min(30, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 15)));
+const BLOOM_VIDEO_SECONDS = Math.min(40, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 32)));
 // keep this many credits in reserve; renders pause below it so the month
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));

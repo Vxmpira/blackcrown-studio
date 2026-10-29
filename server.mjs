@@ -2548,7 +2548,7 @@ async function awsRenderVideo({ prompt, number, seconds }) {
   if (!ami) throw new Error("could not resolve the GPU machine image");
   const job = crypto.randomBytes(5).toString("hex");
   const segFrames = 193; // 8 seconds per segment at 24fps, two segments concat to 16s
-  const segs = Math.max(1, Math.min(3, Math.round((Number(seconds) || 16) / 8)));
+  const segs = Math.max(1, Math.min(5, Math.round((Number(seconds) || 32) / 8)));
   const script = `#!/bin/bash
 set -uo pipefail
 JOB="${job}"; ADMIN="${ADMIN_PUBLIC_URL}"; SEC="${PUBLISH_SECRET}"
