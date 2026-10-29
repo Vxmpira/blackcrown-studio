@@ -42,6 +42,9 @@ const BLOOM_BRANDS = {
 };
 // hard daily ceiling on NEW paid video generations; resumes and reuses are free
 const BLOOM_DAILY_VIDEOS = Math.max(1, Number(process.env.BLOOM_DAILY_VIDEOS || 2));
+// clip length in seconds; Seedance accepts 4-30 and defaults to 5, which is
+// why every early clip came out 5s. Owner wants scroll-stopping length.
+const BLOOM_VIDEO_SECONDS = Math.min(30, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 15)));
 // keep this many credits in reserve; renders pause below it so the month
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
@@ -1309,7 +1312,14 @@ async function executeVideo(p) {
   log("render", `#${p.number} rendering a video via Bloom, this takes minutes`);
   try {
     // NEVER PAY TWICE. Footage already rendered for this proposal is reused;
-    // a generation already started is resumed, not restarted.
+    // a generation already started is resumed, not restarted; and a render
+    // already in flight is never double-fired by a second approval click.
+    if (p.renderingSince && Date.now() - p.renderingSince < 20 * 60 * 1000 && !(Array.isArray(p.rendered) && p.rendered.length)) {
+      log("render", `#${p.number} render already in flight, ignoring the duplicate trigger`);
+      return;
+    }
+    p.renderingSince = Date.now();
+    saveState();
     let url = Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null;
     if (url) {
       log("render", `#${p.number} reusing already-paid footage, no new Bloom charge`);
@@ -1332,10 +1342,14 @@ async function executeVideo(p) {
             headers: { "content-type": "application/json", "x-api-key": BLOOM_KEY },
             body: JSON.stringify({ brandSessionId, model, input }),
           });
-        let r = await start({ prompt, aspect_ratio: "9:16" });
+        let r = await start({ prompt, aspect_ratio: "9:16", duration: BLOOM_VIDEO_SECONDS });
         let j = await r.json();
         if (r.status === 400) {
-          // model schema may not take aspect_ratio; retry with the prompt alone
+          // model schema may not take these fields; fall back in steps
+          r = await start({ prompt, duration: BLOOM_VIDEO_SECONDS });
+          j = await r.json();
+        }
+        if (r.status === 400) {
           r = await start({ prompt });
           j = await r.json();
         }
@@ -1402,6 +1416,8 @@ async function executeVideo(p) {
     await discordSend(lines.join("\n"), { link: finalUrl });
     log("render", `#${p.number} video delivered`);
   } catch (e) {
+    p.renderingSince = 0;
+    saveState();
     log("error", `#${p.number} video render failed: ${e.message || e}`);
     await discordSend(`**CORVID //** #${p.number} video render failed: ${String(e.message || e).slice(0, 240)}. Say retry ${p.number} to run it again.`);
   }
