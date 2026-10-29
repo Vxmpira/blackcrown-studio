@@ -1322,7 +1322,12 @@ async function executeVideo(p) {
     saveState();
     let url = Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null;
     if (url) {
-      log("render", `#${p.number} reusing already-paid footage, no new Bloom charge`);
+      log("render", `#${p.number} reusing already-paid footage, no new charge`);
+    } else if ((process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws" && hooks.awsRender) {
+      log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
+      url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
+      p.rendered = [url];
+      saveState();
     } else {
       let genId = p.bloomGenId || null;
       if (genId) {
@@ -1409,10 +1414,14 @@ async function executeVideo(p) {
       `**CAPTION**`,
       p.caption || "(no caption stored)",
       ``,
-      `Post manually. Video by Bloom.`,
+      (process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws"
+        ? `Post manually. Forged on the company GPU, spot minutes on our own AWS.`
+        : `Post manually. Video by Bloom.`,
     ];
-    const after = await bloomCredits(true);
-    if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
+    if ((process.env.VIDEO_PROVIDER || "aws").toLowerCase() !== "aws") {
+      const after = await bloomCredits(true);
+      if (after && !after.unlimited) lines.push(`Bloom balance: ${after.balance} credits.`);
+    }
     await discordSend(lines.join("\n"), { link: finalUrl });
     log("render", `#${p.number} video delivered`);
   } catch (e) {

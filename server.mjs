@@ -2458,6 +2458,194 @@ async function forgeOverlay({ src, lines, name }) {
   return `${ADMIN_PUBLIC_URL}/renders/${clean}.mp4`;
 }
 
+// ---------------------------------------------------------------------------
+// THE FURNACE: video rendering on the company's own AWS. An approved creative
+// boots a spot GPU, renders an open model, uploads here, and terminates
+// itself. Cost is spot-minutes on the owner's existing bill, with a hard
+// monthly ceiling. The instance role on this box grants the authority; no
+// keys live in .env.
+// ---------------------------------------------------------------------------
+const AWS_REGION = (process.env.AWS_RENDER_REGION || "us-east-2").trim();
+const AWS_RENDER_TYPES = (process.env.AWS_RENDER_TYPES || "g5.xlarge,g4dn.xlarge")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const AWS_RENDER_CAP_MIN = Math.max(30, Number(process.env.AWS_RENDER_MONTHLY_MINUTES || 600));
+const AWS_LEDGER_PATH = path.join(__dirname, "aws-render-ledger.json");
+function awsLedger() {
+  const month = new Date().toISOString().slice(0, 7);
+  let l = { month, minutes: 0 };
+  try { const j = JSON.parse(fs.readFileSync(AWS_LEDGER_PATH, "utf8")); if (j.month === month) l = j; } catch {}
+  return l;
+}
+function awsLedgerAdd(mins) {
+  const l = awsLedger();
+  l.minutes = Math.round((l.minutes + mins) * 10) / 10;
+  try { fs.writeFileSync(AWS_LEDGER_PATH, JSON.stringify(l)); } catch {}
+  return l;
+}
+const awsJobs = new Map(); // job -> { status, error, notes: [] }
+app.post("/api/render-note", (req, res) => {
+  const { job, note } = req.body || {};
+  const j = awsJobs.get(String(job || ""));
+  if (j && note) {
+    j.notes.push(String(note).slice(0, 200));
+    if (/^FAILED/i.test(String(note))) { j.status = "failed"; j.error = String(note).slice(0, 200); }
+    agentLog("render", `furnace ${job}: ${String(note).slice(0, 160)}`);
+  }
+  res.json({ ok: true });
+});
+app.post("/api/render-upload", express.raw({ type: () => true, limit: "400mb" }), (req, res) => {
+  const secret = String(req.headers["x-render-secret"] || "");
+  const job = String(req.headers["x-render-job"] || "").replace(/[^a-z0-9-]/gi, "").slice(0, 40);
+  if (!PUBLISH_SECRET || secret !== PUBLISH_SECRET || !job) return res.status(403).json({ error: "no" });
+  if (!req.body || !req.body.length) return res.status(400).json({ error: "empty" });
+  try {
+    fs.writeFileSync(path.join(RENDERS_DIR, `aws-${job}.mp4`), req.body);
+    const j = awsJobs.get(job);
+    if (j) j.status = "done";
+    agentLog("render", `furnace ${job}: footage received, ${Math.round(req.body.length / 1024)}KB`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+async function awsReapStale(ec2, cmds) {
+  try {
+    const d = await ec2.send(new cmds.DescribeInstancesCommand({
+      Filters: [
+        { Name: "tag:purpose", Values: ["blackcrown-render"] },
+        { Name: "instance-state-name", Values: ["running", "pending"] },
+      ],
+    }));
+    const stale = [];
+    for (const r of d.Reservations || []) for (const i of r.Instances || []) {
+      if (Date.now() - new Date(i.LaunchTime).getTime() > 75 * 60 * 1000) stale.push(i.InstanceId);
+    }
+    if (stale.length) {
+      await ec2.send(new cmds.TerminateInstancesCommand({ InstanceIds: stale }));
+      agentLog("render", `furnace reaped ${stale.length} stale worker(s)`);
+    }
+  } catch {}
+}
+async function awsRenderVideo({ prompt, number, seconds }) {
+  let EC2, SSM;
+  try {
+    EC2 = await import("@aws-sdk/client-ec2");
+    SSM = await import("@aws-sdk/client-ssm");
+  } catch {
+    throw new Error("AWS SDK not installed yet; the box deploys it on the next pull, retry in a few minutes");
+  }
+  const led = awsLedger();
+  if (led.minutes >= AWS_RENDER_CAP_MIN) {
+    throw new Error(`monthly GPU budget reached (${Math.round(led.minutes)} of ${AWS_RENDER_CAP_MIN} minutes); raise AWS_RENDER_MONTHLY_MINUTES in .env or wait for the new month`);
+  }
+  const ec2 = new EC2.EC2Client({ region: AWS_REGION });
+  const ssm = new SSM.SSMClient({ region: AWS_REGION });
+  await awsReapStale(ec2, EC2);
+  const amiParam = await ssm.send(new SSM.GetParameterCommand({
+    Name: "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id",
+  }));
+  const ami = amiParam?.Parameter?.Value;
+  if (!ami) throw new Error("could not resolve the GPU machine image");
+  const job = crypto.randomBytes(5).toString("hex");
+  const segFrames = 193; // 8 seconds per segment at 24fps, two segments concat to 16s
+  const segs = Math.max(1, Math.min(3, Math.round((Number(seconds) || 16) / 8)));
+  const script = `#!/bin/bash
+set -uo pipefail
+JOB="${job}"; ADMIN="${ADMIN_PUBLIC_URL}"; SEC="${PUBLISH_SECRET}"
+note(){ curl -s -m 10 -X POST -H "content-type: application/json" -d "{\\"job\\":\\"$JOB\\",\\"note\\":\\"$1\\"}" "$ADMIN/api/render-note" >/dev/null 2>&1 || true; }
+fail(){ note "FAILED: $1"; sleep 2; shutdown -h now; exit 1; }
+echo "${Buffer.from(String(prompt)).toString("base64")}" | base64 -d > /tmp/prompt.txt || fail "prompt decode"
+note "worker booted, installing stack"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y >/dev/null 2>&1; apt-get install -y ffmpeg python3-venv python3-pip >/dev/null 2>&1 || fail "apt install"
+python3 -m venv /opt/v || fail "venv"
+. /opt/v/bin/activate
+pip -q install --upgrade pip >/dev/null 2>&1
+pip -q install torch --index-url https://download.pytorch.org/whl/cu121 || fail "torch install"
+pip -q install diffusers transformers accelerate sentencepiece protobuf imageio imageio-ffmpeg opencv-python-headless || fail "diffusers install"
+note "stack ready, loading model"
+cat > /tmp/r.py <<'PYEOFX'
+import torch, sys
+from diffusers import LTXPipeline
+from diffusers.utils import export_to_video
+cap = torch.cuda.get_device_capability()[0]
+dtype = torch.bfloat16 if cap >= 8 else torch.float16
+pipe = LTXPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=dtype)
+pipe.to("cuda")
+prompt = open("/tmp/prompt.txt").read()
+neg = "text, letters, words, numbers, captions, subtitles, logos, watermarks, typography, ui, low quality, worst quality, deformed"
+segs = int(sys.argv[1]); frames = int(sys.argv[2])
+for i in range(segs):
+    out = pipe(prompt=prompt, negative_prompt=neg, width=480, height=832,
+               num_frames=frames, num_inference_steps=30, guidance_scale=3.2).frames[0]
+    export_to_video(out, f"/tmp/seg{i}.mp4", fps=24)
+PYEOFX
+python3 /tmp/r.py ${segs} ${segFrames} || fail "render"
+note "render done, encoding"
+if [ ${segs} -gt 1 ]; then
+  IN=""; FC=""
+  for i in $(seq 0 $((${segs}-1))); do IN="$IN -i /tmp/seg$i.mp4"; FC="$FC[$i:v]"; done
+  ffmpeg -y $IN -filter_complex "\${FC}concat=n=${segs}:v=1:a=0[v]" -map "[v]" -c:v libx264 -preset veryfast -crf 20 -movflags +faststart /tmp/out.mp4 || fail "concat"
+else
+  ffmpeg -y -i /tmp/seg0.mp4 -c:v libx264 -preset veryfast -crf 20 -movflags +faststart /tmp/out.mp4 || fail "encode"
+fi
+note "uploading"
+curl -s -m 300 -X POST -H "x-render-secret: $SEC" -H "x-render-job: $JOB" -H "content-type: video/mp4" --data-binary @/tmp/out.mp4 "$ADMIN/api/render-upload" || fail "upload"
+note "complete"
+sleep 2
+shutdown -h now
+`;
+  awsJobs.set(job, { status: "launching", notes: [], error: null });
+  let instanceId = null, lastErr = null;
+  for (const itype of AWS_RENDER_TYPES) {
+    try {
+      const run = await ec2.send(new EC2.RunInstancesCommand({
+        ImageId: ami, InstanceType: itype, MinCount: 1, MaxCount: 1,
+        InstanceInitiatedShutdownBehavior: "terminate",
+        InstanceMarketOptions: { MarketType: "spot", SpotOptions: { SpotInstanceType: "one-time", InstanceInterruptionBehavior: "terminate" } },
+        TagSpecifications: [{ ResourceType: "instance", Tags: [
+          { Key: "Name", Value: `blackcrown-render-${job}` },
+          { Key: "purpose", Value: "blackcrown-render" },
+        ] }],
+        UserData: Buffer.from(script).toString("base64"),
+      }));
+      instanceId = run?.Instances?.[0]?.InstanceId || null;
+      if (instanceId) { agentLog("render", `furnace ${job}: ${itype} spot launched (${instanceId})`); break; }
+    } catch (e) {
+      lastErr = e;
+      agentLog("render", `furnace ${job}: ${itype} refused: ${String(e.message || e).slice(0, 140)}`);
+    }
+  }
+  if (!instanceId) {
+    awsJobs.delete(job);
+    const msg = String(lastErr?.message || lastErr || "no instance type available");
+    if (/MaxSpotInstanceCount|VcpuLimitExceeded/i.test(msg)) {
+      throw new Error("AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
+    }
+    throw new Error(`could not launch a GPU worker: ${msg.slice(0, 180)}`);
+  }
+  const t0 = Date.now();
+  try {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 15000));
+      const j = awsJobs.get(job);
+      if (j?.status === "done") break;
+      if (j?.status === "failed") throw new Error(j.error || "worker reported failure");
+      if (Date.now() - t0 > 40 * 60 * 1000) throw new Error("GPU render timed out after 40 minutes");
+    }
+  } catch (e) {
+    try { await ec2.send(new EC2.TerminateInstancesCommand({ InstanceIds: [instanceId] })); } catch {}
+    awsLedgerAdd((Date.now() - t0) / 60000);
+    awsJobs.delete(job);
+    throw e;
+  }
+  try { await ec2.send(new EC2.TerminateInstancesCommand({ InstanceIds: [instanceId] })); } catch {}
+  const l = awsLedgerAdd((Date.now() - t0) / 60000);
+  awsJobs.delete(job);
+  agentLog("render", `furnace ${job}: delivered in ${Math.round((Date.now() - t0) / 60000)} min; ${Math.round(l.minutes)} of ${AWS_RENDER_CAP_MIN} GPU minutes used this month`);
+  return `${ADMIN_PUBLIC_URL}/renders/aws-${job}.mp4`;
+}
+
 // the wire: a live ledger of desk-to-desk handoffs, drawn in the city
 const WIRE = [];
 function recordWire(from, to, text) {
@@ -2468,6 +2656,7 @@ app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 
 wireHooks({
   forge: forgeOverlay,
+  awsRender: awsRenderVideo,
   requestStaff: (to, title) => {
     if (["herald", "steward", "bard"].includes(to)) {
       staffAddTask(to, title);
