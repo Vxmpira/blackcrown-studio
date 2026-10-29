@@ -400,7 +400,15 @@ function preflightProposal(p) {
       } catch {}
       return null;
     }
-    if (kind === "brain" || kind === "creative" || kind === "automation" || /^make(:|$)/i.test(page)) return null;
+    if (kind === "creative") {
+      const author = String(p.author || "Corvid");
+      const isVideo = String(p.format || "").toLowerCase() === "video" || p.video;
+      if (isVideo && !/^bard$/i.test(author)) {
+        return `CREATIVE IS BARD'S DESK: video creatives come only from Bard's studio pipeline (director, quill, critic). Hand the angle to Bard with a request instead`;
+      }
+      return null;
+    }
+    if (kind === "brain" || kind === "automation" || /^make(:|$)/i.test(page)) return null;
     if (!page) return null;
     const loc = resolveSiteFile(page);
     if (loc.err) return loc.err;
