@@ -37,8 +37,11 @@ const WEBHOOK_URL = (process.env.DISCORD_SEO_WEBHOOK || "").trim();
 const BLOOM_KEY = (process.env.BLOOM_API_KEY || "").trim();
 const BLOOM_BRANDS = {
   korvus: process.env.BLOOM_BRAND_KORVUS || "4c2723d4-ad2b-4b52-bd20-f5b3ee65641b",
+  crown: process.env.BLOOM_BRAND_CROWN || "89f61b77-77b3-465a-898c-08d069628e52",
   default: process.env.BLOOM_BRAND_DEFAULT || "c5d8f6df-bb5e-40f8-a064-4e1462d76bf5",
 };
+// hard daily ceiling on NEW paid video generations; resumes and reuses are free
+const BLOOM_DAILY_VIDEOS = Math.max(1, Number(process.env.BLOOM_DAILY_VIDEOS || 2));
 // keep this many credits in reserve; renders pause below it so the month
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
@@ -1224,7 +1227,7 @@ async function executeCreative(p) {
     return;
   }
   log("render", `#${p.number} rendering ${slides.length} slides via Bloom`);
-  const brandSessionId = BLOOM_BRANDS[p.brand === "korvus" ? "korvus" : "default"];
+  const brandSessionId = BLOOM_BRANDS[(p.brand || "").toLowerCase()] || BLOOM_BRANDS.default;
   const urls = [];
   for (const prompt of slides) {
     try {
@@ -1302,44 +1305,72 @@ async function executeVideo(p) {
     log("error", `#${p.number} has no video direction to render`);
     return;
   }
-  const brandSessionId = BLOOM_BRANDS[p.brand === "korvus" ? "korvus" : "default"];
+  const brandSessionId = BLOOM_BRANDS[(p.brand || "").toLowerCase()] || BLOOM_BRANDS.default;
   log("render", `#${p.number} rendering a video via Bloom, this takes minutes`);
   try {
-    const model = await bloomVideoModel();
-    const start = (input) =>
-      fetch("https://www.trybloom.ai/api/v1/generations", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-api-key": BLOOM_KEY },
-        body: JSON.stringify({ brandSessionId, model, input }),
-      });
-    let r = await start({ prompt, aspect_ratio: "9:16" });
-    let j = await r.json();
-    if (r.status === 400) {
-      // model schema may not take aspect_ratio; retry with the prompt alone
-      r = await start({ prompt });
-      j = await r.json();
-    }
-    const genId = j?.data?.id;
-    if (!r.ok || !genId) throw new Error(j?.error?.message || `video generation refused (${r.status})`);
-    let final = null;
-    for (let i = 0; i < 6; i++) {
-      const g = await fetch(`https://www.trybloom.ai/api/v1/generations/${genId}?wait=true&timeout=120`, {
-        headers: { "x-api-key": BLOOM_KEY },
-      });
-      const gj = await g.json();
-      const st = gj?.data?.status;
-      if (st === "completed") {
-        final = gj.data;
-        break;
+    // NEVER PAY TWICE. Footage already rendered for this proposal is reused;
+    // a generation already started is resumed, not restarted.
+    let url = Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null;
+    if (url) {
+      log("render", `#${p.number} reusing already-paid footage, no new Bloom charge`);
+    } else {
+      let genId = p.bloomGenId || null;
+      if (genId) {
+        log("render", `#${p.number} resuming paid generation ${genId}, no new charge`);
+      } else {
+        const day = etDayKey();
+        if (!state.bloomDay || state.bloomDay.day !== day) state.bloomDay = { day, count: 0 };
+        if (state.bloomDay.count >= BLOOM_DAILY_VIDEOS) {
+          throw new Error(
+            `daily video budget reached (${BLOOM_DAILY_VIDEOS} new generations a day, protecting the Bloom balance). Retry tomorrow, or the owner raises BLOOM_DAILY_VIDEOS in .env`
+          );
+        }
+        const model = await bloomVideoModel();
+        const start = (input) =>
+          fetch("https://www.trybloom.ai/api/v1/generations", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": BLOOM_KEY },
+            body: JSON.stringify({ brandSessionId, model, input }),
+          });
+        let r = await start({ prompt, aspect_ratio: "9:16" });
+        let j = await r.json();
+        if (r.status === 400) {
+          // model schema may not take aspect_ratio; retry with the prompt alone
+          r = await start({ prompt });
+          j = await r.json();
+        }
+        genId = j?.data?.id;
+        if (!r.ok || !genId) throw new Error(j?.error?.message || `video generation refused (${r.status})`);
+        p.bloomGenId = genId;
+        state.bloomDay.count++;
+        saveState();
       }
-      if (st === "failed") {
-        throw new Error(gj?.data?.failure?.message || "video generation failed");
+      let final = null;
+      for (let i = 0; i < 6; i++) {
+        const g = await fetch(`https://www.trybloom.ai/api/v1/generations/${genId}?wait=true&timeout=120`, {
+          headers: { "x-api-key": BLOOM_KEY },
+        });
+        const gj = await g.json();
+        const st = gj?.data?.status;
+        if (st === "completed") {
+          final = gj.data;
+          break;
+        }
+        if (st === "failed") {
+          p.bloomGenId = null;
+          saveState();
+          throw new Error(gj?.data?.failure?.message || "video generation failed");
+        }
       }
+      url = final?.outputs?.find((o) => o.available && o.url)?.url;
+      if (!url)
+        throw new Error(
+          "video is still rendering at Bloom; say retry and it RESUMES this same paid generation, no new charge"
+        );
+      p.bloomGenId = null;
+      p.rendered = [url];
+      saveState();
     }
-    const url = final?.outputs?.find((o) => o.available && o.url)?.url;
-    if (!url) throw new Error("video did not finish within 12 minutes, check Bloom and tell me to retry");
-    p.rendered = [url];
-    saveState();
     let finalUrl = url;
     let forgedNote = "";
     if (Array.isArray(p.overlay) && p.overlay.length && hooks.forge) {
