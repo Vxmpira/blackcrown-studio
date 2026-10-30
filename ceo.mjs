@@ -440,6 +440,16 @@ function preflightProposal(p) {
         if (!hasDoc || !hasClose || !/<title>[^<]{3,}<\/title>/i.test(b) || !/<\/head>/i.test(b)) {
           return "the page is not a complete html document (doctype through closing html tag with head and title); finish it in the vault before filing";
         }
+        // the owner's layout law, checked mechanically
+        if (!/name="viewport"/i.test(b)) {
+          return "the page has no viewport meta; build inside the Page Frame (corvid/Page-Frame.md), never your own scaffolding";
+        }
+        if (/<table/i.test(b) && !/tablewrap/i.test(b)) {
+          return "the page has a table outside a tablewrap rail, it will bleed off phone screens; wrap every table in <div class=\"tablewrap\"> per the Page Frame";
+        }
+        if (!/radial-gradient/i.test(b)) {
+          return "the page has a flat background; the Page Frame's atmosphere block (glows, grid, vignette) is law on every page";
+        }
       }
     }
     return null;
