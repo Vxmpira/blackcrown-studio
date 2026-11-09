@@ -156,6 +156,7 @@ const STAGE_LABEL: Record<string, string> = {
   universe: "SCREEN",
   edgar: "EDGAR",
   scoring: "READ",
+  crown: "CROWN",
   quotes: "QUOTE",
   bot: "BOT",
   vault: "VAULT",
@@ -232,7 +233,8 @@ export const PaperBot: React.FC = () => {
         ring: live?.running ? ring : undefined,
       },
       {
-        key: "scoring", stage: "scoring", title: "Haiku read",
+        key: "scoring", stage: "scoring",
+        title: s.mode === "crown" ? "Crown read" : s.mode === "shadow" ? "Haiku + Crown" : "Haiku read",
         metric: `${n0(s.scored_today)} scored today`,
         detail: s.last_symbol ? `${s.last_symbol}: ${s.last_result}` : "waiting for a filing",
         health: !live?.running ? "idle" : recentErr(s) ? "bad" : s.last_ok_utc ? "ok" : "idle",
@@ -259,7 +261,7 @@ export const PaperBot: React.FC = () => {
 
   /* --------------------------- health checks */
   const checks: { label: string; h: Health; note: string }[] = useMemo(() => {
-    const e = st.edgar || {}, q = st.quotes || {};
+    const e = st.edgar || {}, q = st.quotes || {}, cr = st.crown || {}, sc = st.scoring || {};
     const list: { label: string; h: Health; note: string }[] = [];
     if (!live || !live.configured) {
       list.push({ label: "Live link to Korvus", h: "warn", note: "add KORVUS_INTEL_KEY to this admin's .env" });
@@ -281,6 +283,28 @@ export const PaperBot: React.FC = () => {
         h: "idle",
         note: `${n0(e.new_today)} new from the universe · ${n0(e.polls_today)} polls`,
       });
+      if (sc.mode && sc.mode !== "haiku") {
+        const crErr = cr.last_error_utc && ageS(cr.last_error_utc, now) < 3600 &&
+          (!cr.last_ok_utc || new Date(cr.last_error_utc) > new Date(cr.last_ok_utc));
+        list.push({
+          label: `Crown link (${sc.mode})`,
+          h: !sc.crown_configured ? "bad" : crErr ? "bad" : cr.last_ok_utc ? "ok" : "idle",
+          note: !sc.crown_configured
+            ? "set OPENROUTER_API_KEY and CROWN_MODEL on the Korvus box"
+            : crErr ? String(cr.last_error)
+            : cr.last_ok_utc ? `${sc.crown_model || cr.model || "model"} · ${n0(cr.reads_today)} reads today · last ${Math.round((cr.last_ms || 0) / 1000)}s ${ago(cr.last_ok_utc, now)}`
+            : "linked, waiting for a filing",
+        });
+        if (sc.mode === "shadow") {
+          list.push({
+            label: "Crown vs Haiku",
+            h: "idle",
+            note: cr.compared_today
+              ? `agreed on ${cr.agree_today} of ${cr.compared_today} today (impact + direction)`
+              : "no side-by-side reads yet today",
+          });
+        }
+      }
       list.push({
         label: "Price quotes",
         h: q.last_error_utc && ageS(q.last_error_utc, now) < 3600 ? "warn" : q.last_ok_utc ? "ok" : "idle",
