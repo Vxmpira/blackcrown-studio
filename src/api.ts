@@ -654,6 +654,7 @@ export type IntelTrade = {
   id: number;
   strategy: string;
   symbol: string;
+  side?: "long" | "short";
   qty: number;
   entry_utc: string;
   entry_px: number;
@@ -697,6 +698,7 @@ export type IntelBoard = {
     paper_pnl: number;
     exits: Record<string, number>;
     by_catalyst: Record<string, { trades: number; wins: number }>;
+    by_side?: Record<string, { trades: number; wins: number; pnl: number }>;
     capital_at_work?: number;
     max_drawdown_usd?: number;
     max_drawdown_pct?: number | null;
@@ -713,6 +715,8 @@ export type IntelBoard = {
     stop_pct: number;
     min_confidence: number;
     max_day_up_pct: number;
+    max_day_down_pct?: number;
+    allow_short?: boolean;
     lookback_hours: number;
     slippage_pct: number;
     tick_seconds: number;
