@@ -7,6 +7,7 @@ import { Stats } from "./views/Stats";
 import { Settings } from "./views/Settings";
 import { Dashboard } from "./views/Dashboard";
 import { Staff } from "./views/Staff";
+import { Brain } from "./views/Brain";
 import { Login } from "./views/Login";
 import { getMe, logout, type Me } from "./api";
 import { Metropolis } from "./components/Metropolis";
@@ -74,6 +75,7 @@ export const App: React.FC = () => {
             blurb="Your video studio chief. Directs every clip, bakes exact brand text on with the forge, and pulls captions and angles from the other desks."
           />
         ) : null}
+        {tab === "brain" ? <Brain /> : null}
         {tab === "command" ? <Command /> : null}
         {tab === "stats" ? <Stats /> : null}
         {tab === "settings" ? <Settings /> : null}

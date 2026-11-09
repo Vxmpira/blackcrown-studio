@@ -2646,6 +2646,113 @@ shutdown -h now
   return `${ADMIN_PUBLIC_URL}/renders/aws-${job}.mp4`;
 }
 
+// ---------------------------------------------------------------------------
+// THE BRAIN GALAXY: the vault as a graph. Built lazily on request and cached
+// five minutes, so the server does zero work unless someone is looking; all
+// rendering happens in the viewer's browser.
+// ---------------------------------------------------------------------------
+const BRAIN_DESKS = ["corvid", "herald", "steward", "bard", "regent"];
+let brainGraphCache = { at: 0, data: null };
+function buildBrainGraph() {
+  const root = BRAIN_REPO_DIR;
+  const nodes = [];
+  const byName = new Map();
+  const walk = (dir, desk, sub, depth) => {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.name.startsWith(".")) continue;
+      const fp = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (depth < 4) walk(fp, desk, sub || e.name, depth + 1);
+      } else if (e.name.endsWith(".md")) {
+        let st;
+        try { st = fs.statSync(fp); } catch { continue; }
+        const id = path.relative(root, fp).split(path.sep).join("/");
+        const title = e.name.replace(/\.md$/, "");
+        const n = { id, title, desk, sub: sub || "", mtime: st.mtimeMs, size: st.size, out: [], deg: 0 };
+        nodes.push(n);
+        const key = title.toLowerCase();
+        if (!byName.has(key)) byName.set(key, n);
+      }
+    }
+  };
+  for (const d of BRAIN_DESKS) walk(path.join(root, d), d, "", 0);
+  const edges = [];
+  const idx = new Map(nodes.map((n, i) => [n.id, i]));
+  for (const n of nodes) {
+    let text = "";
+    try {
+      const fd = fs.openSync(path.join(root, n.id), "r");
+      const buf = Buffer.alloc(Math.min(n.size, 24000));
+      fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      text = buf.toString("utf8");
+    } catch {}
+    const seen = new Set();
+    for (const m of text.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)) {
+      const t = byName.get(m[1].trim().toLowerCase());
+      if (!t || t === n || seen.has(t.id)) continue;
+      seen.add(t.id);
+      edges.push([idx.get(n.id), idx.get(t.id)]);
+      t.deg++;
+      n.deg++;
+    }
+  }
+  const DAY = 86400000;
+  const now = Date.now();
+  const days = Array.from({ length: 14 }, () => 0);
+  const perDesk = {};
+  for (const d of BRAIN_DESKS) perDesk[d] = 0;
+  for (const n of nodes) {
+    perDesk[n.desk]++;
+    const ago = Math.floor((now - n.mtime) / DAY);
+    if (ago >= 0 && ago < 14) days[13 - ago]++;
+  }
+  let lessons = 0;
+  try { lessons = (fs.readFileSync(path.join(root, "corvid", "Patterns.md"), "utf8").match(/HEALER LESSON/g) || []).length; } catch {}
+  const pick = (arr) => arr.map((n) => ({ id: n.id, title: n.title, desk: n.desk, mtime: n.mtime, deg: n.deg }));
+  return {
+    builtAt: now,
+    nodes: nodes.map((n) => ({ id: n.id, t: n.title, d: n.desk, s: n.sub, m: Math.round(n.mtime / 1000), g: n.deg })),
+    edges: edges.slice(0, 8000),
+    stats: {
+      notes: nodes.length,
+      links: edges.length,
+      perDesk,
+      updatedToday: days[13],
+      days,
+      lessons,
+      core: nodes.find((n) => n.id === "corvid/Institution.md") ? "corvid/Institution.md" : null,
+      connected: pick([...nodes].sort((a, b) => b.deg - a.deg).slice(0, 8)),
+      recent: pick([...nodes].sort((a, b) => b.mtime - a.mtime).slice(0, 10)),
+    },
+  };
+}
+app.get("/api/brain-graph", (_req, res) => {
+  try {
+    if (!brainGraphCache.data || Date.now() - brainGraphCache.at > 5 * 60 * 1000) {
+      brainGraphCache = { at: Date.now(), data: buildBrainGraph() };
+    }
+    res.json(brainGraphCache.data);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+app.get("/api/brain-note", (req, res) => {
+  const id = String(req.query.id || "");
+  const root = path.resolve(BRAIN_REPO_DIR);
+  const fp = path.resolve(root, id);
+  if (!id.endsWith(".md") || !fp.startsWith(root + path.sep)) return res.status(400).json({ error: "bad note" });
+  try {
+    const st = fs.statSync(fp);
+    const text = fs.readFileSync(fp, "utf8").slice(0, 80000);
+    res.json({ id, title: path.basename(fp, ".md"), mtime: st.mtimeMs, text, truncated: st.size > 80000 });
+  } catch {
+    res.status(404).json({ error: "note not found" });
+  }
+});
+
 // the wire: a live ledger of desk-to-desk handoffs, drawn in the city
 const WIRE = [];
 function recordWire(from, to, text) {

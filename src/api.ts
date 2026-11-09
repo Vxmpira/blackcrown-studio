@@ -609,3 +609,42 @@ export async function login(user: string, pass: string): Promise<void> {
 export async function logout(): Promise<void> {
   await fetch(`${BASE}/api/logout`, { method: "POST" });
 }
+
+// ---- brain galaxy ----
+export type BrainNode = { id: string; t: string; d: string; s: string; m: number; g: number };
+export type BrainPick = { id: string; title: string; desk: string; mtime: number; deg: number };
+export type BrainGraph = {
+  builtAt: number;
+  nodes: BrainNode[];
+  edges: [number, number][];
+  stats: {
+    notes: number;
+    links: number;
+    perDesk: Record<string, number>;
+    updatedToday: number;
+    days: number[];
+    lessons: number;
+    core: string | null;
+    connected: BrainPick[];
+    recent: BrainPick[];
+  };
+};
+export type BrainNote = { id: string; title: string; mtime: number; text: string; truncated: boolean };
+export async function getBrainGraph(): Promise<BrainGraph | null> {
+  try {
+    const r = await fetch(`${BASE}/api/brain-graph`, { cache: "no-store", credentials: "include" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+export async function getBrainNote(id: string): Promise<BrainNote | null> {
+  try {
+    const r = await fetch(`${BASE}/api/brain-note?id=${encodeURIComponent(id)}`, { cache: "no-store", credentials: "include" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
