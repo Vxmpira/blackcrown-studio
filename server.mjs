@@ -1734,8 +1734,20 @@ app.get("/api/intel", (_req, res) => {
   const filings = readJsonl(path.join(dataDir, "filings.jsonl"), 400);
   const today = etDay(new Date().toISOString());
   const scored = filings.filter((f) => f.summary);
+  // cumulative paper P&L after each closed trade, for the equity curve
+  let cum = 0;
+  const equity = trades
+    .filter((t) => t.status === "closed")
+    .sort((a, b) => String(a.exit_utc).localeCompare(String(b.exit_utc)))
+    .map((t) => ({ t: t.exit_utc, v: Math.round((cum += Number(t.pnl) || 0) * 100) / 100, sym: t.symbol }));
+  let dataMtime = null;
+  try {
+    dataMtime = fs.statSync(path.join(dataDir, "filings.jsonl")).mtime.toISOString();
+  } catch {}
   res.json({
     configured: true,
+    dataMtime,
+    equity,
     board,
     open: trades.filter((t) => t.status === "open").reverse(),
     recent: trades.filter((t) => t.status === "closed").slice(-25).reverse(),
@@ -1746,6 +1758,32 @@ app.get("/api/intel", (_req, res) => {
       summary: f.summary,
     })),
   });
+});
+
+// Live crawler status straight from the Korvus server (key stays server-side).
+// KORVUS_INTEL_STATUS_URL + KORVUS_INTEL_KEY in .env; the same key is
+// INTEL_STATUS_KEY on the Korvus box. Cached 4s so many tabs = one request.
+const INTEL_STATUS_URL =
+  process.env.KORVUS_INTEL_STATUS_URL || "https://korvus.industries/api/feed/intel-status";
+const INTEL_KEY = process.env.KORVUS_INTEL_KEY || "";
+let intelLive = { at: 0, data: null };
+app.get("/api/intel/live", async (_req, res) => {
+  if (!INTEL_KEY) return res.json({ configured: false });
+  if (intelLive.data && Date.now() - intelLive.at < 4000) return res.json(intelLive.data);
+  try {
+    const r = await fetch(INTEL_STATUS_URL, {
+      headers: { "X-Intel-Key": INTEL_KEY },
+      signal: AbortSignal.timeout(6000),
+    });
+    const j = await r.json().catch(() => ({}));
+    const data = r.ok
+      ? { configured: true, reachable: true, ...j }
+      : { configured: true, reachable: false, error: r.status === 403 ? "key rejected by Korvus" : `HTTP ${r.status}` };
+    intelLive = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.json({ configured: true, reachable: false, error: String(e?.message || e) });
+  }
 });
 
 // ----- staff: Herald (sales and ads) and Steward (project manager) ----------
