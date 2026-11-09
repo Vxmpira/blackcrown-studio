@@ -1373,6 +1373,13 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .pb-tag.imp-high { color: var(--bad); border-color: rgba(255, 92, 122, 0.4); }
 .pb-tag.imp-med { color: var(--gold); border-color: rgba(242, 201, 76, 0.35); }
 .pb-tag.dir-bull { color: var(--ok); } .pb-tag.dir-bear { color: var(--bad); }
+.pb-tag.side-long { color: var(--ok); border-color: rgba(53, 224, 143, 0.35); }
+.pb-tag.side-short { color: #b88cff; border-color: rgba(184, 140, 255, 0.45); }
+.pb-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pb-side { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--line-soft); background: rgba(0, 0, 0, 0.45); }
+.pb-side .pb-tag { align-self: flex-start; }
+.pb-side b { font-family: "Space Grotesk", sans-serif; font-size: 22px; font-weight: 500; color: var(--white); }
+.pb-side em { font-style: normal; font-size: 11.5px; color: var(--mute); }
 
 /* --- path to live --- */
 .pb-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 18px; }

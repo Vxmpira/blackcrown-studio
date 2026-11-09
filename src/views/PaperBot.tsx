@@ -133,6 +133,7 @@ const TradeRow: React.FC<{ t: IntelTrade }> = ({ t }) => (
     <span className="pb-row-t">{et(t.entry_utc)}</span>
     <span className="pb-sym">{t.symbol}</span>
     <span className="pb-row-m">
+      <span className={`pb-tag side-${t.side || "long"}`}>{t.side === "short" ? "short" : "long"}</span>{" "}
       {t.qty} @ ${t.entry_px.toFixed(2)}
       {t.status === "closed" ? (
         <>
@@ -347,6 +348,7 @@ export const PaperBot: React.FC = () => {
 
   const events: IntelEvent[] = (live?.events || []).slice().reverse().slice(0, 40);
   const cats = Object.entries(sb?.by_catalyst ?? {}).sort((a, b) => b[1].trades - a[1].trades);
+  const sides = (["long", "short"] as const).map((k) => [k, sb?.by_side?.[k] ?? { trades: 0, wins: 0, pnl: 0 }] as const);
 
   /* --------------------------- render */
   return (
@@ -475,7 +477,21 @@ export const PaperBot: React.FC = () => {
                   {data.open?.length ? data.open.map((t) => <TradeRow key={t.id} t={t} />) : <div className="bl-empty">No open paper positions.</div>}
                 </section>
                 <section className="pb-panel">
-                  <div className="pb-panel-h"><span>Win rate by catalyst</span></div>
+                  <div className="pb-panel-h">
+                    <span>Long vs short</span>
+                    <span className="pb-dim">{rules?.allow_short === false ? "shorts switched off" : "bullish reads go long, bearish go short"}</span>
+                  </div>
+                  <div className="pb-sides">
+                    {sides.map(([k, v]) => (
+                      <div className={`pb-side ${k}`} key={k}>
+                        <span className={`pb-tag side-${k}`}>{k}</span>
+                        <b>{v.trades ? `${Math.round((v.wins / v.trades) * 100)}%` : "n/a"}</b>
+                        <em>{v.wins}/{v.trades} won</em>
+                        <em className={tone(v.pnl)}>{usd(v.pnl)}</em>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pb-panel-h" style={{ marginTop: 16 }}><span>Win rate by catalyst</span></div>
                   {cats.length ? (
                     <div className="bl">
                       {cats.map(([c, v]) => (
@@ -543,6 +559,18 @@ export const PaperBot: React.FC = () => {
               ))}
             </div>
             <p className="pb-fine">
+              {rules ? (
+                <>
+                  Rules {rules.strategy}: a med/high read at {rules.min_confidence}%+ confidence, seen in the last{" "}
+                  {rules.lookback_hours}h. Bullish goes long if price holds above its pre-filing level and is up less
+                  than {rules.max_day_up_pct}% on the day.{" "}
+                  {rules.allow_short === false
+                    ? "Shorts are switched off. "
+                    : `Bearish goes short if price holds below it and is down less than ${rules.max_day_down_pct ?? 8}% on the day. `}
+                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at
+                  3:55 PM ET. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
+                </>
+              ) : null}
               Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh
               scoreboard. Passing the gates is evidence, not a guarantee. Markets change, and paper fills are
               kinder than real ones. Paper results are simulated and are not a promise of returns.
