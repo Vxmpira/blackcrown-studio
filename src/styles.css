@@ -1242,3 +1242,12 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .bx-act-a{color:#55545e;font-size:11px;width:60px;text-align:right}
 @media(max-width:1100px){.bx-body{grid-template-columns:1fr}.bx-reader{max-height:46vh}.bx-cards{grid-template-columns:repeat(2,1fr)}.bx{height:auto}.bx-stage{height:62vh}}
 @media(max-width:700px){.bx-grid{grid-template-columns:1fr}.bx-hud{flex-wrap:wrap;gap:8px}}
+
+/* ----- Paper Bot (Korvus Intel) ----- */
+.money-row .m-date { min-width: 108px; }
+.money-row .m-label b { color: var(--white); font-weight: 600; }
+.money-row .m-label a { color: var(--pink-soft); text-decoration: none; }
+.money-row .m-label a:hover { text-decoration: underline; }
+.pb-rules { color: var(--bone); font-size: 13px; line-height: 1.7; max-width: 90ch; margin-top: 8px; }
+.card .v.money-out { color: #ff7a7a; }
+.card .v.money-in { color: #35e08f; }

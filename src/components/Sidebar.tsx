@@ -17,10 +17,11 @@ const CrownMark: React.FC = () => (
   </svg>
 );
 
-export type TabId = "dashboard" | "seo" | "ceo" | "sales" | "projects" | "studio" | "brain" | "command" | "stats" | "settings";
+export type TabId = "dashboard" | "paperbot" | "seo" | "ceo" | "sales" | "projects" | "studio" | "brain" | "command" | "stats" | "settings";
 
 const TABS: { id: TabId; label: string; soon?: boolean }[] = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "paperbot", label: "Paper Bot" },
   { id: "seo", label: "SEO Agent" },
   { id: "ceo", label: "CEO" },
   { id: "sales", label: "Sales" },

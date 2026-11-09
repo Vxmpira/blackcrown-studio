@@ -648,3 +648,87 @@ export async function getBrainNote(id: string): Promise<BrainNote | null> {
     return null;
   }
 }
+
+// ----- Korvus Intel paper bot (read-only, from intel/ in the brain repo) ----
+export type IntelTrade = {
+  id: number;
+  strategy: string;
+  symbol: string;
+  qty: number;
+  entry_utc: string;
+  entry_px: number;
+  target_px: number | null;
+  stop_px: number | null;
+  exit_utc: string | null;
+  exit_px: number | null;
+  exit_reason: string | null;
+  pnl: number | null;
+  pnl_pct: number | null;
+  status: "open" | "closed";
+};
+export type IntelFiling = {
+  symbol: string;
+  headline: string;
+  seen_utc: string;
+  url: string;
+  impact: "high" | "med" | "low";
+  direction: "bull" | "bear" | "neut";
+  confidence: number;
+  catalyst: string;
+  summary: string;
+};
+export type IntelBoard = {
+  data_asof_utc: string;
+  min_sample: number;
+  universe_count: number;
+  universe_asof: string;
+  scoreboard: {
+    strategy: string;
+    closed_trades: number;
+    open_trades: number;
+    wins: number;
+    losses: number;
+    win_rate_pct: number | null;
+    sample_ok: boolean;
+    avg_win_pct: number | null;
+    avg_loss_pct: number | null;
+    expectancy_pct: number | null;
+    profit_factor: number | null;
+    paper_pnl: number;
+    exits: Record<string, number>;
+    by_catalyst: Record<string, { trades: number; wins: number }>;
+  };
+  rules: {
+    strategy: string;
+    notional: number;
+    max_open: number;
+    target_pct: number;
+    stop_pct: number;
+    min_confidence: number;
+    max_day_up_pct: number;
+    lookback_hours: number;
+    slippage_pct: number;
+    tick_seconds: number;
+    price_band: [number, number];
+    mcap_max: number;
+  };
+};
+export type IntelData = {
+  configured: boolean;
+  dir?: string;
+  board?: IntelBoard | null;
+  open?: IntelTrade[];
+  recent?: IntelTrade[];
+  filingsToday?: number;
+  filings?: IntelFiling[];
+};
+
+export async function getIntel(): Promise<IntelData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/intel`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}

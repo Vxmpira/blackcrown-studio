@@ -1697,6 +1697,57 @@ if (BRAIN_SYNC) {
   setInterval(() => syncBrains(), 5 * 60 * 1000);
 }
 
+// ----- Korvus Intel paper bot: read-only view of intel/ in the brain repo ----
+// The Korvus server pushes intel/ into blackcrown-brain; brain sync above
+// pulls it here every 5 minutes. Nothing in this admin ever writes to it.
+const INTEL_DIR = process.env.INTEL_DIR || path.join(BRAIN_REPO_DIR, "intel");
+
+function readJsonl(file, limit = 5000) {
+  try {
+    const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+    return lines.slice(-limit).map((l) => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function etDay(iso) {
+  try {
+    return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  } catch {
+    return "";
+  }
+}
+
+app.get("/api/intel", (_req, res) => {
+  const dataDir = path.join(INTEL_DIR, "data");
+  if (!fs.existsSync(dataDir)) {
+    return res.json({ configured: false, dir: INTEL_DIR });
+  }
+  let board = null;
+  try {
+    board = JSON.parse(fs.readFileSync(path.join(dataDir, "scoreboard.json"), "utf8"));
+  } catch {}
+  const trades = readJsonl(path.join(dataDir, "trades.jsonl"));
+  const filings = readJsonl(path.join(dataDir, "filings.jsonl"), 400);
+  const today = etDay(new Date().toISOString());
+  const scored = filings.filter((f) => f.summary);
+  res.json({
+    configured: true,
+    board,
+    open: trades.filter((t) => t.status === "open").reverse(),
+    recent: trades.filter((t) => t.status === "closed").slice(-25).reverse(),
+    filingsToday: filings.filter((f) => etDay(f.seen_utc) === today).length,
+    filings: scored.slice(-15).reverse().map((f) => ({
+      symbol: f.symbol, headline: f.headline, seen_utc: f.seen_utc, url: f.url,
+      impact: f.impact, direction: f.direction, confidence: f.confidence, catalyst: f.catalyst,
+      summary: f.summary,
+    })),
+  });
+});
+
 // ----- staff: Herald (sales and ads) and Steward (project manager) ----------
 app.get("/api/staff", (_req, res) => res.json({ agents: staffStates() }));
 app.post("/api/staff/:key/cycle", async (req, res) => {
