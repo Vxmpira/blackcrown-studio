@@ -7,27 +7,28 @@
   "scripts": {
     "dev": "vite",
     "server": "node server.mjs",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && vite build -c vite.activity.config.ts",
     "studio": "remotion studio src/remotion/index.ts",
     "deploy:fn": "remotion lambda functions deploy",
     "deploy:site": "remotion lambda sites create src/remotion/index.ts --site-name=blackcrown-ads"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.650.0",
+    "@aws-sdk/client-ssm": "^3.650.0",
+    "@discord/embedded-app-sdk": "^2.5.0",
     "@remotion/cli": "^4.0.0",
     "@remotion/google-fonts": "^4.0.0",
     "@remotion/lambda": "^4.0.0",
     "@remotion/player": "^4.0.0",
     "cors": "^2.8.5",
-    "ffmpeg-static": "^5.2.0",
     "dotenv": "^16.4.0",
     "express": "^4.19.0",
+    "ffmpeg-static": "^5.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "remotion": "^4.0.0",
     "three": "^0.186.1",
-    "ws": "^8.18.0",
-    "@aws-sdk/client-ec2": "^3.650.0",
-    "@aws-sdk/client-ssm": "^3.650.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

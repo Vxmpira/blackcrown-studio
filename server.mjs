@@ -210,6 +210,8 @@ app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.baseUrl + req.path) || PUBLIC_API.has("/api" + req.path)) {
     return next();
   }
+  // the Eclipse-X games are public; players identify through Discord
+  if (req.path.startsWith("/activity/")) return next();
   if (isAuthed(req)) return next();
   res.status(401).json({ error: "Not signed in." });
 });
@@ -2802,6 +2804,443 @@ app.get("/api/brain-note", (req, res) => {
   } catch {
     res.status(404).json({ error: "note not found" });
   }
+});
+
+// ---------------------------------------------------------------------------
+// THE ECLIPSE-X ARCADE: a Discord Activity with four games. Read the Tape,
+// Headline or Hoax, The Open, Daily Cipher. Zero AI spend: real historical
+// futures bars, real headlines, a curated word list. Scores live server side
+// so the weekly board can be trusted.
+// ---------------------------------------------------------------------------
+const ARCADE_PATH = path.join(__dirname, "arcade-scores.json");
+const arcadeRounds = new Map(); // round id -> server-side truth
+const ACT_UA = "Mozilla/5.0 (compatible; BlackCrownArcade/1.0)";
+function etParts(ms) {
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, weekday: "short" });
+  const o = {};
+  for (const p of f.formatToParts(new Date(ms))) o[p.type] = p.value;
+  return { day: `${o.year}-${o.month}-${o.day}`, h: Number(o.hour) % 24, m: Number(o.minute), wd: o.weekday };
+}
+function arcadeWeek(ms = Date.now()) {
+  const d = new Date(ms);
+  const day = (d.getUTCDay() + 6) % 7;
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
+  return monday.toISOString().slice(0, 10);
+}
+function arcadeLoad() {
+  let s = { week: arcadeWeek(), users: {} };
+  try { s = JSON.parse(fs.readFileSync(ARCADE_PATH, "utf8")); } catch {}
+  if (s.week !== arcadeWeek()) {
+    for (const u of Object.values(s.users || {})) { u.tape = 0; u.hoax = 0; u.openBest = null; }
+    s.week = arcadeWeek();
+  }
+  s.users = s.users || {};
+  return s;
+}
+function arcadeSave(s) {
+  try { fs.writeFileSync(ARCADE_PATH, JSON.stringify(s)); } catch {}
+}
+function arcadeUser(s, who) {
+  const u = (s.users[who.id] = s.users[who.id] || { tape: 0, hoax: 0, openBest: null, streak: 0, lastSolved: null, cipher: null });
+  u.name = who.name;
+  u.avatar = who.avatar || null;
+  return u;
+}
+function newRoundId() {
+  for (const [k, v] of arcadeRounds) if (Date.now() - v.at > 30 * 60 * 1000) arcadeRounds.delete(k);
+  return crypto.randomBytes(8).toString("hex");
+}
+
+// identity: a Discord access token from the Embedded App SDK, verified with
+// Discord and cached. Browser visitors play as guests and never touch the board.
+const actTokens = new Map();
+async function actWho(req) {
+  const tok = String(req.headers["x-activity-token"] || "");
+  if (!tok) return null;
+  const hit = actTokens.get(tok);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.user;
+  try {
+    const r = await fetch("https://discord.com/api/v10/users/@me", { headers: { authorization: `Bearer ${tok}` } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const user = {
+      id: String(j.id),
+      name: String(j.global_name || j.username || "player").slice(0, 32),
+      avatar: j.avatar ? `https://cdn.discordapp.com/avatars/${j.id}/${j.avatar}.png?size=64` : null,
+    };
+    actTokens.set(tok, { at: Date.now(), user });
+    if (actTokens.size > 2000) actTokens.clear();
+    return user;
+  } catch {
+    return null;
+  }
+}
+let actClientId = (process.env.DISCORD_CLIENT_ID || "").trim();
+async function actGetClientId() {
+  if (actClientId) return actClientId;
+  const bot = (process.env.DISCORD_BOT_TOKEN || "").trim();
+  if (!bot) return "";
+  try {
+    const r = await fetch("https://discord.com/api/v10/oauth2/applications/@me", { headers: { authorization: `Bot ${bot}` } });
+    if (r.ok) actClientId = String((await r.json()).id || "");
+  } catch {}
+  return actClientId;
+}
+app.get("/api/activity/config", async (_req, res) => {
+  res.json({ clientId: await actGetClientId(), ready: !!(process.env.DISCORD_CLIENT_SECRET || "").trim() });
+});
+app.post("/api/activity/token", async (req, res) => {
+  const code = String(req.body?.code || "");
+  const secret = (process.env.DISCORD_CLIENT_SECRET || "").trim();
+  const id = await actGetClientId();
+  if (!code || !secret || !id) return res.status(400).json({ error: "activity not configured: DISCORD_CLIENT_SECRET missing in .env" });
+  try {
+    const r = await fetch("https://discord.com/api/v10/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: id, client_secret: secret, grant_type: "authorization_code", code }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.access_token) return res.status(400).json({ error: j.error_description || "token exchange failed" });
+    res.json({ access_token: j.access_token });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// market bars: real 5 minute ES and NQ history, cached six hours, with a
+// labelled simulation fallback so a data outage never breaks the games
+const barCache = {};
+async function arcadeBars(sym) {
+  const c = barCache[sym];
+  if (c && Date.now() - c.at < 6 * 3600 * 1000) return c;
+  try {
+    const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=5m&range=60d`, { headers: { "user-agent": ACT_UA } });
+    const j = await r.json();
+    const res0 = j?.chart?.result?.[0];
+    const q = res0?.indicators?.quote?.[0];
+    const ts = res0?.timestamp || [];
+    const bars = [];
+    ts.forEach((t, i) => {
+      const o = q.open[i], h = q.high[i], l = q.low[i], cl = q.close[i];
+      if ([o, h, l, cl].every((x) => typeof x === "number" && isFinite(x))) bars.push({ t: t * 1000, o, h, l, c: cl });
+    });
+    if (bars.length > 500) {
+      barCache[sym] = { at: Date.now(), bars, simulated: false };
+      return barCache[sym];
+    }
+  } catch {}
+  // simulation: volatility-clustered random walk at index-futures scale
+  const bars = [];
+  let p = sym.startsWith("NQ") ? 21000 : 6000, vol = p * 0.0009, t = Date.now() - 4000 * 300000;
+  for (let i = 0; i < 4000; i++) {
+    vol = Math.max(p * 0.0003, Math.min(p * 0.003, vol * (0.9 + Math.random() * 0.22)));
+    const o = p, cl = p + (Math.random() - 0.5) * 2 * vol;
+    bars.push({ t, o, h: Math.max(o, cl) + Math.random() * vol * 0.6, l: Math.min(o, cl) - Math.random() * vol * 0.6, c: cl });
+    p = cl;
+    t += 300000;
+  }
+  barCache[sym] = { at: Date.now(), bars, simulated: true };
+  return barCache[sym];
+}
+const round2 = (x) => Math.round(x * 100) / 100;
+const packBars = (bars) => bars.map((b) => [round2(b.o), round2(b.h), round2(b.l), round2(b.c)]);
+
+// 1. READ THE TAPE: 30 bars shown, six calls on the next three bars each
+app.get("/api/activity/tape", async (_req, res) => {
+  const sym = Math.random() < 0.5 ? "ES=F" : "NQ=F";
+  const { bars, simulated } = await arcadeBars(sym);
+  const need = 30 + 6 * 3;
+  let start = 0;
+  for (let tries = 0; tries < 40; tries++) {
+    start = Math.floor(Math.random() * (bars.length - need));
+    const span = bars[start + need - 1].t - bars[start].t;
+    if (span < need * 300000 * 1.5) break; // contiguous session, no weekend gap
+  }
+  const win = bars.slice(start, start + need);
+  const body = win.slice(0, 30).reduce((a, b) => a + Math.abs(b.c - b.o), 0) / 30;
+  const id = newRoundId();
+  arcadeRounds.set(id, { at: Date.now(), kind: "tape", win, thr: body * 0.6, step: 0, score: 0 });
+  res.json({ id, symbol: sym.replace("=F", ""), simulated, bars: packBars(win.slice(0, 30)), steps: 6 });
+});
+app.post("/api/activity/tape/call", async (req, res) => {
+  const r = arcadeRounds.get(String(req.body?.id || ""));
+  if (!r || r.kind !== "tape" || r.step >= 6) return res.status(400).json({ error: "round over" });
+  const call = String(req.body?.call || "");
+  const from = 30 + r.step * 3;
+  const reveal = r.win.slice(from, from + 3);
+  const move = reveal[2].c - r.win[from - 1].c;
+  const truth = move > r.thr ? "up" : move < -r.thr ? "down" : "chop";
+  const correct = call === truth;
+  if (correct) r.score++;
+  r.step++;
+  let total = null;
+  if (r.step >= 6) {
+    const who = await actWho(req);
+    if (who) {
+      const s = arcadeLoad();
+      const u = arcadeUser(s, who);
+      u.tape += r.score;
+      arcadeSave(s);
+      total = u.tape;
+    }
+  }
+  res.json({ truth, correct, move: round2(move), bars: packBars(reveal), score: r.score, done: r.step >= 6, weekTotal: total });
+});
+
+// 2. HEADLINE OR HOAX: one real headline, one with its facts flipped
+let headlineCache = { at: 0, list: [] };
+const HEADLINE_FALLBACK = [
+  "Fed raises rates by 75 basis points, the largest hike since 1994",
+  "S&P 500 closes at a record high as tech stocks rally",
+  "Nasdaq falls 3% as bond yields jump",
+  "Oil prices surge after OPEC+ announces surprise production cuts",
+  "US economy adds 263,000 jobs, beating expectations",
+  "Consumer prices rise 0.4% in March as gasoline costs climb",
+  "Dow drops more than 500 points as recession fears mount",
+  "Treasury 10-year yield climbs above 4% for the first time since 2008",
+  "Nvidia shares jump 24% after blowout earnings forecast",
+  "Gold hits record high above $2,400 an ounce",
+  "Fed holds rates steady and signals three cuts this year",
+  "Unemployment rate rises to 4.3%, highest in nearly three years",
+  "Retail sales fall 0.9% in December, missing forecasts",
+  "Apple becomes the first company to reach a $3 trillion market value",
+  "Bitcoin falls below $20,000 as crypto selloff deepens",
+  "ECB raises rates by half a point to fight inflation",
+  "Inflation cools to 3.2% in October, lower than expected",
+  "Stocks rally as cooler inflation data fuels rate cut hopes",
+];
+async function arcadeHeadlines() {
+  if (headlineCache.list.length && Date.now() - headlineCache.at < 30 * 60 * 1000) return headlineCache.list;
+  const feeds = ["https://www.cnbc.com/id/20910258/device/rss/rss.html", "https://feeds.content.dowjones.io/public/rss/mw_topstories"];
+  const out = [];
+  for (const f of feeds) {
+    try {
+      const r = await fetch(f, { headers: { "user-agent": ACT_UA } });
+      const x = await r.text();
+      for (const m of x.matchAll(/<item>[\s\S]*?<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/g)) {
+        const t = m[1].replace(/&amp;/g, "&").replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+        if (t.length > 25 && t.length < 140) out.push(t);
+      }
+    } catch {}
+  }
+  headlineCache = { at: Date.now(), list: out.length >= 8 ? out : HEADLINE_FALLBACK };
+  return headlineCache.list;
+}
+const HOAX_SWAPS = [
+  ["rises", "falls"], ["rise", "fall"], ["gains", "losses"], ["beats", "misses"], ["beating", "missing"],
+  ["hike", "cut"], ["higher", "lower"], ["jumps", "slumps"], ["jump", "slump"],
+  ["surges", "plunges"], ["surge", "plunge"], ["rally", "slump"], ["rallies", "sinks"], ["climbs", "sinks"],
+  ["record high", "record low"], ["above", "below"], ["up", "down"], ["more than expected", "less than expected"],
+  ["cools", "heats up"], ["drops", "soars"], ["falls", "climbs"], ["soars", "tumbles"],
+];
+const HOAX_PHRASES = [
+  ["falls below", "rises above"], ["drops below", "climbs above"], ["sinks below", "jumps above"],
+  ["rises above", "falls below"], ["climbs above", "drops below"], ["tops", "falls short of"],
+  ["beats expectations", "misses expectations"], ["beating expectations", "missing expectations"],
+  ["raises rates", "cuts rates"], ["cuts rates", "raises rates"], ["record high", "record low"],
+];
+function hoaxOf(h) {
+  let out = h, changed = false;
+  for (const [a, b] of HOAX_PHRASES) {
+    const re = new RegExp(`\\b${a}\\b`, "i");
+    if (re.test(out)) {
+      out = out.replace(re, (m) => (m[0] === m[0].toUpperCase() ? b[0].toUpperCase() + b.slice(1) : b));
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) for (const [a, b] of HOAX_SWAPS.sort(() => Math.random() - 0.5)) {
+    const re = new RegExp(`\\b(${a}|${b})\\b`, "i");
+    const m = out.match(re);
+    if (m) {
+      const w = m[1].toLowerCase() === a ? b : a;
+      const keepCap = m[1][0] === m[1][0].toUpperCase() ? w[0].toUpperCase() + w.slice(1) : w;
+      out = out.replace(re, keepCap);
+      changed = true;
+      break;
+    }
+  }
+  // only mutate figures that are clearly data: dollar amounts, percentages,
+  // point moves, or comma-grouped counts; never names like S&P 500 or years
+  const num = out.match(/(\$)(\d[\d,]*\.?\d*)( trillion| billion| million)?|(\d[\d,]*\.?\d*)(%| basis points| points)|(\d{1,3}(?:,\d{3})+)/);
+  if (num && (!changed || Math.random() < 0.5)) {
+    const raw = num[2] || num[4] || num[6];
+    const pre = num[1] || "";
+    const suf = num[3] || num[5] || "";
+    const v = Number(raw.replace(/,/g, ""));
+    if (isFinite(v) && v > 0) {
+      const nv = v * (Math.random() < 0.5 ? 0.6 + Math.random() * 0.25 : 1.2 + Math.random() * 0.35);
+      const step = raw.includes(",") ? 1000 : 1;
+      const fmt = raw.includes(".") ? nv.toFixed(1) : (Math.round(nv / step) * step).toLocaleString("en-US");
+      out = out.replace(num[0], `${pre}${fmt}${suf}`);
+      changed = true;
+    }
+  }
+  return changed && out !== h ? out : null;
+}
+app.get("/api/activity/hoax", async (_req, res) => {
+  const list = await arcadeHeadlines();
+  for (let i = 0; i < 30; i++) {
+    const real = list[Math.floor(Math.random() * list.length)];
+    const fake = hoaxOf(real);
+    if (!fake) continue;
+    const realFirst = Math.random() < 0.5;
+    const id = newRoundId();
+    arcadeRounds.set(id, { at: Date.now(), kind: "hoax", real: realFirst ? "a" : "b" });
+    return res.json({ id, a: realFirst ? real : fake, b: realFirst ? fake : real });
+  }
+  res.status(503).json({ error: "no headlines right now, try again shortly" });
+});
+app.post("/api/activity/hoax/answer", async (req, res) => {
+  const id = String(req.body?.id || "");
+  const r = arcadeRounds.get(id);
+  if (!r || r.kind !== "hoax") return res.status(400).json({ error: "round expired" });
+  arcadeRounds.delete(id);
+  const correct = String(req.body?.pick || "") === r.real;
+  let total = null;
+  const who = await actWho(req);
+  if (who && correct) {
+    const s = arcadeLoad();
+    const u = arcadeUser(s, who);
+    u.hoax++;
+    arcadeSave(s);
+    total = u.hoax;
+  }
+  res.json({ correct, real: r.real, weekTotal: total });
+});
+
+// 3. THE OPEN: a real historical open, 9:00 to 10:45 ET, replayed bar by bar
+app.get("/api/activity/open", async (_req, res) => {
+  const sym = Math.random() < 0.5 ? "ES=F" : "NQ=F";
+  const { bars, simulated } = await arcadeBars(sym);
+  const days = {};
+  for (const b of bars) {
+    const e = etParts(b.t);
+    if (e.wd === "Sat" || e.wd === "Sun") continue;
+    const mins = e.h * 60 + e.m;
+    if (mins >= 540 && mins < 645) (days[e.day] = days[e.day] || []).push(b);
+  }
+  const full = Object.values(days).filter((d) => d.length >= 20);
+  const session = simulated || !full.length ? bars.slice(-21) : full[Math.floor(Math.random() * full.length)].slice(0, 21);
+  const id = newRoundId();
+  arcadeRounds.set(id, { at: Date.now(), kind: "open", session, sym });
+  res.json({ id, symbol: sym.replace("=F", ""), simulated, bars: packBars(session), openIndex: 6, pointValue: sym.startsWith("NQ") ? 20 : 50 });
+});
+app.post("/api/activity/open/finish", async (req, res) => {
+  const id = String(req.body?.id || "");
+  const r = arcadeRounds.get(id);
+  if (!r || r.kind !== "open") return res.status(400).json({ error: "session expired" });
+  arcadeRounds.delete(id);
+  // positions[i] is -1, 0 or 1, held from the close of bar i to the close of bar i+1
+  const pos = Array.isArray(req.body?.positions) ? req.body.positions.map((x) => Math.max(-1, Math.min(1, Math.round(Number(x) || 0)))) : [];
+  let pnl = 0, peak = 0, dd = 0, trades = 0;
+  for (let i = 0; i < r.session.length - 1; i++) {
+    const p = pos[i] || 0;
+    if (i > 0 && p !== (pos[i - 1] || 0)) trades++;
+    pnl += p * (r.session[i + 1].c - r.session[i].c);
+    peak = Math.max(peak, pnl);
+    dd = Math.max(dd, peak - pnl);
+  }
+  const score = round2(pnl - dd * 0.5);
+  let best = null;
+  const who = await actWho(req);
+  if (who) {
+    const s = arcadeLoad();
+    const u = arcadeUser(s, who);
+    if (u.openBest === null || score > u.openBest) u.openBest = score;
+    arcadeSave(s);
+    best = u.openBest;
+  }
+  res.json({ pnl: round2(pnl), drawdown: round2(dd), trades, score, weekBest: best });
+});
+
+// 4. DAILY CIPHER: one five-letter market word a day, six guesses, streaks
+const CIPHER_WORDS = [
+  "TREND", "SHORT", "PRICE", "DELTA", "GAMMA", "THETA", "YIELD", "HEDGE", "LIMIT", "STOPS",
+  "BEARS", "BULLS", "RALLY", "FLOAT", "BONDS", "INDEX", "PIVOT", "SWING", "SCALP", "TAPER",
+  "ASSET", "BASIS", "STOCK", "SPLIT", "QUOTE", "TRADE", "RANGE", "ALPHA", "GREED", "PANIC",
+  "CRASH", "SPIKE", "WHALE", "ORDER", "BLOCK", "FILLS", "LONGS", "CLOSE", "CHART", "MACRO",
+  "RATES", "CYCLE", "SHARE", "VALUE", "ENTRY", "TICKS", "BOOKS", "LEVEL", "SWAPS",
+  "WICKS", "OFFER", "MONEY", "RISKS", "GAINS", "BREAK", "FLOOR", "PROXY", "BASES",
+];
+function cipherWordFor(day) {
+  let h = 0;
+  for (const ch of `eclipse-x:${day}`) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return CIPHER_WORDS[h % CIPHER_WORDS.length];
+}
+function cipherScore(guess, word) {
+  const res = Array(5).fill("miss");
+  const left = {};
+  for (let i = 0; i < 5; i++) {
+    if (guess[i] === word[i]) res[i] = "hit";
+    else left[word[i]] = (left[word[i]] || 0) + 1;
+  }
+  for (let i = 0; i < 5; i++) {
+    if (res[i] !== "hit" && left[guess[i]]) { res[i] = "near"; left[guess[i]]--; }
+  }
+  return res;
+}
+const guestCipher = new Map();
+app.get("/api/activity/cipher", async (req, res) => {
+  const day = etParts(Date.now()).day;
+  const who = await actWho(req);
+  let st = null, streak = 0;
+  if (who) {
+    const s = arcadeLoad();
+    const u = arcadeUser(s, who);
+    if (!u.cipher || u.cipher.day !== day) u.cipher = { day, guesses: [], solved: false };
+    arcadeSave(s);
+    st = u.cipher;
+    streak = u.streak;
+  } else {
+    const g = String(req.headers["x-guest"] || "guest").slice(0, 40);
+    st = guestCipher.get(g);
+    if (!st || st.day !== day) { st = { day, guesses: [], solved: false }; guestCipher.set(g, st); }
+  }
+  const word = cipherWordFor(day);
+  res.json({ day, guesses: st.guesses.map((g) => ({ word: g, marks: cipherScore(g, word) })), solved: st.solved, over: st.solved || st.guesses.length >= 6, streak, answer: st.solved || st.guesses.length >= 6 ? word : null });
+});
+app.post("/api/activity/cipher/guess", async (req, res) => {
+  const guess = String(req.body?.guess || "").toUpperCase().replace(/[^A-Z]/g, "");
+  if (guess.length !== 5) return res.status(400).json({ error: "five letters" });
+  const day = etParts(Date.now()).day;
+  const word = cipherWordFor(day);
+  const who = await actWho(req);
+  let st, s = null, u = null;
+  if (who) {
+    s = arcadeLoad();
+    u = arcadeUser(s, who);
+    if (!u.cipher || u.cipher.day !== day) u.cipher = { day, guesses: [], solved: false };
+    st = u.cipher;
+  } else {
+    const g = String(req.headers["x-guest"] || "guest").slice(0, 40);
+    st = guestCipher.get(g);
+    if (!st || st.day !== day) { st = { day, guesses: [], solved: false }; guestCipher.set(g, st); }
+  }
+  if (st.solved || st.guesses.length >= 6) return res.status(400).json({ error: "today is done, come back tomorrow" });
+  st.guesses.push(guess);
+  if (guess === word) st.solved = true;
+  const over = st.solved || st.guesses.length >= 6;
+  if (u && over) {
+    const yesterday = etParts(Date.now() - 86400000).day;
+    if (st.solved) {
+      u.streak = u.lastSolved === yesterday || u.lastSolved === day ? (u.lastSolved === day ? u.streak : u.streak + 1) : 1;
+      u.lastSolved = day;
+    } else {
+      u.streak = 0;
+    }
+  }
+  if (s) arcadeSave(s);
+  res.json({ marks: cipherScore(guess, word), solved: st.solved, over, answer: over ? word : null, streak: u ? u.streak : 0 });
+});
+
+// the weekly board
+app.get("/api/activity/board", (_req, res) => {
+  const s = arcadeLoad();
+  const all = Object.entries(s.users).map(([id, u]) => ({ id, name: u.name, avatar: u.avatar, tape: u.tape || 0, hoax: u.hoax || 0, openBest: u.openBest, streak: u.streak || 0 }));
+  const top = (k, f = (x) => x[k]) => all.filter((u) => f(u) !== null && f(u) > 0).sort((a, b) => f(b) - f(a)).slice(0, 5).map((u) => ({ name: u.name, avatar: u.avatar, v: f(u) }));
+  res.json({ week: s.week, tape: top("tape"), hoax: top("hoax"), open: top("openBest"), streak: top("streak") });
 });
 
 // the wire: a live ledger of desk-to-desk handoffs, drawn in the city
