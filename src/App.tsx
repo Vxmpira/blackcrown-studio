@@ -7,6 +7,7 @@ import { Stats } from "./views/Stats";
 import { Settings } from "./views/Settings";
 import { Dashboard } from "./views/Dashboard";
 import { Staff } from "./views/Staff";
+import { PaperBot } from "./views/PaperBot";
 import { Brain } from "./views/Brain";
 import { Login } from "./views/Login";
 import { getMe, logout, type Me } from "./api";
@@ -52,6 +53,7 @@ export const App: React.FC = () => {
       <Sidebar active={tab} onChange={setTab} onLogout={signOut} />
       <main className="main">
         {tab === "dashboard" ? <Dashboard /> : null}
+        {tab === "paperbot" ? <PaperBot /> : null}
         {tab === "seo" ? <Seo /> : null}
         {tab === "ceo" ? <Ceo /> : null}
         {tab === "sales" ? (
