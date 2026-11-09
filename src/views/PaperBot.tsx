@@ -290,9 +290,9 @@ export const PaperBot: React.FC = () => {
           label: `Crown link (${sc.mode})`,
           h: !sc.crown_configured ? "bad" : crErr ? "bad" : cr.last_ok_utc ? "ok" : "idle",
           note: !sc.crown_configured
-            ? "set CROWN_API_KEY and CROWN_WORKSPACE on the Korvus box"
+            ? "set OPENROUTER_API_KEY and CROWN_MODEL on the Korvus box"
             : crErr ? String(cr.last_error)
-            : cr.last_ok_utc ? `${n0(cr.reads_today)} reads today · last ${Math.round((cr.last_ms || 0) / 1000)}s ${ago(cr.last_ok_utc, now)}`
+            : cr.last_ok_utc ? `${sc.crown_model || cr.model || "model"} · ${n0(cr.reads_today)} reads today · last ${Math.round((cr.last_ms || 0) / 1000)}s ${ago(cr.last_ok_utc, now)}`
             : "linked, waiting for a filing",
         });
         if (sc.mode === "shadow") {
