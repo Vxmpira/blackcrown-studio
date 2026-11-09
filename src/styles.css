@@ -1326,7 +1326,7 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .pb-ev-t { color: var(--mute); }
 .pb-ev-s { letter-spacing: 0.12em; color: var(--pink-soft); }
 .pb-ev-s.s-edgar { color: var(--cyan); } .pb-ev-s.s-scoring { color: #b88cff; } .pb-ev-s.s-bot { color: var(--gold); }
-.pb-ev-s.s-vault { color: var(--ok); } .pb-ev-s.s-universe { color: var(--pink-soft); }
+.pb-ev-s.s-vault { color: var(--ok); } .pb-ev-s.s-crown { color: var(--gold); text-shadow: var(--glow-gold); } .pb-ev-s.s-universe { color: var(--pink-soft); }
 .pb-ev-m { color: var(--bone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pb-ev.error .pb-ev-m { color: var(--bad); }
 
