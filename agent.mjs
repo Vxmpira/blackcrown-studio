@@ -1106,7 +1106,7 @@ export async function runCycle(trigger = "schedule") {
           ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480))
           : undefined,
         caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
-        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 3).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5 })) : undefined,
+        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 14).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5, style: o.style === "word" ? "word" : undefined, color: o.color === "accent" ? "accent" : undefined })) : undefined,
         brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
         target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
         format: p.format === "video" ? "video" : undefined,
@@ -1748,7 +1748,7 @@ export function fileProposals(list, author = "staff") {
       detail: String(p.detail || "").slice(0, 2400),
       slides: Array.isArray(p.slides) ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480)) : undefined,
       caption: p.caption ? String(p.caption).slice(0, 900) : undefined,
-        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 3).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5 })) : undefined,
+        overlay: Array.isArray(p.overlay) ? p.overlay.slice(0, 14).map((o) => ({ text: String(o.text || "").slice(0, 48), t: Number(o.t) || 0, d: Number(o.d) || 2.5, style: o.style === "word" ? "word" : undefined, color: o.color === "accent" ? "accent" : undefined })) : undefined,
       brand: p.brand === "korvus" ? "korvus" : p.brand ? "default" : undefined,
       target: ["brand", "korvus", "crown", "eclipse", "lodestone"].includes(p.target) ? p.target : undefined,
       format: p.format === "video" ? "video" : undefined,

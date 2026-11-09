@@ -2418,35 +2418,86 @@ function forgeEscape(s) {
     .trim();
 }
 async function forgeOverlay({ src, lines, name }) {
-  const safe = (Array.isArray(lines) ? lines : [])
+  // Text is typeset with libass (the bundled ffmpeg has no drawtext filter,
+  // which is why early clips shipped raw). Two looks: "caption", the bold
+  // lower-third line, and "word", the MONOLITH format: one letter-spaced
+  // capital word per shot, dead center, fading in and out over a cold
+  // desaturated grade.
+  const raw = Array.isArray(lines) ? lines : [];
+  const monolith = raw.some((l) => String(l.style || "").toLowerCase() === "word");
+  const assText = (s) =>
+    String(s || "")
+      .replace(/[{}\\\r\n]/g, " ")
+      .replace(/[\u2014\u2013]/g, ", ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 48);
+  const safe = raw
     .map((l) => ({
-      text: forgeEscape(l.text || ""),
+      text: assText(l.text),
+      word: monolith || String(l.style || "").toLowerCase() === "word",
+      accent: String(l.color || "").toLowerCase() === "accent",
       t: Math.max(0, Number(l.t) || 0),
       d: Math.min(15, Math.max(0.8, Number(l.d) || 2.5)),
     }))
     .filter((l) => l.text)
-    .slice(0, 3);
+    .slice(0, monolith ? 14 : 3);
   if (!safe.length) return null;
   const clean = String(name).replace(/[^a-z0-9-]/gi, "").slice(0, 40) || `clip-${Date.now()}`;
   const srcFile = path.join(RENDERS_DIR, `${clean}-src.mp4`);
+  const assFile = path.join(RENDERS_DIR, `${clean}.ass`);
   const outFile = path.join(RENDERS_DIR, `${clean}.mp4`);
   const r = await fetch(src);
   if (!r.ok) throw new Error(`source download failed (${r.status})`);
   fs.writeFileSync(srcFile, Buffer.from(await r.arrayBuffer()));
-  const filters = safe
-    .map(
-      (l) =>
-        `drawtext=fontfile='${FORGE_FONT}':text='${l.text}':fontcolor=0xF6F8FF:fontsize=h/15:borderw=4:bordercolor=0x0A0A0D:box=1:boxcolor=0x0A0A0D@0.35:boxborderw=14:x=(w-text_w)/2:y=h*0.70:enable='between(t,${l.t},${l.t + l.d})'`
-    )
-    .join(",");
+  const ts = (sec) => {
+    const cs = Math.round(sec * 100);
+    const h = Math.floor(cs / 360000), m = Math.floor((cs % 360000) / 6000), s = Math.floor((cs % 6000) / 100), c = cs % 100;
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(c).padStart(2, "0")}`;
+  };
+  const ass = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    "PlayResX: 720",
+    "PlayResY: 1280",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    "Style: Caption,DejaVu Sans,78,&H00F5F8F6,&H00FFFFFF,&H000D0A0A,&H590D0A0A,-1,0,0,0,100,100,0,0,3,10,0,2,60,60,380,1",
+    "Style: Word,DejaVu Sans,46,&H00F5F2F2,&H00FFFFFF,&H00000000,&H8C000000,-1,0,0,0,100,100,14,0,1,0,3,5,40,40,0,1",
+    "Style: WordAccent,DejaVu Sans,46,&H00952DFF,&H00FFFFFF,&H00000000,&H8C000000,-1,0,0,0,100,100,14,0,1,0,3,5,40,40,0,1",
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...safe.map((l) => {
+      const style = l.word ? (l.accent ? "WordAccent" : "Word") : "Caption";
+      const fade = l.word ? `{\\fad(${Math.round(Math.min(300, l.d * 250))},${Math.round(Math.min(300, l.d * 250))})}` : "{\\fad(120,120)}";
+      const body = l.word ? l.text.toUpperCase() : l.text;
+      return `Dialogue: 0,${ts(l.t)},${ts(l.t + l.d)},${style},,0,0,0,,${fade}${body}`;
+    }),
+    "",
+  ].join("\n");
+  fs.writeFileSync(assFile, ass);
+  const fontsDir = path.dirname(FORGE_FONT);
+  const esc = (s) => s.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "");
+  const grade = monolith ? ["eq=saturation=0.22:contrast=1.1:brightness=-0.03", "colorbalance=bs=0.10:bm=0.05", "vignette=PI/4.5"] : [];
+  const filters = [...grade, `ass='${esc(assFile)}':fontsdir='${esc(fontsDir)}'`].join(",");
   const { default: ffmpegPath } = await import("ffmpeg-static");
   const { execFileSync } = await import("child_process");
-  execFileSync(
-    ffmpegPath,
-    ["-y", "-i", srcFile, "-vf", filters, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", outFile],
-    { timeout: 240000 }
-  );
-  try { fs.unlinkSync(srcFile); } catch {}
+  try {
+    execFileSync(
+      ffmpegPath,
+      ["-y", "-i", srcFile, "-vf", filters, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", outFile],
+      { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] }
+    );
+  } catch (e) {
+    const tail = String(e.stderr || e.message || e).split("\n").filter(Boolean).slice(-3).join(" | ");
+    throw new Error(`forge ffmpeg failed: ${tail.slice(0, 300)}`);
+  } finally {
+    try { fs.unlinkSync(srcFile); } catch {}
+    try { fs.unlinkSync(assFile); } catch {}
+  }
   // keep the folder lean: drop forged clips older than 14 days
   try {
     const cutoff = Date.now() - 14 * 864e5;
