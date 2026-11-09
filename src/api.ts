@@ -697,6 +697,13 @@ export type IntelBoard = {
     paper_pnl: number;
     exits: Record<string, number>;
     by_catalyst: Record<string, { trades: number; wins: number }>;
+    capital_at_work?: number;
+    max_drawdown_usd?: number;
+    max_drawdown_pct?: number | null;
+    first_trade_utc?: string | null;
+    last_trade_utc?: string | null;
+    trading_days?: number;
+    last30_expectancy_pct?: number | null;
   };
   rules: {
     strategy: string;
@@ -716,6 +723,8 @@ export type IntelBoard = {
 export type IntelData = {
   configured: boolean;
   dir?: string;
+  dataMtime?: string | null;
+  equity?: { t: string; v: number; sym: string }[];
   board?: IntelBoard | null;
   open?: IntelTrade[];
   recent?: IntelTrade[];
@@ -726,6 +735,32 @@ export type IntelData = {
 export async function getIntel(): Promise<IntelData | null> {
   try {
     const r = await fetch(`${BASE}/api/intel`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+export type IntelEvent = { t: string; stage: string; msg: string; level: "info" | "error"; symbol?: string };
+export type IntelStage = Record<string, any>;
+export type IntelLive = {
+  configured: boolean;
+  reachable?: boolean;
+  error?: string;
+  running?: boolean;
+  heartbeat_age_s?: number;
+  started_utc?: string;
+  updated_utc?: string;
+  server_utc?: string;
+  stages?: Record<string, IntelStage>;
+  events?: IntelEvent[];
+  counts?: { universe: number; filings_total: number; open_trades: number; closed_trades: number };
+};
+
+export async function getIntelLive(): Promise<IntelLive | null> {
+  try {
+    const r = await fetch(`${BASE}/api/intel/live`, { cache: "no-store" });
     if (!r.ok) return null;
     return r.json();
   } catch {
