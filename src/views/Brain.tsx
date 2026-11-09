@@ -457,7 +457,7 @@ export const Brain: React.FC = () => {
       ) : (
         <div className={`bx-body ${note ? "reading" : ""}`}>
           {view === "galaxy" ? (
-            <div className="bx-stage">
+            <div className="bx-stage" key="galaxy">
               <div ref={mount} className="bx-canvas" />
               <div ref={labelsRef} className="bx-labels" />
               {hover ? (
@@ -474,7 +474,7 @@ export const Brain: React.FC = () => {
               <div className="bx-hint">Drag to orbit. Scroll to zoom. Click a desk to fly there, a star to read it.</div>
             </div>
           ) : (
-            <div className="bx-dash">
+            <div className="bx-dash" key="dashboard">
               <div className="bx-cards">
                 {[
                   { k: "Notes", v: s!.notes, sub: "across five desks", c: "#ff2d95" },
