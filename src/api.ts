@@ -762,6 +762,38 @@ export type IntelLive = {
   counts?: { universe: number; filings_total: number; open_trades: number; closed_trades: number };
 };
 
+// ----- Korvus Compass: the second crawler (long-term board) + analyst agent ----
+export type CompassEvent = { symbol: string; ts_utc: string; kind: string; tone: string; title: string; detail?: string };
+export type CompassLive = {
+  configured: boolean;
+  reachable?: boolean;
+  error?: string;
+  running?: boolean;
+  heartbeat_age_s?: number | null;
+  started_utc?: string | null;
+  live_prices?: boolean;
+  sec_rps?: number;
+  price_asof?: string | null;
+  status?: Record<string, Record<string, any>>;
+  counts?: {
+    stocks: number; funds: number; priced: number; with_financials: number; with_analysts: number;
+    scored: number; bullish: number; bearish: number; top_rated: number;
+    briefs: number; briefs_by: Record<string, number>; updates_24h: number; filings_24h: number;
+  };
+  events?: CompassEvent[];
+  top?: { symbol: string; name: string; score: number; tier: string; read: string; trend: string }[];
+};
+
+export async function getCompassLive(): Promise<CompassLive | null> {
+  try {
+    const r = await fetch(`${BASE}/api/compass/live`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function getIntelLive(): Promise<IntelLive | null> {
   try {
     const r = await fetch(`${BASE}/api/intel/live`, { cache: "no-store" });
