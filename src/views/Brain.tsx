@@ -6,32 +6,31 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
 import { getBrainGraph, getBrainNote, type BrainGraph, type BrainNote } from "../api";
 
-// The vault as a galaxy. The Institution is a black hole with a turning,
-// Doppler-beamed accretion disk and a lensed halo; each desk is a star
-// cluster wrapped in its own nebula; every note is a star; wikilinks are
-// threads with data pulses running along them. Rendered in HDR with bloom,
-// tone mapping and a lens pass (aberration, vignette, grain). All of it runs
-// on the viewer's GPU; the server only hands over one cached graph.
+// The vault as a galaxy, in the house colors. The Institution is a black hole
+// with a pink and violet accretion disk, a holographic crown turning above it
+// and three ravens (the watchers) circling; the crown seal is etched into the
+// floor. Each desk is a star cluster in its own nebula; every note is a star;
+// wikilinks are threads with data pulses. Korvus Intel, the crawler, sits out
+// on the rim as an outpost with a scanner sweep, pulling streams in from the
+// open web. Quality adapts to the viewer's GPU so it stays smooth anywhere.
 
-const DESKS: { key: string; name: string; color: number; css: string }[] = [
-  { key: "corvid", name: "Corvid", color: 0xff2d95, css: "#ff2d95" },
-  { key: "herald", name: "Herald", color: 0x46e6ff, css: "#46e6ff" },
-  { key: "steward", name: "Steward", color: 0x35e08f, css: "#35e08f" },
-  { key: "bard", name: "Bard", color: 0xb15bff, css: "#b15bff" },
-  { key: "regent", name: "Regent", color: 0xf2c94c, css: "#f2c94c" },
+type Desk = { key: string; name: string; role: string; color: number; css: string; outpost?: boolean };
+const DESKS: Desk[] = [
+  { key: "corvid", name: "Corvid", role: "growth + SEO", color: 0xff2d95, css: "#ff2d95" },
+  { key: "herald", name: "Herald", role: "sales", color: 0x46e6ff, css: "#46e6ff" },
+  { key: "steward", name: "Steward", role: "projects", color: 0x35e08f, css: "#35e08f" },
+  { key: "bard", name: "Bard", role: "studio", color: 0xb15bff, css: "#b15bff" },
+  { key: "regent", name: "Regent", role: "the CEO", color: 0xf2c94c, css: "#f2c94c" },
+  { key: "intel", name: "Korvus Intel", role: "the crawler", color: 0xff7a2f, css: "#ff7a2f", outpost: true },
 ];
+const RING = DESKS.filter((d) => !d.outpost);
 const DESK = Object.fromEntries(DESKS.map((d) => [d.key, d]));
 const CLUSTER_R = 34;
 const BH_R = 3.0;
-
-const NOISE = `
-float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
-float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
-float fbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ v += a * noise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; } return v; }
-`;
+const OUTPOST_R = 54;
 
 // accretion disk: Keplerian shear (inner orbits faster), two-phase flow so the
 // pattern never winds itself into noise, temperature gradient, and relativistic
@@ -48,28 +47,29 @@ void main(){
   gl_Position = projectionMatrix * viewMatrix * wp;
 }`;
 const DISK_FS = `
-uniform float uTime; uniform float uInner; uniform float uOuter; uniform float uGain;
+uniform float uTime; uniform float uInner; uniform float uOuter; uniform float uGain; uniform sampler2D uTex;
 varying vec2 vLocal; varying float vBeam;
-${NOISE}
-float layer(float lt, float ang, float r, float t){
+vec2 layer(float lt, float ang, float t){
   float spin = lt * (0.16 + 0.8 * (1.0 - t));
-  vec2 p = vec2(cos(ang - spin), sin(ang - spin)) * (r * 0.95);
-  return fbm(p + vec2(r * 0.35, -r * 0.2));
+  return texture2D(uTex, vec2((ang - spin) * 0.15915494, t)).rg;
 }
 void main(){
   float r = length(vLocal);
   float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
   float ang = atan(vLocal.y, vLocal.x);
-  float P = 36.0;
+  float P = 40.0;
   float t1 = mod(uTime, P), t2 = mod(uTime + P * 0.5, P);
   float w = abs(t1 / P * 2.0 - 1.0);
-  float n = layer(t1, ang, r, t) * (1.0 - w) + layer(t2, ang, r, t) * w;
+  vec2 n2 = layer(t1, ang, t) * (1.0 - w) + layer(t2, ang, t) * w;
+  float n = n2.x;
   float bands = 0.72 + 0.28 * sin(r * 8.5 + n * 7.0);
-  float dens = pow(n, 1.4) * 1.75 * bands;
-  float fall = pow(1.0 - t, 1.7) * smoothstep(0.0, 0.07, t);
-  vec3 hot = vec3(1.0, 0.95, 0.88), mid = vec3(1.0, 0.55, 0.2), cool = vec3(0.6, 0.12, 0.05);
-  vec3 col = mix(hot, mid, smoothstep(0.0, 0.32, t));
-  col = mix(col, cool, smoothstep(0.32, 1.0, t));
+  float dens = pow(n, 1.4) * 1.9 * bands;
+  float fall = pow(1.0 - t, 1.6) * smoothstep(0.0, 0.07, t);
+  vec3 c0 = vec3(1.0, 0.93, 0.97), c1 = vec3(1.0, 0.2, 0.6), c2 = vec3(0.5, 0.12, 0.85), c3 = vec3(0.14, 0.04, 0.3);
+  vec3 col = mix(c0, c1, smoothstep(0.0, 0.24, t));
+  col = mix(col, c2, smoothstep(0.24, 0.62, t));
+  col = mix(col, c3, smoothstep(0.62, 1.0, t));
+  col += vec3(1.0, 0.76, 0.38) * smoothstep(0.66, 0.86, n2.y) * 0.85 * (1.0 - t);
   gl_FragColor = vec4(col * dens * fall * vBeam * uGain, 1.0);
 }`;
 
@@ -112,8 +112,9 @@ void main(){
   float ph = fract(a / TAU - uTime * 0.045);
   float sweep = pow(1.0 - ph, 7.0);
   float fade = smoothstep(170.0, 40.0, r) * smoothstep(5.0, 14.0, r);
-  float v = (rl * 0.55 + sl * 0.22) * fade * (0.3 + 1.4 * sweep) + sweep * fade * 0.05;
-  gl_FragColor = vec4(vec3(0.25, 0.78, 1.0) * v * 0.55, 1.0);
+  float lines = (rl * 0.55 + sl * 0.22) * fade;
+  vec3 col = vec3(1.0, 0.18, 0.58) * lines * (0.3 + 0.5 * sweep) + vec3(1.0, 0.76, 0.4) * fade * sweep * (lines * 1.6 + 0.05);
+  gl_FragColor = vec4(col * 0.5, 1.0);
 }`;
 
 // the lens: chromatic aberration toward the edges, vignette, film grain,
@@ -223,6 +224,114 @@ function cloudTexture(seed: number) {
   return t;
 }
 
+// the accretion flow, baked once: seamless around the orbit (periodic lattice
+// in x), streaky along it. R = gas density, G = an independent field for the
+// gold flecks. Replaces two 5-octave noise stacks per pixel per frame.
+function diskTexture() {
+  const W = 1024, Hh = 128;
+  const data = new Uint8Array(W * Hh * 4);
+  const h = (x: number, y: number, sd: number) => {
+    const v = Math.sin(x * 127.1 + y * 311.7 + sd * 74.7) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  const vn = (x: number, y: number, per: number, sd: number) => {
+    const ix = Math.floor(x), iy = Math.floor(y);
+    let fx = x - ix, fy = y - iy;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    const x0 = ((ix % per) + per) % per, x1 = (x0 + 1) % per;
+    const a = h(x0, iy, sd), b = h(x1, iy, sd), c = h(x0, iy + 1, sd), d = h(x1, iy + 1, sd);
+    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+  };
+  const fbm = (u: number, v: number, sd: number) => {
+    let s = 0, amp = 0.5, px = 14, py = 7;
+    for (let o = 0; o < 5; o++) {
+      s += amp * vn(u * px, v * py + o * 3.1, px, sd + o);
+      px *= 2;
+      py *= 2;
+      amp *= 0.5;
+    }
+    return s;
+  };
+  for (let y = 0; y < Hh; y++) {
+    for (let x = 0; x < W; x++) {
+      const u = x / W, v = y / Hh;
+      const i = (y * W + x) * 4;
+      data[i] = Math.round(Math.min(1, fbm(u, v, 1) * 1.25) * 255);
+      data[i + 1] = Math.round(Math.min(1, fbm(u, v * 1.7, 9)) * 255);
+      data[i + 3] = 255;
+    }
+  }
+  const t = new THREE.DataTexture(data, W, Hh, THREE.RGBAFormat);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+
+// the watchers: a raven in silhouette with a neon edge and a gold eye, two
+// wing frames, drawn facing each way (sprite scale cannot mirror)
+function ravenTextures() {
+  const frame = (up: boolean, left: boolean) => {
+    const S = 128;
+    const c = document.createElement("canvas");
+    c.width = c.height = S;
+    const g = c.getContext("2d")!;
+    g.translate(S / 2, S / 2);
+    if (left) g.scale(-1, 1);
+    g.lineJoin = "round";
+    g.beginPath();
+    g.moveTo(-40, 6); // tail
+    g.lineTo(-22, 2);
+    if (up) {
+      g.quadraticCurveTo(-14, -30, -30, -50);
+      g.quadraticCurveTo(-2, -36, 6, -6);
+      g.quadraticCurveTo(14, -40, 34, -46);
+      g.quadraticCurveTo(22, -18, 14, -2);
+    } else {
+      g.quadraticCurveTo(-18, 26, -34, 40);
+      g.quadraticCurveTo(-4, 30, 6, 6);
+      g.quadraticCurveTo(16, 30, 30, 36);
+      g.quadraticCurveTo(22, 14, 14, -2);
+    }
+    g.quadraticCurveTo(24, -8, 30, -6); // head
+    g.lineTo(44, -3); // beak
+    g.lineTo(30, 2);
+    g.quadraticCurveTo(10, 12, -22, 10);
+    g.lineTo(-40, 6);
+    g.closePath();
+    g.fillStyle = "#0b0710";
+    g.fill();
+    g.strokeStyle = "#ff2d95";
+    g.lineWidth = 3;
+    g.shadowColor = "#ff2d95";
+    g.shadowBlur = 8;
+    g.stroke();
+    g.shadowBlur = 0;
+    g.fillStyle = "#ffc857";
+    g.beginPath();
+    g.arc(29, -5, 2.4, 0, Math.PI * 2);
+    g.fill();
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return { upR: frame(true, false), dnR: frame(false, false), upL: frame(true, true), dnL: frame(false, true) };
+}
+
+type Quality = "auto" | "high" | "eco";
+const QKEY = "bx-quality";
+function loadQuality(): Quality {
+  try {
+    const q = localStorage.getItem(QKEY);
+    return q === "high" || q === "eco" ? q : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
 const STAR_TEMPS: [number, number, number][] = [
   [0.62, 0.74, 1.0],
   [0.85, 0.9, 1.0],
@@ -245,6 +354,15 @@ export const Brain: React.FC = () => {
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState(-1);
   const [boot, setBoot] = useState(true);
+  const [quality, setQuality] = useState<Quality>(loadQuality);
+  const applyQuality = useRef<(q: Quality) => void>(() => {});
+  const pickQuality = (q: Quality) => {
+    setQuality(q);
+    try {
+      localStorage.setItem(QKEY, q);
+    } catch {}
+    applyQuality.current(q);
+  };
   const flyTo = useRef<(i: number) => void>(() => {});
   const focusDesk = useRef<(k: string) => void>(() => {});
   const focusCore = useRef<() => void>(() => {});
@@ -267,7 +385,7 @@ export const Brain: React.FC = () => {
 
   useEffect(() => {
     if (!graph) return;
-    const t = setTimeout(() => setBoot(false), 2100);
+    const t = setTimeout(() => setBoot(false), 2500);
     return () => clearTimeout(t);
   }, [graph]);
 
@@ -275,6 +393,7 @@ export const Brain: React.FC = () => {
     const m = new Map<string, number>();
     graph?.nodes.forEach((n, i) => {
       if (!m.has(n.t.toLowerCase())) m.set(n.t.toLowerCase(), i);
+      m.set(n.id.replace(/\.md$/, "").toLowerCase(), i);
     });
     return m;
   }, [graph]);
@@ -296,7 +415,13 @@ export const Brain: React.FC = () => {
     const el = mount.current;
     const W = () => el.clientWidth || 800;
     const H = () => el.clientHeight || 600;
-    let pr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const DPR = window.devicePixelRatio || 1;
+    // AUTO starts at 1x and trims render scale down to 0.6x if the GPU
+    // struggles; HIGH renders up to 1.5x retina; ECO is 0.7x without bloom
+    const startQ = loadQuality();
+    const scaleFor = (q: Quality) => (q === "high" ? Math.min(DPR, 1.5) : q === "eco" ? 0.7 : Math.min(DPR, 1));
+    let pr = scaleFor(startQ);
+    let ceiling = pr;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, W() / H(), 0.1, 2000);
@@ -309,7 +434,8 @@ export const Brain: React.FC = () => {
     renderer.toneMappingExposure = 0.95;
     el.appendChild(renderer.domElement);
 
-    const rt = new THREE.WebGLRenderTarget(W() * pr, H() * pr, { type: THREE.HalfFloatType, samples: 4 });
+    // no MSAA (the composer clones this target for every pass); FXAA instead
+    const rt = new THREE.WebGLRenderTarget(W() * pr, H() * pr, { type: THREE.HalfFloatType });
     const composer = new EffectComposer(renderer, rt);
     composer.setPixelRatio(pr);
     composer.setSize(W(), H());
@@ -317,6 +443,10 @@ export const Brain: React.FC = () => {
     const bloom = new UnrealBloomPass(new THREE.Vector2(W(), H()), 0.75, 0.18, 0.82);
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
+    const fxaa = new ShaderPass(FXAAShader);
+    fxaa.uniforms.resolution.value.set(1 / (W() * pr), 1 / (H() * pr));
+    composer.addPass(fxaa);
+    bloom.enabled = startQ !== "eco";
     const lens = new ShaderPass(LensShader);
     lens.uniforms.uRes.value.set(W() * pr, H() * pr);
     composer.addPass(lens);
@@ -354,7 +484,7 @@ export const Brain: React.FC = () => {
 
     // deep field: temperature-colored stars plus a galactic band
     {
-      const N = 4200, BAND = 2600;
+      const N = 3000, BAND = 1800;
       const pos = new Float32Array((N + BAND) * 3);
       const col = new Float32Array((N + BAND) * 3);
       const size = new Float32Array(N + BAND);
@@ -387,22 +517,9 @@ export const Brain: React.FC = () => {
       const m = starMat(false, 1.0);
       starMats.push(m);
       scene.add(new THREE.Points(g, m));
-      // dust lane along the band
-      const dust = keep(cloudTexture(7));
-      for (let i = 0; i < 26; i++) {
-        const th = (i / 26) * Math.PI * 2 + Math.random() * 0.2;
-        const sp = new THREE.Sprite(
-          keep(new THREE.SpriteMaterial({ map: dust, color: i % 3 ? 0x5a3c8c : 0x2b4c7a, transparent: true, opacity: 0.09, blending: THREE.AdditiveBlending, depthWrite: false }))
-        );
-        sp.position.set(Math.cos(th) * 560, (Math.random() - 0.5) * 40, Math.sin(th) * 560).applyMatrix4(tilt);
-        const s = 220 + Math.random() * 180;
-        sp.scale.set(s, s * 0.55, 1);
-        sp.material.rotation = Math.random() * Math.PI;
-        scene.add(sp);
-      }
     }
 
-    // the holographic floor
+    // the holographic floor, with the crown seal etched into it
     const gridMat = keep(
       new THREE.ShaderMaterial({ uniforms: { uTime: { value: 0 } }, vertexShader: GRID_VS, fragmentShader: GRID_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
     );
@@ -416,7 +533,9 @@ export const Brain: React.FC = () => {
     const core = new THREE.Group();
     scene.add(core);
     core.add(new THREE.Mesh(keep(new THREE.SphereGeometry(BH_R, 64, 64)), keep(new THREE.MeshBasicMaterial({ color: 0x000000 }))));
+    const flowTex = keep(diskTexture());
     const diskUniforms = (inner: number, outer: number, gain: number, beam: number) => ({
+      uTex: { value: flowTex },
       uTime: { value: 0 },
       uInner: { value: inner },
       uOuter: { value: outer },
@@ -454,24 +573,169 @@ export const Brain: React.FC = () => {
     const halo = new THREE.Mesh(keep(new THREE.RingGeometry(BH_R * 1.12, BH_R * 1.9, 192, 4)), haloMat);
     core.add(halo);
     const photonMat = keep(new THREE.MeshBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
-    photonMat.color.setRGB(1.9, 1.6, 1.25);
+    photonMat.color.setRGB(1.9, 1.35, 1.6);
     const photon = new THREE.Mesh(keep(new THREE.RingGeometry(BH_R * 1.02, BH_R * 1.07, 160)), photonMat);
     core.add(photon);
 
-    // desk cluster centers on a ring around the core
-    const centers: Record<string, THREE.Vector3> = {};
-    DESKS.forEach((d, i) => {
-      const a = (i / DESKS.length) * Math.PI * 2 + 0.4;
-      centers[d.key] = new THREE.Vector3(Math.cos(a) * CLUSTER_R, (hash(d.key) - 0.5) * 6, Math.sin(a) * CLUSTER_R);
+    // the crown: a hologram turning above the singularity
+    const crown = new THREE.Group();
+    crown.position.y = BH_R + 4.2;
+    scene.add(crown);
+    const crownMat = keep(new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+    crownMat.color.setRGB(2.6, 0.5, 1.5);
+    {
+      const R = 3.6, PK = 5, seg: number[] = [];
+      const at = (a: number, r: number, y: number) => [Math.cos(a) * r, y, Math.sin(a) * r];
+      const ring = (r: number, y: number) => {
+        for (let i = 0; i < 48; i++) seg.push(...at((i / 48) * Math.PI * 2, r, y), ...at(((i + 1) / 48) * Math.PI * 2, r, y));
+      };
+      ring(R, 0);
+      ring(R * 1.05, -0.55);
+      ring(R * 1.0, 0.42);
+      for (let j = 0; j < PK * 2; j++) {
+        const a0 = (j / (PK * 2)) * Math.PI * 2, a1 = ((j + 1) / (PK * 2)) * Math.PI * 2;
+        const y0 = j % 2 ? 1.15 : 2.9, y1 = (j + 1) % 2 ? 1.15 : 2.9;
+        seg.push(...at(a0, R * (j % 2 ? 1 : 1.05), y0), ...at(a1, R * ((j + 1) % 2 ? 1 : 1.05), y1));
+        seg.push(...at(a0, R * (j % 2 ? 1 : 1.05), y0), ...at(a0, R, 0.42));
+      }
+      const g = keep(new THREE.BufferGeometry());
+      g.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+      crown.add(new THREE.LineSegments(g, crownMat));
+      const glass = keep(new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      glass.color.setRGB(1.0, 0.2, 0.6);
+      const band = new THREE.Mesh(keep(new THREE.CylinderGeometry(R, R * 1.05, 0.97, 48, 1, true)), glass);
+      band.position.y = -0.065;
+      crown.add(band);
+    }
+    const jewelMat = (() => {
+      const m = keep(
+        new THREE.ShaderMaterial({
+          uniforms: { uTime: { value: 0 }, uScale: { value: H() / 2 }, uPR: { value: pr }, uAtten: { value: 1 }, uGain: { value: 1 } },
+          vertexShader: STAR_VS,
+          fragmentShader: STAR_FS,
+          vertexColors: true,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        })
+      );
+      timeUniforms.push(m.uniforms.uTime);
+      return m;
+    })();
+    {
+      const jp: number[] = [], jc: number[] = [], js: number[] = [], jph: number[] = [];
+      for (let j = 0; j < 5; j++) {
+        const a = (j / 5) * Math.PI * 2;
+        jp.push(Math.cos(a) * 3.78, 2.9, Math.sin(a) * 3.78);
+        jp.push(Math.cos(a + Math.PI / 5) * 3.6, 0.2, Math.sin(a + Math.PI / 5) * 3.6);
+        jc.push(2.2, 1.6, 0.6, 1.9, 0.4, 1.2);
+        js.push(3.2, 2.2);
+        jph.push(j / 5, j / 5 + 0.5);
+      }
+      const g = keep(new THREE.BufferGeometry());
+      g.setAttribute("position", new THREE.Float32BufferAttribute(jp, 3));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(jc, 3));
+      g.setAttribute("size", new THREE.Float32BufferAttribute(js, 1));
+      g.setAttribute("phase", new THREE.Float32BufferAttribute(jph, 1));
+      crown.add(new THREE.Points(g, jewelMat));
+    }
+
+    // the seal on the floor: the house crown mark inside a ring of ticks
+    const sealRing = new THREE.Group();
+    {
+      const sealMat = keep(new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+      sealMat.color.setRGB(1.0, 0.74, 0.38);
+      const FY = -16.9, SC = 2.0;
+      const mark: [number, number][] = [[4, 24], [4, 9], [12, 16], [18, 5], [24, 16], [32, 9], [32, 24], [4, 24]];
+      const seg: number[] = [];
+      const P3 = (x: number, y: number) => [(x - 18) * SC, FY, (y - 16.5) * SC];
+      for (let i = 0; i < mark.length - 1; i++) seg.push(...P3(...mark[i]), ...P3(...mark[i + 1]));
+      seg.push(...P3(8, 28), ...P3(28, 28));
+      // an inner stroke so the mark still reads at a low angle
+      const IN = 0.93;
+      const P3i = (x: number, y: number) => [(x - 18) * SC * IN, FY, (y - 16.5) * SC * IN];
+      for (let i = 0; i < mark.length - 1; i++) seg.push(...P3i(...mark[i]), ...P3i(...mark[i + 1]));
+      const g = keep(new THREE.BufferGeometry());
+      g.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+      scene.add(new THREE.LineSegments(g, sealMat));
+      const rs: number[] = [];
+      const circ = (r: number) => {
+        for (let i = 0; i < 128; i++) {
+          const a0 = (i / 128) * Math.PI * 2, a1 = ((i + 1) / 128) * Math.PI * 2;
+          rs.push(Math.cos(a0) * r, FY, Math.sin(a0) * r, Math.cos(a1) * r, FY, Math.sin(a1) * r);
+        }
+      };
+      circ(30);
+      circ(31.4);
+      for (let i = 0; i < 72; i++) {
+        const a = (i / 72) * Math.PI * 2, r2 = i % 6 ? 32.4 : 33.6;
+        rs.push(Math.cos(a) * 31.4, FY, Math.sin(a) * 31.4, Math.cos(a) * r2, FY, Math.sin(a) * r2);
+      }
+      const rg = keep(new THREE.BufferGeometry());
+      rg.setAttribute("position", new THREE.Float32BufferAttribute(rs, 3));
+      const ringMat = keep(new THREE.LineBasicMaterial({ transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false }));
+      ringMat.color.setRGB(1.0, 0.3, 0.7);
+      sealRing.add(new THREE.LineSegments(rg, ringMat));
+      scene.add(sealRing);
+    }
+
+    // the watchers: three ravens on slow orbits around the core
+    const rav = ravenTextures();
+    Object.values(rav).forEach((t) => keep(t));
+    const watchers = [
+      { r: 11, y: 4, w: 0.18, ph: 0.0 },
+      { r: 15, y: 7.5, w: -0.13, ph: 2.1 },
+      { r: 19.5, y: 2.5, w: 0.1, ph: 4.2 },
+    ].map((o) => {
+      const m = keep(new THREE.SpriteMaterial({ map: rav.upR, transparent: true, depthWrite: false, alphaTest: 0.04 }));
+      m.color.setRGB(1.7, 1.7, 1.7);
+      const sp = new THREE.Sprite(m);
+      sp.scale.set(3.6, 3.6, 1);
+      scene.add(sp);
+      return { ...o, sp, m, left: false, up: true };
     });
 
+    // desk cluster centers on a ring around the core
+    const centers: Record<string, THREE.Vector3> = {};
+    RING.forEach((d, i) => {
+      const a = (i / RING.length) * Math.PI * 2 + 0.4;
+      centers[d.key] = new THREE.Vector3(Math.cos(a) * CLUSTER_R, (hash(d.key) - 0.5) * 6, Math.sin(a) * CLUSTER_R);
+    });
+    // the crawler works out on the rim, between two desks, facing the open web
+    const OA = 0.4 + (Math.PI * 2 * 3.5) / RING.length;
+    const intelC = new THREE.Vector3(Math.cos(OA) * OUTPOST_R, 8, Math.sin(OA) * OUTPOST_R);
+    centers.intel = intelC;
+    const ember = new THREE.Color(DESK.intel.color);
+
+    // the outpost: a scanner sweep, a range ring and a beacon
+    const scanner = new THREE.Group();
+    scanner.position.copy(intelC).add(new THREE.Vector3(0, -2.5, 0));
+    scene.add(scanner);
+    const sweep = new THREE.Group();
+    scanner.add(sweep);
+    [0.1, 0.05, 0.022].forEach((op, k) => {
+      const m = keep(new THREE.MeshBasicMaterial({ color: ember, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      const sec = new THREE.Mesh(keep(new THREE.RingGeometry(2.5, 14, 24, 1, -k * 0.22, 0.22)), m);
+      sec.rotation.x = -Math.PI / 2;
+      sweep.add(sec);
+    });
+    {
+      const m = keep(new THREE.MeshBasicMaterial({ color: ember, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      const rr = new THREE.Mesh(keep(new THREE.RingGeometry(13.85, 14.1, 96)), m);
+      rr.rotation.x = -Math.PI / 2;
+      scanner.add(rr);
+    }
+    const beaconMat = keep(new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
+    beaconMat.color.copy(ember).multiplyScalar(2.2);
+    scanner.add(new THREE.Line(keep(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 13, 0)])), beaconMat));
+
     // nebulae: layered clouds in each desk's color
-    const neb = [keep(cloudTexture(1)), keep(cloudTexture(2)), keep(cloudTexture(3))];
+    const neb = [keep(cloudTexture(1)), keep(cloudTexture(2))];
     const nebSprites: THREE.Sprite[] = [];
     DESKS.forEach((d) => {
       const n = graph.stats.perDesk[d.key] || 0;
       const base = 12 + Math.min(30, Math.sqrt(n) * 0.95);
-      for (let k = 0; k < 3; k++) {
+      for (let k = 0; k < 2; k++) {
         const sp = new THREE.Sprite(
           keep(new THREE.SpriteMaterial({ map: neb[k], color: d.color, transparent: true, opacity: 0.045 + k * 0.015, blending: THREE.AdditiveBlending, depthWrite: false }))
         );
@@ -559,7 +823,16 @@ export const Brain: React.FC = () => {
     const pulses: Pulse[] = [];
     const spawn = (p?: Pulse): Pulse => {
       const q = p || ({ a: new THREE.Vector3(), ctrl: new THREE.Vector3(), b: new THREE.Vector3(), t: 0, sp: 0, color: new THREE.Color() } as Pulse);
-      if (E.length && Math.random() < 0.6) {
+      const roll = Math.random();
+      if (roll < 0.16) {
+        // crawl ingress: streams from the open web landing on the outpost
+        const dir = intelC.clone().normalize().add(new THREE.Vector3(Math.random() - 0.5, (Math.random() - 0.3) * 0.7, Math.random() - 0.5).multiplyScalar(1.3)).normalize();
+        q.a.copy(intelC).addScaledVector(dir, 110 + Math.random() * 90);
+        q.b.copy(intelC).add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 3));
+        q.ctrl.copy(q.a).add(q.b).multiplyScalar(0.5).add(new THREE.Vector3((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 30));
+        q.color.copy(ember).lerp(new THREE.Color(1, 0.95, 0.85), 0.25);
+        q.sp = 0.22 + Math.random() * 0.2;
+      } else if (E.length && roll < 0.66) {
         const [ia, ib] = E[Math.floor(Math.random() * E.length)];
         q.a.set(pos[ia * 3], pos[ia * 3 + 1], pos[ia * 3 + 2]);
         q.b.set(pos[ib * 3], pos[ib * 3 + 1], pos[ib * 3 + 2]);
@@ -569,6 +842,7 @@ export const Brain: React.FC = () => {
         q.sp = 0.25 + Math.random() * 0.35;
       } else {
         const d = DESKS[Math.floor(Math.random() * DESKS.length)];
+        if (!centers[d.key]) return spawn(q);
         q.a.copy(centers[d.key]).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 4));
         q.ctrl.copy(tetherCtrl[d.key]);
         q.b.set(0, 0, 0);
@@ -675,13 +949,29 @@ export const Brain: React.FC = () => {
       renderer.setSize(W(), H());
       composer.setPixelRatio(pr);
       composer.setSize(W(), H());
+      fxaa.uniforms.resolution.value.set(1 / (W() * pr), 1 / (H() * pr));
       lens.uniforms.uRes.value.set(W() * pr, H() * pr);
-      for (const m of starMats) {
+      for (const m of [...starMats, jewelMat]) {
         m.uniforms.uScale.value = H() / 2;
         m.uniforms.uPR.value = pr;
       }
     };
     window.addEventListener("resize", resize);
+    let curQ = startQ;
+    let slowFor = 0, fastFor = 0;
+    applyQuality.current = (q: Quality) => {
+      curQ = q;
+      pr = ceiling = scaleFor(q);
+      bloom.enabled = q !== "eco";
+      slowFor = fastFor = 0;
+      resize();
+    };
+    // nothing renders while the map is scrolled out of view or the tab is hidden
+    let onScreen = true;
+    const io = new IntersectionObserver((ents) => {
+      onScreen = ents[0]?.isIntersecting ?? true;
+    });
+    io.observe(el);
 
     // holographic desk tags with leader lines, projected each frame
     const labelEls: Record<string, HTMLDivElement> = {};
@@ -689,15 +979,15 @@ export const Brain: React.FC = () => {
       labelsRef.current.innerHTML = "";
       const mk = (key: string, name: string, sub: string, css: string, onClick: () => void) => {
         const div = document.createElement("div");
-        div.className = key === "__core" ? "bx-tag bx-tag-down" : "bx-tag";
+        div.className = key === "__core" ? "bx-tag bx-tag-down" : key === "intel" ? "bx-tag bx-tag-out" : "bx-tag";
         div.style.setProperty("--c", css);
         div.innerHTML = `<div class="bx-tag-box"><b>${name}</b><span>${sub}</span></div><div class="bx-tag-line"></div><div class="bx-tag-dot"></div>`;
         div.onclick = onClick;
         labelsRef.current!.appendChild(div);
         labelEls[key] = div;
       };
-      DESKS.forEach((d) => mk(d.key, d.name.toUpperCase(), `${(graph.stats.perDesk[d.key] || 0).toLocaleString()} nodes`, d.css, () => focusDesk.current(d.key)));
-      mk("__core", "INSTITUTION", "the core", "#ffd9a8", () => {
+      DESKS.forEach((d) => mk(d.key, d.name.toUpperCase(), `${d.role} &middot; ${(graph.stats.perDesk[d.key] || 0).toLocaleString()} nodes`, d.css, () => focusDesk.current(d.key)));
+      mk("__core", "THE INSTITUTION", "the crown's law", "#ffc857", () => {
         if (graph.stats.core) openNoteRef.current(graph.stats.core);
         focusCore.current();
       });
@@ -706,11 +996,26 @@ export const Brain: React.FC = () => {
     let raf = 0;
     let last = performance.now();
     const t0 = last;
-    let ema = 16, warm = 0, mode = 2, teleAt = 0;
+    let ema = 16, warm = 0, teleAt = 0;
     const v = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
     const tmp = new THREE.Vector3();
+    const labCache: Record<string, { d: string; tf: string; op: string }> = {};
+    const setLab = (k: string, d: string, tf: string, op: string) => {
+      const c = labCache[k] || (labCache[k] = { d: "", tf: "", op: "" });
+      const st = labelEls[k].style;
+      if (c.d !== d) st.display = c.d = d;
+      if (d === "none") return;
+      if (c.tf !== tf) st.transform = c.tf = tf;
+      if (c.op !== op) st.opacity = c.op = op;
+    };
     const tick = () => {
+      raf = requestAnimationFrame(tick);
       const now = performance.now();
+      if (!onScreen || document.hidden) {
+        last = now;
+        return;
+      }
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const t = (now - t0) / 1000;
@@ -725,6 +1030,26 @@ export const Brain: React.FC = () => {
       nebSprites.forEach((s, i) => {
         s.material.rotation += dt * (i % 2 ? 0.006 : -0.004);
       });
+      crown.rotation.y = t * 0.22;
+      crown.position.y = BH_R + 4.2 + Math.sin(t * 0.8) * 0.3;
+      crownMat.opacity = 0.8 + 0.12 * Math.sin(t * 2.3) + (Math.sin(t * 17.0) > 0.985 ? -0.35 : 0);
+      sealRing.rotation.y = -t * 0.02;
+      sweep.rotation.y = -t * 1.1;
+      beaconMat.opacity = 0.35 + 0.55 * Math.pow(0.5 + 0.5 * Math.sin(t * 3.4), 6);
+      for (const wch of watchers) {
+        const a = wch.ph + t * wch.w;
+        wch.sp.position.set(Math.cos(a) * wch.r, wch.y + Math.sin(t * 0.7 + wch.ph) * 0.8, Math.sin(a) * wch.r);
+        // face the direction of travel on screen
+        v.copy(wch.sp.position).project(camera);
+        v2.set(Math.cos(a + 0.05 * Math.sign(wch.w)) * wch.r, wch.sp.position.y, Math.sin(a + 0.05 * Math.sign(wch.w)) * wch.r).project(camera);
+        const left = v2.x < v.x;
+        const up = Math.sin(t * 7.5 + wch.ph * 3) > 0;
+        if (left !== wch.left || up !== wch.up) {
+          wch.left = left;
+          wch.up = up;
+          wch.m.map = left ? (up ? rav.upL : rav.dnL) : up ? rav.upR : rav.dnR;
+        }
+      }
 
       // pulses
       for (let i = 0; i < P; i++) {
@@ -758,17 +1083,28 @@ export const Brain: React.FC = () => {
       controls.update();
       composer.render(dt);
 
-      // performance guard: drop resolution, then bloom, before the frame rate suffers
-      ema = ema * 0.95 + dt * 1000 * 0.05;
+      // AUTO: trim render scale while frames run long, give it back while they
+      // run clean, never returning to a scale that was already too slow
+      ema = ema * 0.94 + dt * 1000 * 0.06;
       warm += dt;
-      if (warm > 4 && ema > 30 && mode > 0) {
-        mode--;
-        warm = 0;
-        if (mode === 1) {
-          pr = 1;
-          resize();
-        } else {
-          bloom.enabled = false;
+      if (curQ === "auto" && warm > 2.5) {
+        slowFor = ema > 24 ? slowFor + dt : 0;
+        fastFor = ema < 18.5 ? fastFor + dt : 0;
+        if (slowFor > 1.5) {
+          slowFor = 0;
+          if (pr > 0.65) {
+            ceiling = pr - 0.05;
+            pr = Math.max(0.6, pr - 0.1);
+            resize();
+          } else if (bloom.enabled && ema > 30) {
+            bloom.enabled = false;
+          }
+        } else if (fastFor > 5) {
+          fastFor = 0;
+          if (pr + 0.1 <= ceiling) {
+            pr += 0.1;
+            resize();
+          }
         }
       }
 
@@ -777,12 +1113,11 @@ export const Brain: React.FC = () => {
       for (const k in labelEls) {
         v.copy(k === "__core" ? ORIGIN : centers[k]);
         v.project(camera);
-        const lab = labelEls[k];
         const vis = v.z < 1 && Math.abs(v.x) < 1.2 && Math.abs(v.y) < 1.2;
-        lab.style.display = vis ? "flex" : "none";
-        const sx = ((v.x + 1) / 2) * w, sy = ((1 - v.y) / 2) * h;
+        const sx = Math.round(((v.x + 1) / 2) * w), sy = Math.round(((1 - v.y) / 2) * h);
         anchors[k] = [sx, sy];
-        lab.style.transform = `translate(${sx}px,${sy}px) translate(-50%,${k === "__core" ? "0%" : "-100%"})`;
+        if (k !== "__core") setLab(k, vis ? "flex" : "none", `translate(${sx}px,${sy}px) translate(-50%,-100%)`, "1");
+        else labelEls[k].dataset.vis = vis ? "1" : "";
       }
       // the core tag steps back whenever a desk tag crowds it
       if (labelEls.__core && anchors.__core) {
@@ -793,7 +1128,8 @@ export const Brain: React.FC = () => {
           const [x, y] = anchors[k];
           if (Math.abs(x - cx) < 130 && y - cy > -10 && y - cy < 150) crowded = true;
         }
-        labelEls.__core.style.opacity = crowded ? "0.12" : "1";
+        const [sx, sy] = anchors.__core;
+        setLab("__core", labelEls.__core.dataset.vis ? "flex" : "none", `translate(${sx}px,${sy}px) translate(-50%,0%)`, crowded ? "0.12" : "1");
       }
       const hi = hoverIdx.current;
       if (lockRef.current) {
@@ -810,14 +1146,15 @@ export const Brain: React.FC = () => {
         const range = camera.position.distanceTo(controls.target);
         const az = ((THREE.MathUtils.radToDeg(controls.getAzimuthalAngle()) + 360) % 360).toFixed(0).padStart(3, "0");
         const el2 = (THREE.MathUtils.radToDeg(Math.PI / 2 - controls.getPolarAngle())).toFixed(0);
-        teleRef.current.innerHTML = `<span>RNG <b>${range.toFixed(1)}</b></span><span>AZ <b>${az}&deg;</b></span><span>EL <b>${el2}&deg;</b></span><span>FPS <b>${Math.round(1000 / ema)}</b></span><span>${mode === 2 ? "HDR" : mode === 1 ? "HDR LITE" : "PERF"}</span>`;
+        teleRef.current.innerHTML = `<span>RNG <b>${range.toFixed(1)}</b></span><span>AZ <b>${az}&deg;</b></span><span>EL <b>${el2}&deg;</b></span><span>FPS <b>${Math.round(1000 / ema)}</b></span><span>RES <b>${pr.toFixed(1)}x</b></span><span>${bloom.enabled ? "HDR" : "PERF"}</span>`;
       }
-      raf = requestAnimationFrame(tick);
     };
     tick();
 
     return () => {
       cancelAnimationFrame(raf);
+      io.disconnect();
+      applyQuality.current = () => {};
       window.removeEventListener("resize", resize);
       renderer.domElement.removeEventListener("pointerdown", onDown);
       renderer.domElement.removeEventListener("pointerup", onUp);
@@ -923,7 +1260,8 @@ export const Brain: React.FC = () => {
               </div>
               <div className="bx-hud bx-tl">
                 <div className="bx-hud-t">
-                  NEURAL MAP <em>// LIVE</em>
+                  <svg className="bx-crown" viewBox="0 0 36 32" aria-hidden="true"><path d="M4 24 L4 9 L12 16 L18 5 L24 16 L32 9 L32 24 Z" /><path d="M8 28 L28 28" /></svg>
+                  BLACKCROWN <span>// NEURAL MAP</span> <em>LIVE</em>
                 </div>
                 <div className="bx-hud-row">
                   <span>
@@ -945,13 +1283,20 @@ export const Brain: React.FC = () => {
                     <b>{(s!.perDesk[d.key] || 0).toLocaleString()}</b>
                   </button>
                 ))}
-                <button onClick={() => focusCore.current()} style={{ ["--c" as string]: "#ffd9a8" }}>
+                <button onClick={() => focusCore.current()} style={{ ["--c" as string]: "#ffc857" }}>
                   <i />
                   Institution
                   <b>core</b>
                 </button>
               </div>
               <div ref={teleRef} className="bx-hud bx-tele" />
+              <div className="bx-qual" role="group" aria-label="Render quality">
+                {(["auto", "high", "eco"] as Quality[]).map((q) => (
+                  <button key={q} className={quality === q ? "on" : ""} onClick={() => pickQuality(q)} title={q === "auto" ? "Adapts to your GPU" : q === "high" ? "Full resolution, full glow" : "Lightest load, no glow"}>
+                    {q}
+                  </button>
+                ))}
+              </div>
               <div className="bx-hint">Drag to orbit &middot; scroll to zoom &middot; click a desk to fly &middot; click a star to read</div>
               <div className="bx-ticker">
                 <span className="bx-ticker-k">ACTIVITY</span>
@@ -971,11 +1316,17 @@ export const Brain: React.FC = () => {
               {boot ? (
                 <div className="bx-boot">
                   <div className="bx-boot-in">
-                    <div className="bx-boot-t">NEURAL MAP</div>
+                    <div className="bx-boot-t">
+                      <svg className="bx-crown" viewBox="0 0 36 32" aria-hidden="true"><path d="M4 24 L4 9 L12 16 L18 5 L24 16 L32 9 L32 24 Z" /><path d="M8 28 L28 28" /></svg>
+                      BLACKCROWN
+                    </div>
                     <div className="bx-boot-l" style={{ animationDelay: "0.1s" }}>vault link ............ ok</div>
-                    <div className="bx-boot-l" style={{ animationDelay: "0.4s" }}>nodes ................. {s!.notes.toLocaleString()}</div>
-                    <div className="bx-boot-l" style={{ animationDelay: "0.7s" }}>links ................. {s!.links.toLocaleString()}</div>
-                    <div className="bx-boot-l" style={{ animationDelay: "1.0s" }}>singularity ........... stable</div>
+                    <div className="bx-boot-l" style={{ animationDelay: "0.35s" }}>nodes ................. {s!.notes.toLocaleString()}</div>
+                    <div className="bx-boot-l" style={{ animationDelay: "0.6s" }}>links ................. {s!.links.toLocaleString()}</div>
+                    <div className="bx-boot-l" style={{ animationDelay: "0.85s" }}>crawler feed .......... {(s!.perDesk.intel || 0).toLocaleString()} nodes</div>
+                    <div className="bx-boot-l" style={{ animationDelay: "1.1s" }}>crown link ............ sealed</div>
+                    <div className="bx-boot-l" style={{ animationDelay: "1.35s" }}>watchers .............. aloft</div>
+                    <div className="bx-boot-m" style={{ animationDelay: "1.6s" }}>Claim your crown.</div>
                     <div className="bx-boot-bar">
                       <i />
                     </div>
@@ -987,10 +1338,10 @@ export const Brain: React.FC = () => {
             <div className="bx-dash" key="dashboard">
               <div className="bx-cards">
                 {[
-                  { k: "Notes", v: s!.notes, sub: "across five desks", c: "#ff2d95", spark: null as number[] | null },
-                  { k: "Links", v: s!.links, sub: "wikilinks between notes", c: "#46e6ff", spark: null },
+                  { k: "Notes", v: s!.notes, sub: "five desks and the crawler", c: "#ff2d95", spark: null as number[] | null },
+                  { k: "Crawler feed", v: s!.perDesk.intel || 0, sub: "Korvus Intel notes in the vault", c: "#ff7a2f", spark: null },
                   { k: "Touched today", v: s!.updatedToday, sub: "14 day activity", c: "#35e08f", spark: s!.days },
-                  { k: "Healer lessons", v: s!.lessons, sub: "laws the system taught itself", c: "#f2c94c", spark: null },
+                  { k: "Links", v: s!.links, sub: `wikilinks between notes, ${s!.lessons} healer lessons`, c: "#ffc857", spark: null },
                 ].map((cd) => (
                   <div className="bx-card" key={cd.k} style={{ ["--c" as string]: cd.c }}>
                     <div className="bx-card-k">{cd.k}</div>

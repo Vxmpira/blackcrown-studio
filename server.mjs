@@ -2793,7 +2793,9 @@ shutdown -h now
 // five minutes, so the server does zero work unless someone is looking; all
 // rendering happens in the viewer's browser.
 // ---------------------------------------------------------------------------
-const BRAIN_DESKS = ["corvid", "herald", "steward", "bard", "regent"];
+// "intel" is the Korvus crawler's ecosystem (korvus_vault.py on the Korvus box
+// writes intel/README, Universe, Filings/, Tickers/, Bot/, Bot/Trades/)
+const BRAIN_DESKS = ["corvid", "herald", "steward", "bard", "regent", "intel"];
 let brainGraphCache = { at: 0, data: null };
 function buildBrainGraph() {
   const root = BRAIN_REPO_DIR;
@@ -2816,6 +2818,7 @@ function buildBrainGraph() {
         nodes.push(n);
         const key = title.toLowerCase();
         if (!byName.has(key)) byName.set(key, n);
+        byName.set(id.replace(/\.md$/, "").toLowerCase(), n);
       }
     }
   };
