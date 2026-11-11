@@ -77,6 +77,7 @@ export const Dashboard: React.FC = () => {
   const site = (k: string) => up(k);
   const fmtUp = (s: UptimeSite | null) =>
     !s || s.up === null ? "not checked yet" : s.up ? `up, ${s.ms} ms, ${s.pct24h ?? "?"}% 24h` : "DOWN";
+  const shortUp = (s: UptimeSite | null) => (!s || s.up === null ? "" : s.up ? `up \u00b7 ${s.ms} ms` : "DOWN");
   const member = (k: string) => staff.find((s) => s.key === k) || null;
   const staffLines = (k: string) => {
     const a = member(k);
@@ -207,6 +208,7 @@ export const Dashboard: React.FC = () => {
         <Suspense fallback={<div className="city3d" />}>
           <City3D
             onSelect={setSel}
+            selected={sel}
             data={{
               trafficPackets: visits > 20 ? 3 : visits > 0 ? 2 : 1,
               clicksActive: clicks > 0,
@@ -222,6 +224,21 @@ export const Dashboard: React.FC = () => {
               heraldSub: member("herald") ? (member("herald")!.enabled ? "on the desk" : "paused") : "",
               stewardSub: member("steward") ? (member("steward")!.enabled ? "running the board" : "paused") : "",
               bardSub: member("bard") ? (member("bard")!.enabled ? "rolling cameras" : "paused") : "",
+              subs: {
+                site: shortUp(site("brand")),
+                korvus: shortUp(site("korvus")),
+                crown: shortUp(site("intelligence")),
+                eclipse: "community",
+                corvid: agent ? (agent.enabled ? agent.status || "on the desk" : "paused") : "",
+                you: "the owner",
+              },
+              // a paused desk's tower goes dark; a working one is lit
+              power: {
+                corvid: agent && !agent.enabled ? 0.12 : 1,
+                herald: member("herald") && !member("herald")!.enabled ? 0.12 : 1,
+                steward: member("steward") && !member("steward")!.enabled ? 0.12 : 1,
+                bard: member("bard") && !member("bard")!.enabled ? 0.12 : 1,
+              },
               wire: wire.map((w) => ({ t: w.t, from: w.from, to: w.to })),
             }}
           />
