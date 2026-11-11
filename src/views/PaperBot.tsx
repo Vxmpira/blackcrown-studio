@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   getIntel,
   getIntelLive,
+  getCompassLive,
+  type CompassLive,
   type IntelData,
   type IntelLive,
   type IntelTrade,
@@ -167,9 +169,112 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ main */
+const PHASE: Record<string, string> = {
+  premarket: "pre-market", afterhours: "after-hours", overnight: "overnight session", regular: "regular session",
+};
+
+// ---- the second crawler: Korvus Compass (long-term board) + analyst agent ----
+const CompassPanel: React.FC<{ c: CompassLive | null; now: number }> = ({ c, now }) => {
+  const k = c?.counts;
+  const st = c?.status || {};
+  const up = !!c?.running;
+  const dot = (job: string, staleMin: number) => {
+    const j = st[job];
+    if (!j?.at) return "idle";
+    if (j.error) return "bad";
+    return (now - new Date(j.at).getTime()) / 60000 > staleMin ? "warn" : "ok";
+  };
+  const ai = k ? Object.entries(k.briefs_by || {}).filter(([w]) => w !== "rules").reduce((a, [, n]) => a + n, 0) : 0;
+  const jobs: { key: string; label: string; stale: number; note: string }[] = [
+    { key: "feed", label: "Live filing feed", stale: 12, note: k ? `${k.filings_24h} filing(s) caught in 24h` : "" },
+    { key: "prices", label: "Daily prices", stale: 60 * 30, note: c?.price_asof ? `closes through ${c.price_asof}` : "" },
+    { key: "filings", label: "SEC financials", stale: 60 * 8, note: k ? `${k.with_financials} of ${k.stocks} companies read` : "" },
+    { key: "analysts", label: "Analyst consensus", stale: 60 * 24 * 8, note: k ? `${k.with_analysts} of ${k.stocks} covered` : "" },
+    { key: "score", label: "Compass scores", stale: 30, note: k ? `${k.scored} of ${k.stocks} scored` : "" },
+    { key: "agent", label: "Analyst agent", stale: 60 * 26, note: k ? `${k.briefs} briefs: ${ai} by AI, ${k.briefs - ai} by rules` : "" },
+    { key: "live", label: "Live prices", stale: 10, note: c?.live_prices ? "on: refreshed every minute in market hours" : "off (COMPASS_LIVE=0)" },
+  ];
+  return (
+    <section className="pb-panel" style={{ marginTop: 18 }}>
+      <div className="pb-panel-h">
+        <span>Second crawler: Korvus Compass</span>
+        <span className={`pb-live ${up ? "on" : c?.configured ? "off" : "unset"}`}>
+          <i />
+          {up ? `LIVE · heartbeat ${Math.round(c?.heartbeat_age_s || 0)}s ago` : c?.configured ? (c?.error ? `OFFLINE · ${c.error}` : "OFFLINE") : "LIVE LINK NOT SET"}
+        </span>
+      </div>
+      <p className="pb-cmp-lede">
+        Follows every S&amp;P 500 and Nasdaq-100 company{k?.international ? `, plus ${k.international} foreign companies from ${Math.max(0, (k.countries || 1) - 1)} other countries,` : ""} for the long-term board on Korvus: prices, SEC financials,
+        analyst consensus and a 0 to 100 score. Its analyst agent writes the brief on every stock page. It shares
+        the SEC request budget ({c?.sec_rps ?? 4}/s here) and the vault with the Intel crawler above.
+      </p>
+      <div className="pb-stats">
+        <div><span>Stocks</span><b>{k?.stocks ?? "n/a"}</b><em>{k ? `+ ${k.funds} index funds` : ""}</em></div>
+        <div><span>Scored</span><b>{k?.scored ?? "n/a"}</b><em>{k ? `${k.top_rated} top rated` : ""}</em></div>
+        <div><span>Bullish reads</span><b className="pos">{k?.bullish ?? "n/a"}</b><em>strong score, trend holding</em></div>
+        <div><span>Bearish reads</span><b className="neg">{k?.bearish ?? "n/a"}</b><em>weak score or downtrend</em></div>
+        <div><span>Pages written</span><b>{k?.briefs ?? "n/a"}</b><em>{k ? `${ai} by the AI analyst` : ""}</em></div>
+        <div><span>Updates, 24h</span><b>{k?.updates_24h ?? "n/a"}</b><em>filings, trend turns, tier moves</em></div>
+      </div>
+      <div className="pb-grid-2">
+        <div>
+          <div className="pb-panel-h"><span>Crawler jobs</span></div>
+          <div className="pb-checks">
+            {jobs.map((j) => (
+              <div className="pb-check" key={j.key}>
+                <i className={`pb-dot ${j.key === "live" && !c?.live_prices ? "idle" : dot(j.key, j.stale)}`} />
+                <span className="pb-check-l">{j.label}</span>
+                <span className="pb-check-n">
+                  {st[j.key]?.error
+                    ? String(st[j.key].error)
+                    : j.key === "live" && !c?.live_prices
+                      ? j.note
+                      : [st[j.key]?.at ? ago(st[j.key].at, now) : "not run yet", j.note].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="pb-panel-h"><span>Latest Compass updates</span><span className="pb-dim">{c?.events?.length ? `${c.events.length} latest` : ""}</span></div>
+          {c?.events?.length ? (
+            <div className="pb-feed">
+              {c.events.map((e, i) => (
+                <div className={`pb-ev ${e.tone === "bear" ? "error" : ""}`} key={e.ts_utc + e.symbol + i}>
+                  <span className="pb-ev-t">{et(e.ts_utc, false)}</span>
+                  <span className={`pb-ev-s s-${e.kind === "filing" ? "edgar" : e.kind === "tier" ? "scoring" : "bot"}`}>{e.kind.toUpperCase().slice(0, 7)}</span>
+                  <span className="pb-ev-m" title={e.detail || ""}>{e.title}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="pb-dim" style={{ padding: "10px 0" }}>
+              {up ? "Nothing has changed yet. New filings, trend turns and tier moves land here." : "Waiting for the Compass crawler."}
+            </div>
+          )}
+          {c?.top?.length ? (
+            <>
+              <div className="pb-panel-h" style={{ marginTop: 14 }}><span>Top of the board</span></div>
+              {c.top.slice(0, 5).map((t) => (
+                <div className="pb-row" key={t.symbol}>
+                  <span className="pb-row-t">{t.tier}</span>
+                  <span className="pb-sym">{t.symbol}</span>
+                  <span className="pb-row-m">{t.name} <span className="pb-dim">· {t.trend}</span></span>
+                  <span className="pb-row-v">{Math.round(t.score)}</span>
+                </div>
+              ))}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 export const PaperBot: React.FC = () => {
   const [data, setData] = useState<IntelData | null>(null);
   const [live, setLive] = useState<IntelLive | null>(null);
+  const [compass, setCompass] = useState<CompassLive | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(Date.now());
   const hits = useRef<Record<string, number>>({});
@@ -190,12 +295,15 @@ export const PaperBot: React.FC = () => {
           }
         }
       });
+    const loadCompass = () => getCompassLive().then(setCompass);
     loadData();
     loadLive();
+    loadCompass();
     const a = setInterval(loadData, 60_000);
     const b = setInterval(loadLive, 5_000);
     const c = setInterval(() => setNow(Date.now()), 1_000);
-    return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
+    const d = setInterval(loadCompass, 15_000);
+    return () => { clearInterval(a); clearInterval(b); clearInterval(c); clearInterval(d); };
   }, []);
 
   const st = live?.stages || {};
@@ -245,7 +353,11 @@ export const PaperBot: React.FC = () => {
         metric: `${n0(b.open_positions ?? sb?.open_trades)} open`,
         detail: (b.session_open
           ? b.in_window ? `hunting · ${n0(b.candidates)} candidate(s)` : "managing exits only"
-          : "market closed, resting") + ` · ${n0(b.entries_today)} in today`,
+          : b.phase === "maintenance" ? "maintenance hour (5 to 6 PM ET), resting"
+          : b.phase === "weekend" ? "weekend, resting until Sunday 6 PM ET"
+          : "market closed, resting")
+          + (b.session_open && b.phase && b.phase !== "regular" ? ` · ${PHASE[b.phase] || b.phase}` : "")
+          + ` · ${n0(b.entries_today)} in today`,
         health: !live?.running ? "idle" : b.session_open
           ? ageS(b.last_tick_utc, now) < 180 ? "ok" : "bad"
           : "idle",
@@ -366,6 +478,10 @@ export const PaperBot: React.FC = () => {
           <span className={`pb-live ${running ? "on" : live?.configured ? "off" : "unset"}`}>
             <i />
             {running ? "CRAWLER LIVE" : live?.configured ? "CRAWLER OFFLINE" : "LIVE LINK NOT SET"}
+          </span>
+          <span className={`pb-live ${compass?.running ? "on" : compass?.configured ? "off" : "unset"}`}>
+            <i />
+            {compass?.running ? "COMPASS LIVE" : compass?.configured ? "COMPASS OFFLINE" : "COMPASS NOT SET"}
           </span>
           <span className="pb-paper">PAPER ONLY</span>
         </div>
@@ -510,7 +626,11 @@ export const PaperBot: React.FC = () => {
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Recent paper trades</span></div>
                   {data.recent?.length ? data.recent.map((t) => <TradeRow key={t.id} t={t} />)
-                    : <div className="bl-empty">No closed trades yet. Entries run 9:45 AM to 3:30 PM ET.</div>}
+                    : <div className="bl-empty">
+                        No closed trades yet. {rules?.session === "all"
+                          ? "The bot trades around the clock, Sunday 6 PM to Friday 5 PM ET, except the 5 to 6 PM maintenance hour."
+                          : "Entries run 9:45 AM to 3:30 PM ET."}
+                      </div>}
                 </section>
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Latest scored filings</span></div>
@@ -529,6 +649,9 @@ export const PaperBot: React.FC = () => {
               </div>
             </>
           )}
+
+          {/* ---------------- second crawler ---------------- */}
+          <CompassPanel c={compass} now={now} />
 
           {/* ---------------- path to live ---------------- */}
           <section className="pb-panel pb-path" style={{ marginTop: 18 }}>
@@ -567,8 +690,8 @@ export const PaperBot: React.FC = () => {
                   {rules.allow_short === false
                     ? "Shorts are switched off. "
                     : `Bearish goes short if price holds below it and is down less than ${rules.max_day_down_pct ?? 8}% on the day. `}
-                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at
-                  3:55 PM ET. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
+                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at{" "}
+                  {rules.flat_at || "3:55 PM ET"}.{rules.window ? ` Window: ${rules.window}.` : ""} Paper shorts assume shares can be borrowed with no borrow fee.{" "}
                 </>
               ) : null}
               Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh

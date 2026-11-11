@@ -1515,3 +1515,8 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   .pb-head-right { width: 100%; }
 }
 @keyframes pbFlowV { 0% { top: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { top: calc(100% - 6px); opacity: 0; } }
+
+/* Paper Bot tab: second crawler (Korvus Compass) */
+.pb-cmp-lede { color: var(--bone); font-size: 13px; line-height: 1.55; margin: 0 0 14px; max-width: 900px; }
+.pb-stats b.pos { color: var(--ok); } .pb-stats b.neg { color: var(--bad); }
+.pb-head-right { flex-wrap: wrap; justify-content: flex-end; }
