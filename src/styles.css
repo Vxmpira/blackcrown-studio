@@ -1511,6 +1511,9 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .pb-row-m a { color: var(--pink-soft); text-decoration: none; } .pb-row-m a:hover { text-decoration: underline; }
 .pb-row-v { font-family: "JetBrains Mono", monospace; font-size: 12px; text-align: right; }
 .pb-tag { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--line-soft); color: var(--mute); }
+.pb-tag.retired { color: var(--mute); border-style: dashed; }
+.pb-retired { font-size: 12.5px; line-height: 1.55; color: var(--mute); border-left: 2px solid var(--gold); padding: 8px 12px; margin-bottom: 14px; background: rgba(242, 201, 76, 0.05); max-width: 110ch; }
+.pb-retired b { color: var(--bone); } .pb-retired i { font-style: normal; font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--bone); }
 .pb-tag.target { color: var(--ok); border-color: rgba(53, 224, 143, 0.35); }
 .pb-tag.stop { color: var(--bad); border-color: rgba(255, 92, 122, 0.4); }
 .pb-tag.time, .pb-tag.overnight { color: var(--gold); border-color: rgba(242, 201, 76, 0.35); }

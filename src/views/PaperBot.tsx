@@ -128,11 +128,20 @@ const Equity: React.FC<{ pts: { t: string; v: number; sym: string }[] }> = ({ pt
 };
 
 /* ------------------------------------------------------------------ rows */
-const TradeRow: React.FC<{ t: IntelTrade }> = ({ t }) => (
+// a trade taken under an earlier rule version is marked, because the
+// scoreboard above only counts the current version
+const TradeRow: React.FC<{ t: IntelTrade; current?: string }> = ({ t, current }) => (
   <div className="pb-row">
     <span className="pb-row-t">{et(t.entry_utc)}</span>
     <span className="pb-sym">{t.symbol}</span>
     <span className="pb-row-m">
+      {current && t.strategy && t.strategy !== current ? (
+        <>
+          <span className="pb-tag retired" title={`Taken under ${t.strategy}. Not counted on the ${current} scoreboard.`}>
+            {t.strategy.split("-")[0]} rules
+          </span>{" "}
+        </>
+      ) : null}
       <span className={`pb-tag side-${t.side || "long"}`}>{t.side === "short" ? "short" : "long"}</span>{" "}
       {t.qty} @ ${t.entry_px.toFixed(2)}
       {t.status === "closed" ? (
@@ -460,6 +469,20 @@ export const PaperBot: React.FC = () => {
                     <span className="pb-bar"><i style={{ width: `${Math.min(100, (sb.closed_trades / minSample) * 100)}%` }} /></span>
                   </div>
                 ) : null}
+                {data.retired?.length ? (
+                  <div className="pb-retired">
+                    <b>Not counted above:</b>{" "}
+                    {data.retired.map((r, i) => (
+                      <span key={r.strategy}>
+                        {i ? "; " : ""}
+                        {r.trades} closed trade{r.trades === 1 ? "" : "s"} under the retired <i>{r.strategy}</i> rules ({r.wins}W, {r.losses}L,{" "}
+                        <span className={tone(r.pnl)}>{usd(r.pnl)}</span>)
+                      </span>
+                    ))}
+                    . A rule change starts a fresh scoreboard so results from different rules are never mixed. Those trades stay on
+                    the record below, marked with their rule version.
+                  </div>
+                ) : null}
                 <div className="pb-stats">
                   <div><span>Win rate</span><b>{sb?.win_rate_pct ?? "n/a"}{sb?.win_rate_pct != null ? "%" : ""}</b><em>{sb ? `${sb.wins}W · ${sb.losses}L` : ""}</em></div>
                   <div><span>Paper P&amp;L</span><b className={tone(sb?.paper_pnl)}>{usd(sb?.paper_pnl ?? 0)}</b><em>simulated</em></div>
@@ -474,12 +497,12 @@ export const PaperBot: React.FC = () => {
               <div className="pb-grid-2">
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Open positions</span><span className="pb-dim">max {rules?.max_open ?? 5}</span></div>
-                  {data.open?.length ? data.open.map((t) => <TradeRow key={t.id} t={t} />) : <div className="bl-empty">No open paper positions.</div>}
+                  {data.open?.length ? data.open.map((t) => <TradeRow key={t.id} t={t} current={sb?.strategy} />) : <div className="bl-empty">No open paper positions.</div>}
                 </section>
                 <section className="pb-panel">
                   <div className="pb-panel-h">
                     <span>Long vs short</span>
-                    <span className="pb-dim">{rules?.allow_short === false ? "shorts switched off" : "bullish reads go long, bearish go short"}</span>
+                    <span className="pb-dim">{rules?.allow_short === false ? "shorts switched off" : "bullish reads go long, bearish go short"}{data.retired?.length ? `, ${sb?.strategy} trades only` : ""}</span>
                   </div>
                   <div className="pb-sides">
                     {sides.map(([k, v]) => (
@@ -509,8 +532,8 @@ export const PaperBot: React.FC = () => {
               <div className="pb-grid-2">
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Recent paper trades</span></div>
-                  {data.recent?.length ? data.recent.map((t) => <TradeRow key={t.id} t={t} />)
-                    : <div className="bl-empty">No closed trades yet. Entries run 9:45 AM to 3:30 PM ET.</div>}
+                  {data.recent?.length ? data.recent.map((t) => <TradeRow key={t.id} t={t} current={sb?.strategy} />)
+                    : <div className="bl-empty">No closed trades yet. The bot runs {rules?.window || "entries 9:45 AM to 3:30 PM ET on regular sessions"}.</div>}
                 </section>
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Latest scored filings</span></div>
@@ -567,8 +590,8 @@ export const PaperBot: React.FC = () => {
                   {rules.allow_short === false
                     ? "Shorts are switched off. "
                     : `Bearish goes short if price holds below it and is down less than ${rules.max_day_down_pct ?? 8}% on the day. `}
-                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at
-                  3:55 PM ET. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
+                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at{" "}
+                  {rules.flat_at || "3:55 PM ET"}. Runs {rules.window || "entries 9:45 AM to 3:30 PM ET on regular sessions"}. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
                 </>
               ) : null}
               Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh

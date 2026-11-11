@@ -1734,10 +1734,24 @@ app.get("/api/intel", (_req, res) => {
   const filings = readJsonl(path.join(dataDir, "filings.jsonl"), 400);
   const today = etDay(new Date().toISOString());
   const scored = filings.filter((f) => f.summary);
+  // The scoreboard only counts the current rule version (a rule change starts
+  // a fresh one), so the curve does too. Trades taken under retired rules stay
+  // on the record: they are summarised here so the tab can show them plainly.
+  const current = board?.scoreboard?.strategy || board?.rules?.strategy || null;
+  const retiredMap = {};
+  for (const t of trades) {
+    if (t.status !== "closed" || !current || t.strategy === current) continue;
+    const r = (retiredMap[t.strategy] ||= { strategy: t.strategy, trades: 0, wins: 0, losses: 0, pnl: 0, last_utc: null });
+    r.trades++;
+    if ((Number(t.pnl) || 0) > 0) r.wins++;
+    else r.losses++;
+    r.pnl = Math.round((r.pnl + (Number(t.pnl) || 0)) * 100) / 100;
+    if (!r.last_utc || String(t.exit_utc) > r.last_utc) r.last_utc = t.exit_utc;
+  }
   // cumulative paper P&L after each closed trade, for the equity curve
   let cum = 0;
   const equity = trades
-    .filter((t) => t.status === "closed")
+    .filter((t) => t.status === "closed" && (!current || t.strategy === current))
     .sort((a, b) => String(a.exit_utc).localeCompare(String(b.exit_utc)))
     .map((t) => ({ t: t.exit_utc, v: Math.round((cum += Number(t.pnl) || 0) * 100) / 100, sym: t.symbol }));
   let dataMtime = null;
@@ -1749,6 +1763,7 @@ app.get("/api/intel", (_req, res) => {
     dataMtime,
     equity,
     board,
+    retired: Object.values(retiredMap),
     open: trades.filter((t) => t.status === "open").reverse(),
     recent: trades.filter((t) => t.status === "closed").slice(-25).reverse(),
     filingsToday: filings.filter((f) => etDay(f.seen_utc) === today).length,

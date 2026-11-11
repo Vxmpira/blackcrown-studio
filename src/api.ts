@@ -722,14 +722,20 @@ export type IntelBoard = {
     tick_seconds: number;
     price_band: [number, number];
     mcap_max: number;
+    session?: string;
+    window?: string;
+    flat_at?: string;
   };
 };
+// closed trades taken under an earlier rule version: on the record, not on the scoreboard
+export type IntelRetired = { strategy: string; trades: number; wins: number; losses: number; pnl: number; last_utc: string | null };
 export type IntelData = {
   configured: boolean;
   dir?: string;
   dataMtime?: string | null;
   equity?: { t: string; v: number; sym: string }[];
   board?: IntelBoard | null;
+  retired?: IntelRetired[];
   open?: IntelTrade[];
   recent?: IntelTrade[];
   filingsToday?: number;
