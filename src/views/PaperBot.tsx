@@ -169,6 +169,10 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ main */
+const PHASE: Record<string, string> = {
+  premarket: "pre-market", afterhours: "after-hours", overnight: "overnight session", regular: "regular session",
+};
+
 // ---- the second crawler: Korvus Compass (long-term board) + analyst agent ----
 const CompassPanel: React.FC<{ c: CompassLive | null; now: number }> = ({ c, now }) => {
   const k = c?.counts;
@@ -200,7 +204,7 @@ const CompassPanel: React.FC<{ c: CompassLive | null; now: number }> = ({ c, now
         </span>
       </div>
       <p className="pb-cmp-lede">
-        Follows every S&amp;P 500 and Nasdaq-100 company for the long-term board on Korvus: prices, SEC financials,
+        Follows every S&amp;P 500 and Nasdaq-100 company{k?.international ? `, plus ${k.international} foreign companies from ${Math.max(0, (k.countries || 1) - 1)} other countries,` : ""} for the long-term board on Korvus: prices, SEC financials,
         analyst consensus and a 0 to 100 score. Its analyst agent writes the brief on every stock page. It shares
         the SEC request budget ({c?.sec_rps ?? 4}/s here) and the vault with the Intel crawler above.
       </p>
@@ -349,7 +353,11 @@ export const PaperBot: React.FC = () => {
         metric: `${n0(b.open_positions ?? sb?.open_trades)} open`,
         detail: (b.session_open
           ? b.in_window ? `hunting · ${n0(b.candidates)} candidate(s)` : "managing exits only"
-          : "market closed, resting") + ` · ${n0(b.entries_today)} in today`,
+          : b.phase === "maintenance" ? "maintenance hour (5 to 6 PM ET), resting"
+          : b.phase === "weekend" ? "weekend, resting until Sunday 6 PM ET"
+          : "market closed, resting")
+          + (b.session_open && b.phase && b.phase !== "regular" ? ` · ${PHASE[b.phase] || b.phase}` : "")
+          + ` · ${n0(b.entries_today)} in today`,
         health: !live?.running ? "idle" : b.session_open
           ? ageS(b.last_tick_utc, now) < 180 ? "ok" : "bad"
           : "idle",
@@ -618,7 +626,11 @@ export const PaperBot: React.FC = () => {
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Recent paper trades</span></div>
                   {data.recent?.length ? data.recent.map((t) => <TradeRow key={t.id} t={t} />)
-                    : <div className="bl-empty">No closed trades yet. Entries run 9:45 AM to 3:30 PM ET.</div>}
+                    : <div className="bl-empty">
+                        No closed trades yet. {rules?.session === "all"
+                          ? "The bot trades around the clock, Sunday 6 PM to Friday 5 PM ET, except the 5 to 6 PM maintenance hour."
+                          : "Entries run 9:45 AM to 3:30 PM ET."}
+                      </div>}
                 </section>
                 <section className="pb-panel">
                   <div className="pb-panel-h"><span>Latest scored filings</span></div>
@@ -678,8 +690,8 @@ export const PaperBot: React.FC = () => {
                   {rules.allow_short === false
                     ? "Shorts are switched off. "
                     : `Bearish goes short if price holds below it and is down less than ${rules.max_day_down_pct ?? 8}% on the day. `}
-                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at
-                  3:55 PM ET. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
+                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at{" "}
+                  {rules.flat_at || "3:55 PM ET"}.{rules.window ? ` Window: ${rules.window}.` : ""} Paper shorts assume shares can be borrowed with no borrow fee.{" "}
                 </>
               ) : null}
               Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh

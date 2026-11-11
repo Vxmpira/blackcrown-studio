@@ -716,6 +716,9 @@ export type IntelBoard = {
     min_confidence: number;
     max_day_up_pct: number;
     max_day_down_pct?: number;
+    session?: string;
+    window?: string;
+    flat_at?: string;
     allow_short?: boolean;
     lookback_hours: number;
     slippage_pct: number;
@@ -776,7 +779,7 @@ export type CompassLive = {
   price_asof?: string | null;
   status?: Record<string, Record<string, any>>;
   counts?: {
-    stocks: number; funds: number; priced: number; with_financials: number; with_analysts: number;
+    stocks: number; funds: number; international?: number; countries?: number; priced: number; with_financials: number; with_analysts: number;
     scored: number; bullish: number; bearish: number; top_rated: number;
     briefs: number; briefs_by: Record<string, number>; updates_24h: number; filings_24h: number;
   };
