@@ -1394,6 +1394,26 @@ async function reactToMessages(msgs) {
   const text = msgs.map((m) => `${m.author?.username || "owner"}: ${m.content}`).join("\n");
   state.discord.lastInboundAt = Date.now();
   log("inbound", text.slice(0, 300));
+  // "retry 414" is a plain command, handled in code: render failures tell the
+  // owner to send exactly this, and the model never sees approved proposals,
+  // so it cannot be trusted to find the number. No model call, no guessing.
+  const asked = [...text.matchAll(/\bretry\s*#?(\d{1,6})\b/gi)].map((m) => m[1]);
+  if (asked.length) {
+    const done = [];
+    for (const n of [...new Set(asked)]) {
+      const p = state.proposals.find((x) => String(x.number) === n);
+      if (!p) done.push(`#${n}: not on my ledger.`);
+      else if (p.kind !== "creative") done.push(`#${n}: not a video, nothing to re-render.`);
+      else if (p.status !== "approved") done.push(`#${n}: it is ${p.status}, only approved videos can be retried.`);
+      else {
+        retryCreative(p.id);
+        log("decision", `#${n} render retried from Discord`);
+        done.push(`#${n}: render restarted. I will post here when it lands or fails.`);
+      }
+    }
+    await discordSend(`**CORVID //** ${done.join(" ")}`);
+    if (!text.replace(/\bretry\s*#?\d{1,6}\b/gi, "").replace(/[\s.,!]+/g, "")) return;
+  }
   try {
     const pending = state.proposals.filter((p) => p.status === "pending");
     const user = [
