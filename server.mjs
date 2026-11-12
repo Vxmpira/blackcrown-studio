@@ -2397,12 +2397,31 @@ async function xUploadVideo(mediaUrl) {
   if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
   const buf = Buffer.from(await dl.arrayBuffer());
   if (buf.length > 512 * 1024 * 1024) throw new Error("video exceeds the 512MB X limit");
+  return xUploadBuffer(buf, "video/mp4", "tweet_video");
+}
+// Every X post carries a picture. A post with no video gets the branded card
+// for the product it is about, so it never shows as a bare link preview (X
+// often fails to load other sites' preview images, Discord's included).
+const X_CARDS = path.join(__dirname, "assets", "x-cards");
+function cardFor(text) {
+  const t = String(text || "");
+  if (/lodestone/i.test(t)) return "lodestone";
+  if (/discord\.(gg|com)|eclipse[- ]?x/i.test(t)) return "eclipse";
+  if (/korvus/i.test(t)) return "korvus";
+  if (/blackcrown-intelligence|\bcrown\b/i.test(t)) return "crown";
+  return "blackcrown";
+}
+async function xUploadCard(text) {
+  const file = path.join(X_CARDS, `${cardFor(text)}.jpg`);
+  return xUploadBuffer(fs.readFileSync(file), "image/jpeg", "tweet_image");
+}
+async function xUploadBuffer(buf, mediaType, category) {
   const q = (o) => X_UPLOAD + "?" + new URLSearchParams(o).toString();
   let url = q({
     command: "INIT",
     total_bytes: String(buf.length),
-    media_type: "video/mp4",
-    media_category: "tweet_video",
+    media_type: mediaType,
+    media_category: category,
   });
   let r = await fetch(url, { method: "POST", headers: { authorization: oauth1Header("POST", url) } });
   let j = await r.json().catch(() => ({}));
@@ -2440,6 +2459,13 @@ async function postToX({ content, media }) {
   while (weight() > 280 && /\s/.test(text)) text = text.replace(/\s+\S+$/, "");
   const payload = { text };
   if (media) payload.media = { media_ids: [await xUploadVideo(media)] };
+  else {
+    try {
+      payload.media = { media_ids: [await xUploadCard(text)] };
+    } catch (e) {
+      agentLog("error", `X card image skipped, posting text only: ${String(e?.message || e).slice(0, 140)}`);
+    }
+  }
   const url = "https://api.twitter.com/2/tweets";
   const r = await fetch(url, {
     method: "POST",
