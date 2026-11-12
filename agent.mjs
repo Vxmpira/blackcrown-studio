@@ -1260,6 +1260,14 @@ async function executeVideo(p) {
     p.renderingSince = Date.now();
     saveState();
     let url = Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null;
+    // footage made before the length fix is 5 seconds; reusing it would only
+    // re-edit the short clip, so a retry buys one new generation at full length
+    if (url && (Number(p.footageSeconds) || 0) < BLOOM_VIDEO_SECONDS - 1) {
+      log("render", `#${p.number} saved footage is shorter than ${BLOOM_VIDEO_SECONDS}s, generating a new full-length clip`);
+      url = null;
+      p.rendered = [];
+      p.bloomGenId = null;
+    }
     if (url) {
       log("render", `#${p.number} reusing already-paid footage, no new charge`);
     } else if ((process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws" && hooks.awsRender) {
@@ -1267,6 +1275,7 @@ async function executeVideo(p) {
         log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
         url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
         p.rendered = [url];
+        p.footageSeconds = BLOOM_VIDEO_SECONDS;
         saveState();
       } catch (e) {
         // the furnace cannot even start (spot quota still 0, missing role):
@@ -1340,6 +1349,7 @@ async function executeVideo(p) {
         );
       p.bloomGenId = null;
       p.rendered = [url];
+      p.footageSeconds = BLOOM_VIDEO_SECONDS;
       saveState();
     }
     let finalUrl = url;
