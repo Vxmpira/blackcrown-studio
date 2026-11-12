@@ -996,7 +996,11 @@ export async function runCycle(trigger = "schedule") {
       `Number NEW proposals starting at: ${nextNumber}`,
     ].join("\n\n");
 
-    const out = await think(CYCLE_SYSTEM, user, 8000, { priority: trigger === "schedule" ? "background" : "owner" });
+    // A scheduled cycle runs on the hands model: it happens every cadence tick
+    // and Regent reviews every proposal on the head model before it reaches the
+    // owner. A cycle the owner asked for keeps the head model.
+    const scheduled = trigger === "schedule";
+    const out = await think(CYCLE_SYSTEM, user, 6000, { priority: scheduled ? "background" : "owner", tier: scheduled ? "hands" : undefined, who: "corvid" });
 
     state.lastThought = String(out.thought || "").slice(0, 800);
     state.currentFocus = String(out.focus || state.currentFocus).slice(0, 200);
@@ -1249,11 +1253,23 @@ async function executeVideo(p) {
     if (url) {
       log("render", `#${p.number} reusing already-paid footage, no new charge`);
     } else if ((process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws" && hooks.awsRender) {
-      log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
-      url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
-      p.rendered = [url];
-      saveState();
-    } else {
+      try {
+        log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
+        url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
+        p.rendered = [url];
+        saveState();
+      } catch (e) {
+        // the furnace cannot even start (spot quota still 0, missing role):
+        // fall back to Bloom, which keeps its own daily cap and balance reserve.
+        // VIDEO_FALLBACK_BLOOM=0 turns this off.
+        const m = String(e?.message || e);
+        const off = /^(0|false|no|off)$/i.test(String(process.env.VIDEO_FALLBACK_BLOOM || "1").trim());
+        if (off || !BLOOM_KEY || !/quota|max spot|spot instance|could not launch a GPU|service-linked/i.test(m)) throw e;
+        log("render", `#${p.number} furnace unavailable (${m.slice(0, 120)}), rendering via Bloom instead`);
+        url = null;
+      }
+    }
+    if (!url) {
       let genId = p.bloomGenId || null;
       if (genId) {
         log("render", `#${p.number} resuming paid generation ${genId}, no new charge`);
@@ -1491,7 +1507,7 @@ function pickOpenTask() {
 }
 
 async function workTick() {
-  if (busy || !state.enabled || !canSpend()) return;
+  if (busy || !state.enabled || !canSpend("corvid")) return;
   const t = pickOpenTask();
   if (!t) return;
   const day = etDayKey();
@@ -1597,7 +1613,7 @@ export function startAgent() {
     } catch {
       // watchman is best effort, the schedule below still runs
     }
-    if (!canSpend()) return;
+    if (!canSpend("corvid")) return;
     if (CYCLE_MS > 0) {
       if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
         runCycle("schedule").catch(() => {});

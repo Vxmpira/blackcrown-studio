@@ -132,8 +132,24 @@ export function budget() {
   const level = !cap ? "off" : spent >= cap ? "out" : spent >= cap * 0.7 ? "tight" : "ok";
   return { cap, spent: Math.round(spent * 100) / 100, left: cap ? Math.max(0, Math.round((cap - spent) * 100) / 100) : null, level };
 }
-export function canSpend() {
-  return budget().level !== "out";
+// No one desk may eat the whole day. Background work for a desk pauses once
+// that desk alone has spent its share of the daily budget (owner calls still
+// run). AGENT_SHARE_CORVID=0.4 means Corvid's background work stops at 40
+// percent of the budget; the other desks default to 30 percent each.
+const SHARE = { corvid: 0.4 };
+function shareOf(who) {
+  const v = Number(process.env[`AGENT_SHARE_${String(who).toUpperCase().replace(/[^A-Z]/g, "_")}`]);
+  return Number.isFinite(v) && v > 0 ? Math.min(1, v) : SHARE[who] || 0.3;
+}
+function deskSpent(who) {
+  const d = loadSpend()[dayKey()] || {};
+  return (d[who] && d[who].usd) || 0;
+}
+export function canSpend(who) {
+  const b = budget();
+  if (b.level === "out") return false;
+  if (who && b.cap && deskSpent(who) >= b.cap * shareOf(who)) return false;
+  return true;
 }
 export function thrift() {
   return budget().level === "tight" ? 2 : 1;
@@ -194,8 +210,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function callLLM(o) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  if (o.priority !== "owner" && !canSpend()) {
-    throw new Error("daily model budget reached, background work is paused until midnight ET");
+  if (o.priority !== "owner" && !canSpend(o.who)) {
+    throw new Error(
+      canSpend()
+        ? `${o.who} has used its share of today's model budget, its background work is paused until midnight ET`
+        : "daily model budget reached, background work is paused until midnight ET"
+    );
   }
   let model = swapped.get(o.model || MODELS.head) || o.model || MODELS.head;
   const inst = o.bare ? "" : String(institution() || "").trim();

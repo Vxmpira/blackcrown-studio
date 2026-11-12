@@ -2799,7 +2799,7 @@ shutdown -h now
   if (!instanceId) {
     awsJobs.delete(job);
     const msg = String(lastErr?.message || lastErr || "no instance type available");
-    if (/MaxSpotInstanceCount|VcpuLimitExceeded/i.test(msg)) {
+    if (/MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded/i.test(msg)) {
       throw new Error("AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
     }
     if (/service-linked role/i.test(msg)) {
