@@ -213,6 +213,10 @@ app.use("/api", (req, res, next) => {
   }
   // the Eclipse-X games are public; players identify through Discord
   if (req.path.startsWith("/activity/")) return next();
+  // finished marketing videos are public: Discord, X and the owner's phone
+  // open them by link. They live under /api because the web server only
+  // forwards /api to this process; anything else gets the admin page.
+  if (req.path.startsWith("/renders/")) return next();
   if (isAuthed(req)) return next();
   res.status(401).json({ error: "Not signed in." });
 });
@@ -2393,9 +2397,16 @@ function oauth1Header(method, url) {
 }
 const X_UPLOAD = "https://upload.twitter.com/1.1/media/upload.json";
 async function xUploadVideo(mediaUrl) {
-  const dl = await fetch(mediaUrl);
-  if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
-  const buf = Buffer.from(await dl.arrayBuffer());
+  // our own renders are read straight from disk
+  const own = String(mediaUrl).match(/\/(?:api\/)?renders\/([A-Za-z0-9-]+\.mp4)(?:\?|$)/);
+  let buf;
+  if (own && fs.existsSync(path.join(RENDERS_DIR, own[1]))) buf = fs.readFileSync(path.join(RENDERS_DIR, own[1]));
+  else {
+    const dl = await fetch(fixRenderUrl(mediaUrl));
+    if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
+    buf = Buffer.from(await dl.arrayBuffer());
+    if (/^text\/html/i.test(dl.headers.get("content-type") || "")) throw new Error("media link returned a web page, not a video");
+  }
   if (buf.length > 512 * 1024 * 1024) throw new Error("video exceeds the 512MB X limit");
   return xUploadBuffer(buf, "video/mp4", "tweet_video");
 }
@@ -2560,7 +2571,13 @@ wireCeo({
 // ---------------------------------------------------------------------------
 const RENDERS_DIR = path.join(__dirname, "renders");
 try { fs.mkdirSync(RENDERS_DIR, { recursive: true }); } catch {}
+app.use("/api/renders", express.static(RENDERS_DIR, { maxAge: "7d" }));
 app.use("/renders", express.static(RENDERS_DIR, { maxAge: "7d" }));
+// links handed out before the move pointed at /renders/, which the web server
+// never forwarded here; this turns any such link into the one that works
+function fixRenderUrl(u) {
+  return String(u || "").replace(/(admin\.blackcrownvxj\.com)\/renders\//i, "$1/api/renders/");
+}
 const ADMIN_PUBLIC_URL = (process.env.ADMIN_PUBLIC_URL || "https://admin.blackcrownvxj.com").replace(/\/$/, "");
 const FORGE_FONT = path.join(__dirname, "assets", "fonts", "DejaVuSans-Bold.ttf");
 function forgeEscape(s) {
@@ -2661,7 +2678,7 @@ async function forgeOverlay({ src, lines, name }) {
       if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp);
     }
   } catch {}
-  return `${ADMIN_PUBLIC_URL}/renders/${clean}.mp4`;
+  return `${ADMIN_PUBLIC_URL}/api/renders/${clean}.mp4`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2852,7 +2869,7 @@ shutdown -h now
   const l = awsLedgerAdd((Date.now() - t0) / 60000);
   awsJobs.delete(job);
   agentLog("render", `furnace ${job}: delivered in ${Math.round((Date.now() - t0) / 60000)} min; ${Math.round(l.minutes)} of ${AWS_RENDER_CAP_MIN} GPU minutes used this month`);
-  return `${ADMIN_PUBLIC_URL}/renders/aws-${job}.mp4`;
+  return `${ADMIN_PUBLIC_URL}/api/renders/aws-${job}.mp4`;
 }
 
 // ---------------------------------------------------------------------------

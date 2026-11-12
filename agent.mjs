@@ -90,9 +90,17 @@ function freshState() {
   };
 }
 let state = loadState();
+// video links once pointed at /renders/, which the web server never forwarded
+// to this process; they now live under /api/renders/
+function fixRenderLinks(s) {
+  for (const p of Array.isArray(s.proposals) ? s.proposals : []) {
+    if (Array.isArray(p.rendered)) p.rendered = p.rendered.map((u) => String(u).replace(/(admin\.blackcrownvxj\.com)\/renders\//i, "$1/api/renders/"));
+  }
+  return s;
+}
 function loadState() {
   try {
-    const s = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+    const s = fixRenderLinks(JSON.parse(fs.readFileSync(STATE_PATH, "utf8")));
     return { ...freshState(), ...s };
   } catch {
     // immune system: a corrupted state file restores from the last snapshot
