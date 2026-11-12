@@ -8,6 +8,8 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
+export { recordSpend, getSpend, spendSummary };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,8 +28,13 @@ const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
 const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
 const CYCLE_MS = CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
-const MODEL = process.env.AGENT_MODEL || "claude-fable-5";
-export const MINION_MODEL = process.env.MINION_MODEL || "claude-haiku-5-5";
+// Corvid thinks on the head model (strategy cycles, replies to the owner) and
+// works on the hands model (task steps, scheduled reports). Regent reviews every
+// proposal on the head model before it reaches the owner, so the cheaper hands
+// never ship unchecked. Set AGENT_WORK_MODEL to the head model to undo the split.
+const MODEL = (process.env.AGENT_MODEL || MODELS.head).trim();
+const WORK_MODEL = (process.env.AGENT_WORK_MODEL || MODELS.hands).trim();
+export const MINION_MODEL = MODELS.minion;
 
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const CHANNEL_ID = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
@@ -549,6 +556,12 @@ export async function librarian() {
   }
 }
 
+// A full cycle is the most expensive thing Corvid does. A minion report or a
+// new task does not need one: the task engine picks both up on its next step,
+// so these wake the engine instead of ordering a cycle.
+function nudgeWork() {
+  state.lastWorkAt = 0;
+}
 export function pokeCycle(reason) {
   cycleAsap = String(reason || "something changed").slice(0, 140);
 }
@@ -704,42 +717,10 @@ export function parseModelJson(text) {
 // ---------------------------------------------------------------------------
 // token spend meter and night throttle
 // ---------------------------------------------------------------------------
-const SPEND_PATH = path.join(__dirname, "studio-spend.json");
-function loadSpend() {
-  try { return JSON.parse(fs.readFileSync(SPEND_PATH, "utf8")); } catch { return {}; }
-}
-export function recordSpend(who, model, usage) {
-  try {
-    if (!usage) return;
-    const all = loadSpend();
-    const d = etDayKey();
-    all[d] = all[d] || {};
-    const e = (all[d][who] = all[d][who] || { calls: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
-    e.calls += 1;
-    e.in += usage.input_tokens || 0;
-    e.out += usage.output_tokens || 0;
-    e.cacheRead += usage.cache_read_input_tokens || 0;
-    e.cacheWrite += usage.cache_creation_input_tokens || 0;
-    const keep = Object.keys(all).sort().slice(-14);
-    const trimmed = {};
-    for (const k of keep) trimmed[k] = all[k];
-    fs.writeFileSync(SPEND_PATH, JSON.stringify(trimmed));
-  } catch {}
-}
-export function getSpend() { return loadSpend(); }
-export function spendSummary() {
-  try {
-    const d = loadSpend()[etDayKey()] || {};
-    const k = (n) => (n >= 1000 ? Math.round(n / 1000) + "k" : String(n));
-    const parts = Object.entries(d).map(
-      ([w, e]) => `${w} ${k(e.in + e.cacheRead)} in (${k(e.cacheRead)} cached) ${k(e.out)} out over ${e.calls} calls`
-    );
-    return parts.length ? `TOKEN SPEND today: ${parts.join("; ")}` : "TOKEN SPEND today: nothing yet";
-  } catch { return "TOKEN SPEND: unavailable"; }
-}
+// slows the task engine overnight, and again when the day's budget runs low
 export function nightFactor() {
   const h = etHour();
-  return h >= 1 && h < 7 ? 2 : 1;
+  return (h >= 1 && h < 7 ? 2 : 1) * thrift();
 }
 
 let instCache = { at: 0, text: "" };
@@ -750,7 +731,7 @@ export function institutionBlock() {
       instCache = {
         at: Date.now(),
         text: body.trim()
-          ? "\n\nINSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 12000)
+          ? "INSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 12000).trim()
           : "",
       };
     } catch {
@@ -760,84 +741,30 @@ export function institutionBlock() {
   return instCache.text;
 }
 
+setInstitution(institutionBlock);
+
+// opts: { model, tier: "hands", who, hot, priority }
+function pickModel(opts) {
+  return opts.model || (opts.tier === "hands" ? WORK_MODEL : MODEL);
+}
 async function think(system, user, maxTokens = 4000, opts = {}) {
-  const mdl = opts.model || MODEL;
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: mdl,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`Anthropic (${r.status}): ${t.slice(0, 180)}`);
-  }
-  const data = await r.json();
-  recordSpend(opts.who || "corvid", mdl, data.usage);
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/^```(json)?/i, "")
-    .replace(/```$/i, "")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
-  try {
-    return parseModelJson(text);
-  } catch (e) {
-    if (!opts.retried) {
-      return think(
-        system,
-        `${user}\n\nREMINDER: your whole reply must be ONLY the JSON object, starting with { and ending with }. Keep every string tight so the full object fits.`,
-        maxTokens,
-        { ...opts, retried: true }
-      );
-    }
-    const head = text.slice(0, 140).replace(/\n/g, " ");
-    throw new Error(`${e.message}. Output head: ${head}`);
-  }
+  return callJSON(
+    { who: opts.who || "corvid", model: pickModel(opts), system, user, maxTokens, hot: opts.hot, priority: opts.priority },
+    parseModelJson
+  );
 }
 
 export async function thinkText(system, user, maxTokens = 1400, opts = {}) {
-  const mdl = opts.model || MODEL;
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: mdl,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
+  const r = await callLLM({
+    who: opts.who || "corvid",
+    model: pickModel(opts),
+    system,
+    user,
+    maxTokens,
+    hot: opts.hot,
+    priority: opts.priority,
   });
-  if (!r.ok) throw new Error(`Anthropic (${r.status})`);
-  const data = await r.json();
-  recordSpend(opts.who || "corvid", mdl, data.usage);
-  return (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
+  return r.text.replace(/\u2014|\u2013/g, ", ");
 }
 
 // The minions: small single-purpose workers Corvid can delegate to. Each is
@@ -878,10 +805,8 @@ async function runMinion(name, task, context) {
   state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file, gist: String(report).slice(0, 700) });
   log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
   saveState();
-  // a report that lands long after the cycle that ordered it deserves prompt attention
-  if (!state.lastCycleAt || Date.now() - state.lastCycleAt > 10 * 60000) {
-    pokeCycle(`minion ${name} delivered a report: ${String(task).slice(0, 80)}`);
-  }
+  // the report rides into the next task step and the next cycle as a gist; it
+  // no longer orders a full cycle of its own
   return report;
 }
 
@@ -938,7 +863,7 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
 {
  "thought": "max 2 sentences",
  "focus": "max 8 words",
- "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
+ "patterns_md": "ONLY when this cycle's data changes a pattern: the full new Patterns.md (keep what holds, update confidence, add what the data shows, drop what died; bullets and [[wikilinks]], under 30 lines). Otherwise an empty string, the file stays as it is",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video: shots, motion, pacing, 10 to 15 seconds vertical, NEVER any words or typography in the footage","slides":["..."],"caption":"...","brand":"korvus"}],
  "brain_notes": [{"name":"Keywords.md","body":"full markdown content"}],
@@ -1071,7 +996,7 @@ export async function runCycle(trigger = "schedule") {
       `Number NEW proposals starting at: ${nextNumber}`,
     ].join("\n\n");
 
-    const out = await think(CYCLE_SYSTEM, user, 8000);
+    const out = await think(CYCLE_SYSTEM, user, 8000, { priority: trigger === "schedule" ? "background" : "owner" });
 
     state.lastThought = String(out.thought || "").slice(0, 800);
     state.currentFocus = String(out.focus || state.currentFocus).slice(0, 200);
@@ -1480,7 +1405,7 @@ async function reactToMessages(msgs) {
       `Open tasks: ${JSON.stringify(state.tasks.filter((t) => t.status !== "done").map((t) => t.title))}`,
       `Recent log: ${JSON.stringify(state.log.slice(-6).map((l) => l.text))}`,
     ].join("\n\n");
-    const out = await think(REACT_SYSTEM, user, 2400);
+    const out = await think(REACT_SYSTEM, user, 2400, { priority: "owner" });
     for (const d of Array.isArray(out.decisions) ? out.decisions : []) {
       if (hooks.ownerDecision) await hooks.ownerDecision(d.id, d.action, d.note, "discord");
       else decideProposal(d.id, d.action, d.note, "discord");
@@ -1546,7 +1471,7 @@ function pickOpenTask() {
 }
 
 async function workTick() {
-  if (busy || !state.enabled) return;
+  if (busy || !state.enabled || !canSpend()) return;
   const t = pickOpenTask();
   if (!t) return;
   const day = etDayKey();
@@ -1577,8 +1502,11 @@ async function workTick() {
       `PENDING PROPOSALS (never re-file): ${JSON.stringify(pending)}`,
       `BRAIN Strategy.md (excerpt):\n${brainRead("Strategy.md").slice(0, 1200)}`,
       `BRAIN Playbook.md (excerpt):\n${brainRead("Playbook.md").slice(0, 800)}`,
+      `MINION REPORTS (latest, the gist IS the answer, use it directly): ${JSON.stringify(
+        (state.minionReports || []).slice(-3).map((m) => ({ minion: m.minion, task: m.task, file: m.file, gist: m.gist || "" }))
+      )}`,
     ].join("\n\n");
-    const out = await think(WORK_SYSTEM, user, 5000);
+    const out = await think(WORK_SYSTEM, user, 5000, { tier: "hands", hot: true });
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
@@ -1649,6 +1577,7 @@ export function startAgent() {
     } catch {
       // watchman is best effort, the schedule below still runs
     }
+    if (!canSpend()) return;
     if (CYCLE_MS > 0) {
       if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
         runCycle("schedule").catch(() => {});
@@ -1729,7 +1658,7 @@ export function addTask(title) {
   state.tasks.push(t);
   saveState();
   log("task", `queued: ${t.title}`);
-  pokeCycle(`a new task just landed in my queue: ${t.title}`);
+  nudgeWork();
   return t;
 }
 // staff agents (Herald, Steward) file through the same book so Regent reviews

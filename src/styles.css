@@ -1557,3 +1557,24 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
   .pb-head-right { width: 100%; }
 }
 @keyframes pbFlowV { 0% { top: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { top: calc(100% - 6px); opacity: 0; } }
+
+/* ---- Wallet: model spend against the daily budget ---- */
+.wallet { margin-top: 18px; }
+.wallet-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; }
+.wallet-cap { font-size: 16px; color: var(--mute); }
+.wallet-week { display: flex; align-items: flex-end; gap: 5px; height: 46px; }
+.wallet-week span { width: 12px; height: 100%; display: flex; align-items: flex-end; }
+.wallet-week i { display: block; width: 100%; border-radius: 3px; background: var(--pink); opacity: 0.55; }
+.wallet-week span:last-child i { opacity: 1; box-shadow: var(--glow-pink); }
+.wallet-bar { margin-top: 14px; }
+.wallet-bar.tight > i { background: #e8c77f; box-shadow: none; }
+.wallet-bar.out > i { background: #ff5a5a; box-shadow: none; }
+.wallet-state { margin-top: 10px; font-size: 13px; color: var(--mute); }
+.wallet-rows { margin-top: 16px; overflow-x: auto; }
+.wallet-row { display: grid; grid-template-columns: minmax(120px, 1.4fr) minmax(110px, 1.2fr) repeat(5, minmax(64px, 0.7fr)); gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-soft); font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--bone, #e9e7f0); min-width: 620px; }
+.wallet-row span:nth-child(n + 3) { text-align: right; }
+.wallet-head { color: var(--mute); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; border-top: 0; }
+.wallet-who { font-family: "Space Grotesk", sans-serif; font-size: 14px; color: var(--white); }
+.wallet-model { color: var(--mute); }
+.wallet-row .good { color: #35e08f; }
+.wallet-usd { color: var(--white); }

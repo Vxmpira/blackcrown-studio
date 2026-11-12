@@ -38,6 +38,7 @@ import {
   librarian as corvidLibrarian,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
+import { usageReport } from "./llm.mjs";
 import {
   startCeo,
   wireCeo,
@@ -2071,7 +2072,7 @@ const JOB_SYSTEM = `You are The Desk, BlackCrownVxJ LLC's automated reporting se
 async function runJob(job) {
   try {
     const data = await companyFeed("jobs");
-    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200);
+    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200, { tier: "hands", who: "jobs", priority: "owner" });
     const content = `**THE DESK // ${job.name.toUpperCase().slice(0, 60)}** · ${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}\n${text}`;
     const channelId = JOBS_CH[job.channel] || JOBS_CH.corvid;
     if (JOBS_BOT && channelId) {
@@ -2114,7 +2115,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 app.get("/api/jobs", (_req, res) => res.json({ jobs: loadJobs() }));
-app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary() }));
+app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary(), ...usageReport() }));
 app.post("/api/jobs/:id/run", async (req, res) => {
   const job = loadJobs().find((x) => x.id === req.params.id);
   if (!job) return res.status(404).json({ error: "no such job" });

@@ -16,11 +16,10 @@ import {
   brainSave,
   addTask,
   buildEmbeds,
-  recordSpend,
   agentState,
   spendSummary,
-  institutionBlock,
 } from "./agent.mjs";
+import { MODELS, callJSON, canSpend } from "./llm.mjs";
 import { staffStates } from "./staff.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +27,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CEO_NAME = "Regent";
 const STATE_PATH = path.join(__dirname, "studio-ceo.json");
 const VAULT = process.env.CEO_BRAIN_DIR || path.join(__dirname, "brain-ceo");
-const MODEL = process.env.CEO_MODEL || "claude-fable-5";
+const MODEL = (process.env.CEO_MODEL || MODELS.head).trim();
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const INITIATIVE_EVERY_H = Math.max(2, Number(process.env.CEO_CYCLE_EVERY_H || 6));
 
@@ -306,37 +305,14 @@ function parseModelJson(text) {
   throw new Error("agent returned no parseable JSON");
 }
 
-async function think(system, user, maxTokens = 1400) {
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  if (!r.ok) throw new Error(`Anthropic (${r.status})`);
-  const data = await r.json();
-  recordSpend("regent", MODEL, data.usage);
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/^```(json)?/i, "")
-    .replace(/```$/i, "")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
-  return parseModelJson(text);
+// Regent rules on what reaches the owner and edits live files, so every call
+// stays on the head model. Reviews, replies and repairs are owner priority and
+// run even when the day's budget for background work is spent.
+async function think(system, user, maxTokens = 1400, opts = {}) {
+  return callJSON(
+    { who: "regent", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority || "owner" },
+    parseModelJson
+  );
 }
 
 const IDENTITY = `You are ${CEO_NAME}, the chief executive agent of BlackCrownVxJ LLC. The owner is Vxmpira.N. Corvid, the SEO agent, files proposals with you; you review them against the Charter, veto what wastes the owner's time or money, take the rest to him on Discord, and once he green lights, you execute and confirm. You never execute without his word. You are direct, brief, and final. Never use em dashes or en dashes. He reads on his phone.`;
@@ -1180,7 +1156,7 @@ export async function runInitiative(trigger = "schedule") {
       )}`,
       `Current Agenda:\n${vaultRead("Agenda.md").slice(0, 900)}`,
     ].join("\n\n");
-    const out = await think(INITIATIVE_SYSTEM, user, 1400);
+    const out = await think(INITIATIVE_SYSTEM, user, 1400, { priority: "background" });
     if (out.agenda_md) {
       ensureVault();
       fs.writeFileSync(path.join(VAULT, "Agenda.md"), String(out.agenda_md).slice(0, 8000).replace(/\u2014|\u2013/g, ", "));
@@ -1217,7 +1193,7 @@ export function startCeo() {
   // decisions arrive routed through Corvid's reactor.
   setInterval(() => {
     if (!state.enabled || initiativeBusy) return;
-    if (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000) {
+    if (canSpend() && (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000)) {
       runInitiative("schedule").catch(() => {});
     }
   }, 60 * 1000);

@@ -7,11 +7,12 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, recordSpend, nightFactor, institutionBlock } from "./agent.mjs";
+import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, nightFactor } from "./agent.mjs";
+import { MODELS, callLLM, callJSON, canSpend } from "./llm.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const MODEL = process.env.STAFF_MODEL || "claude-haiku-5-5";
+const MODEL = (process.env.STAFF_MODEL || MODELS.minion).trim();
 const CYCLE_EVERY_H = Math.max(1, Number(process.env.STAFF_CYCLE_EVERY_H || 2));
 const POLL_SECONDS = Math.max(45, Number(process.env.STAFF_POLL_SECONDS || 75));
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
@@ -299,46 +300,17 @@ async function fetchNew(key) {
 // ---------------------------------------------------------------------------
 // anthropic
 // ---------------------------------------------------------------------------
-async function callModel(system, user, maxTokens) {
-  system = system + institutionBlock();
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j?.error?.message || `model call failed (${r.status})`);
-  recordSpend("staff", MODEL, j.usage);
-  return (j.content || []).map((c) => c.text || "").join("");
+// opts: { who, hot, priority }. who is the desk (bard, herald, steward) so the
+// spend meter shows each one on its own line.
+async function callModel(system, user, maxTokens, opts = {}) {
+  const r = await callLLM({ who: opts.who || "staff", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority });
+  return r.text;
 }
-async function think(system, user, maxTokens = 3200) {
-  const raw = await callModel(system, user, maxTokens);
-  try {
-    return parseModelJson(raw);
-  } catch (e) {
-    const second = await callModel(
-      system,
-      `${user}\n\nREMINDER: your whole reply must be ONLY the JSON object, starting with { and ending with }. No prose, no code fences.`,
-      maxTokens
-    );
-    try {
-      return parseModelJson(second);
-    } catch {
-      const head = String(raw).slice(0, 160).replace(/\n/g, " ");
-      throw new Error(`${e.message}. Output head: ${head}`);
-    }
-  }
+async function think(system, user, maxTokens = 3200, opts = {}) {
+  return callJSON(
+    { who: opts.who || "staff", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority },
+    parseModelJson
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +328,8 @@ async function runStaffMinion(key, minion, task, context) {
   const report = await callModel(
     sys,
     `Task from ${ROLES[key].name}: ${task}\n\nContext:\n${String(context || "").slice(0, 2500)}`,
-    9000
+    9000,
+    { who: `${key}-minions` }
   );
   state[key].minionSeq = (state[key].minionSeq || 0) + 1;
   const minionDir = minion.charAt(0).toUpperCase() + minion.slice(1);
@@ -419,7 +392,7 @@ async function runStaffCycle(key, trigger = "schedule") {
       .filter(Boolean)
       .join("\n\n");
 
-    const out = await think(`${role.system}\n\n${CYCLE_SCHEMA}`, user, 6000);
+    const out = await think(`${role.system}\n\n${CYCLE_SCHEMA}`, user, 6000, { who: key, priority: String(trigger).startsWith("schedule") ? "background" : "owner" });
     a.thought = String(out.thought || "").slice(0, 700);
     a.focus = String(out.focus || a.focus).slice(0, 180);
     if (Array.isArray(out.tasks)) {
@@ -559,7 +532,7 @@ async function staffWorkTick(key) {
     ]
       .filter(Boolean)
       .join("\n\n");
-    const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 3500);
+    const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 3500, { who: key, hot: true });
     if (out.thought) a.thought = String(out.thought).slice(0, 700);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
@@ -619,7 +592,8 @@ async function reactToMessages(key, msgs) {
     const out = await think(
       `${role.system}\n\n${REACT_SCHEMA}`,
       `Your current focus: ${state[key].focus}\nOpen tasks: ${JSON.stringify(state[key].tasks.filter((t) => t.status !== "done"))}\n\nNew messages:\n${text}`,
-      1200
+      1200,
+      { who: key, priority: "owner" }
     );
     if (out.reply) await sendTo(role.channel, String(out.reply).slice(0, 1800), { agent: key });
     for (const t of Array.isArray(out.tasks) ? out.tasks.slice(0, 2) : []) {
@@ -651,6 +625,7 @@ export function startStaff() {
         runStaffCycle(key, `event: ${why}`).catch(() => {});
         continue;
       }
+      if (!canSpend()) continue;
       if (!a.lastCycleAt || Date.now() - a.lastCycleAt >= CYCLE_EVERY_H * 3600000) {
         runStaffCycle(key, "schedule").catch(() => {});
         continue;
@@ -735,7 +710,7 @@ export async function heraldCopyPass(input) {
   const target = TARGET_CTA[input.target] ? input.target : "korvus";
   const sys = ROLES.herald.system + '\n\nOutput STRICT JSON only: {"caption":"...","hashtags":["","","",""]}. Caption rules: under 140 characters, hook first, one clear call to action pointing at ' + TARGET_CTA[target] + ', no emoji, no double quotes inside the caption, never an em dash. Exactly 4 hashtags, lowercase, no spaces: one broad, two niche futures or trading tags, one brand tag. Fold in at most one provided trend tag and only when it truly fits.';
   const user = "Finalize the caption and hashtags for a TikTok " + (input.format || "post") + " selling " + target + ".\nDRAFT CAPTION: " + (input.caption || "(none)") + "\nVISUAL OR SCRIPT:\n" + (Array.isArray(input.slides) ? input.slides.join("\n") : "").slice(0, 1200) + "\nTIKTOK TRENDS:\n" + String(input.trends || "none available").slice(0, 700);
-  const out = await think(sys, user, 500);
+  const out = await think(sys, user, 500, { who: "herald", priority: "owner" });
   if (out && out.caption) {
     log("herald", "copy", "finalized caption for a " + (input.format || "post") + " selling " + target);
     return out;
@@ -768,7 +743,7 @@ export async function staffLibrarian() {
         .map((x) => `### ${x.rel}\n${fs.readFileSync(x.fp, "utf8").slice(0, 1200)}`)
         .join("\n\n")
         .slice(0, 60000);
-      const digest = await callModel(STAFF_LIBRARIAN_SYSTEM, corpus, 2500);
+      const digest = await callModel(STAFF_LIBRARIAN_SYSTEM, corpus, 2500, { who: "librarian" });
       if (!digest || !digest.trim()) continue;
       const prev = vaultRead(key, "Minions-Digest.md");
       vaultWrite(key, "Minions-Digest.md", `${prev}\n## ${dayKey()} (${batch.length} notes condensed)\n${digest.trim()}\n`);

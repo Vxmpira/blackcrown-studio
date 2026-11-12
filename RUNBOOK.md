@@ -73,3 +73,53 @@ Render & export. When it finishes you get a Download MP4 link.
   `npm run deploy:fn -- --memory=2048`.
 - Put the admin behind a login on a public URL later if you want it off your
   machine. Until then, local is the simplest and safest.
+
+
+## Model spend: how the agents use tokens
+
+Every agent reaches the model through `llm.mjs`. Nothing else calls the API
+for agent work.
+
+**Tiers.** Three models, each with a job:
+
+| Tier | Default | Used for |
+| :-- | :-- | :-- |
+| head | `claude-fable-5-2` | Corvid's strategy cycles and replies to the owner; everything Regent does (reviews, repairs, replies) |
+| hands | `claude-sonnet-5-5` | Corvid's task steps and the scheduled report jobs |
+| minion | `claude-haiku-5-5` | Bard, Herald, Steward, every minion, the librarians, JSON repair |
+
+Regent reviews every proposal on the head model before the owner sees it, so
+work done on the hands model never ships unchecked.
+
+**Caching.** The request is ordered most stable first: the company
+constitution (Institution.md, identical for every agent, so they share one
+cached copy), then the role prompt, then the live data. Both stable layers use
+the 1 hour cache, and each read renews the hour. The old default 5 minute
+cache expired between task steps, so it was paid for and never read.
+
+**Budget.** `AGENT_DAILY_BUDGET_USD` (default 5). At 70 percent the task
+engine runs at half pace. At 100 percent background work (task steps,
+scheduled cycles, Regent's initiative) pauses until midnight ET. The owner's
+messages, proposal reviews and approved executions always run. Set it to 0 to
+turn the guard off.
+
+**.env knobs.**
+
+```
+MODEL_HEAD=claude-fable-5-2        # head tier for every agent
+MODEL_HANDS=claude-sonnet-5-5      # hands tier
+MINION_MODEL=claude-haiku-5-5      # minion tier
+AGENT_MODEL=                       # Corvid's head model only; leave unset to follow MODEL_HEAD
+AGENT_WORK_MODEL=                  # Corvid's task steps; set to the head model to undo the split
+CEO_MODEL=                         # Regent only
+STAFF_MODEL=                       # Bard, Herald, Steward
+AGENT_DAILY_BUDGET_USD=5
+```
+
+If `.env` still pins `AGENT_MODEL` or `CEO_MODEL` to `claude-fable-5`, remove
+those lines: that older model costs more per token and its cache reads cost
+five times as much.
+
+**Where to look.** The dashboard's "Model spend today" panel, or
+`GET /api/usage`: dollars per desk, calls, and the share of input read from
+cache. A desk that works all day should read most of its input from cache.

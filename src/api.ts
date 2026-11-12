@@ -777,3 +777,21 @@ export async function getIntelLive(): Promise<IntelLive | null> {
     return null;
   }
 }
+
+// ----- model spend ------------------------------------------------------------
+export type UsageAgent = { who: string; model: string; calls: number; input: number; cached: number; written: number; output: number; usd: number; cacheHitPct: number };
+export type UsageData = {
+  budget: { cap: number; spent: number; left: number | null; level: "off" | "ok" | "tight" | "out" };
+  models: { head: string; hands: string; minion: string };
+  days: { day: string; usd: number; agents: UsageAgent[] }[];
+};
+export async function getUsage(): Promise<UsageData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/usage`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.budget ? j : null;
+  } catch {
+    return null;
+  }
+}

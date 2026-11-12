@@ -1,4 +1,5 @@
 import React, { Suspense, useEffect, useState } from "react";
+import { Wallet } from "../components/Wallet";
 import {
   getAgent,
   getCeo,
@@ -338,6 +339,8 @@ export const Dashboard: React.FC = () => {
           <span className="pulse-v">{asks === null ? "..." : asks}</span>
         </div>
       </div>
+
+      <Wallet />
     </>
   );
 };
