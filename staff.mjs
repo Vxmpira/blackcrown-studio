@@ -710,7 +710,7 @@ export async function heraldCopyPass(input) {
   const target = TARGET_CTA[input.target] ? input.target : "korvus";
   const sys = ROLES.herald.system + '\n\nOutput STRICT JSON only: {"caption":"...","hashtags":["","","",""]}. Caption rules: under 140 characters, hook first, one clear call to action pointing at ' + TARGET_CTA[target] + ', no emoji, no double quotes inside the caption, never an em dash. Exactly 4 hashtags, lowercase, no spaces: one broad, two niche futures or trading tags, one brand tag. Fold in at most one provided trend tag and only when it truly fits.';
   const user = "Finalize the caption and hashtags for a TikTok " + (input.format || "post") + " selling " + target + ".\nDRAFT CAPTION: " + (input.caption || "(none)") + "\nVISUAL OR SCRIPT:\n" + (Array.isArray(input.slides) ? input.slides.join("\n") : "").slice(0, 1200) + "\nTIKTOK TRENDS:\n" + String(input.trends || "none available").slice(0, 700);
-  const out = await think(sys, user, 500, { who: "herald", priority: "owner" });
+  const out = await think(sys, user, 1200, { who: "herald", priority: "owner" });
   if (out && out.caption) {
     log("herald", "copy", "finalized caption for a " + (input.format || "post") + " selling " + target);
     return out;

@@ -291,7 +291,7 @@ export async function callJSON(o, parse) {
   try {
     return parse(raw);
   } catch (e) {
-    if (first.stop !== "max_tokens" && raw.length < 48000) {
+    if (raw && first.stop !== "max_tokens" && raw.length < 48000) {
       try {
         const fix = await callLLM({
           who: o.who,
@@ -307,11 +307,15 @@ export async function callJSON(o, parse) {
         // fall through to the full second ask
       }
     }
-    const second = await callLLM({ ...o, user: `${o.user}${REMINDER}` });
+    // an empty or cut-off reply usually means the token ceiling was too low
+    // for this model; the second ask gets double the room
+    const roomier = first.stop === "max_tokens" || !raw ? Math.min(16000, (o.maxTokens || 1400) * 2) : o.maxTokens;
+    const second = await callLLM({ ...o, maxTokens: roomier, user: `${o.user}${REMINDER}` });
     try {
       return parse(tidy(second.text));
     } catch {
-      throw new Error(`${e.message}. Output head: ${raw.slice(0, 140).replace(/\n/g, " ")}`);
+      const head = raw ? raw.slice(0, 140).replace(/\n/g, " ") : `(empty reply, stop reason ${first.stop || "unknown"}, ${first.usage.output_tokens || 0} output tokens, then ${second.stop || "unknown"})`;
+      throw new Error(`${e.message}. Output head: ${head}`);
     }
   }
 }

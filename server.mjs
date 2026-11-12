@@ -2780,6 +2780,9 @@ shutdown -h now
     if (/MaxSpotInstanceCount|VcpuLimitExceeded/i.test(msg)) {
       throw new Error("AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
     }
+    if (/service-linked role/i.test(msg)) {
+      throw new Error("AWS has never run a spot instance on this account, and this server is not allowed to create the one-time spot role. Fix once, as the account owner, in AWS CloudShell: aws iam create-service-linked-role --aws-service-name spot.amazonaws.com  Then retry the render");
+    }
     throw new Error(`could not launch a GPU worker: ${msg.slice(0, 180)}`);
   }
   const t0 = Date.now();
