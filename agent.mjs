@@ -49,9 +49,11 @@ const BLOOM_BRANDS = {
 };
 // hard daily ceiling on NEW paid video generations; resumes and reuses are free
 const BLOOM_DAILY_VIDEOS = Math.max(1, Number(process.env.BLOOM_DAILY_VIDEOS || 2));
-// clip length in seconds; Seedance accepts 4-30 and defaults to 5, which is
-// why every early clip came out 5s. Owner wants scroll-stopping length.
-const BLOOM_VIDEO_SECONDS = Math.min(40, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 32)));
+// clip length in seconds. Seedance accepts 4 to 30 and silently falls back
+// to 5 when a request is refused. The old default of 32 was over that limit,
+// so every request was refused, retried without a length, and came back 5s.
+// The forge adds a 2.5 second branded end card on top of this.
+const BLOOM_VIDEO_SECONDS = Math.min(30, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 15)));
 // keep this many credits in reserve; renders pause below it so the month
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
@@ -1304,7 +1306,8 @@ async function executeVideo(p) {
           j = await r.json();
         }
         if (r.status === 400) {
-          r = await start({ prompt });
+          // last resort keeps the length: a bare prompt would come back 5 seconds
+          r = await start({ prompt, duration: Math.min(10, BLOOM_VIDEO_SECONDS) });
           j = await r.json();
         }
         genId = j?.data?.id;
@@ -1341,10 +1344,10 @@ async function executeVideo(p) {
     }
     let finalUrl = url;
     let forgedNote = "";
-    if (Array.isArray(p.overlay) && p.overlay.length && hooks.forge) {
+    if (hooks.forge) {
       try {
         log("render", `#${p.number} baking brand text onto the footage`);
-        const forged = await hooks.forge({ src: url, lines: p.overlay, name: `clip-${p.number}-${Date.now() % 100000}` });
+        const forged = await hooks.forge({ src: url, lines: p.overlay, name: `clip-${p.number}-${Date.now() % 100000}`, target: p.target });
         if (forged) {
           finalUrl = forged;
           p.rendered = [forged, url];

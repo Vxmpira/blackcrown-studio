@@ -2589,7 +2589,14 @@ function forgeEscape(s) {
     .slice(0, 48)
     .trim();
 }
-async function forgeOverlay({ src, lines, name }) {
+const ENDCARDS = path.join(__dirname, "assets", "endcards");
+function endCardFor(target) {
+  const t = String(target || "").toLowerCase();
+  const k = ["korvus", "lodestone", "crown", "eclipse"].find((x) => t.includes(x)) || "brand";
+  const f = path.join(ENDCARDS, `${k}.png`);
+  return fs.existsSync(f) ? f : null;
+}
+async function forgeOverlay({ src, lines, name, target }) {
   // Text is typeset with libass (the bundled ffmpeg has no drawtext filter,
   // which is why early clips shipped raw). Two looks: "caption", the bold
   // lower-third line, and "word", the MONOLITH format: one letter-spaced
@@ -2614,7 +2621,8 @@ async function forgeOverlay({ src, lines, name }) {
     }))
     .filter((l) => l.text)
     .slice(0, monolith ? 14 : 3);
-  if (!safe.length) return null;
+  const card = endCardFor(target);
+  if (!safe.length && !card) return null;
   const clean = String(name).replace(/[^a-z0-9-]/gi, "").slice(0, 40) || `clip-${Date.now()}`;
   const srcFile = path.join(RENDERS_DIR, `${clean}-src.mp4`);
   const assFile = path.join(RENDERS_DIR, `${clean}.ass`);
@@ -2654,15 +2662,33 @@ async function forgeOverlay({ src, lines, name }) {
   const fontsDir = path.dirname(FORGE_FONT);
   const esc = (s) => s.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "");
   const grade = monolith ? ["eq=saturation=0.22:contrast=1.1:brightness=-0.03", "colorbalance=bs=0.10:bm=0.05", "vignette=PI/4.5"] : [];
-  const filters = [...grade, `ass='${esc(assFile)}':fontsdir='${esc(fontsDir)}'`].join(",");
+  const textFx = safe.length ? [`ass='${esc(assFile)}':fontsdir='${esc(fontsDir)}'`] : [];
   const { default: ffmpegPath } = await import("ffmpeg-static");
-  const { execFileSync } = await import("child_process");
+  const { execFileSync, spawnSync } = await import("child_process");
+  // the edit: footage at 720x1280, graded and captioned, then a crossfade into
+  // the product's branded end card, with the sound faded out under it
+  const probe = String(spawnSync(ffmpegPath, ["-hide_banner", "-i", srcFile], { encoding: "utf8" }).stderr || "");
+  const dm = probe.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+  const dur = dm ? +dm[1] * 3600 + +dm[2] * 60 + +dm[3] : 0;
+  const hasAudio = /Stream #\S+.*Audio:/.test(probe);
+  const fit = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,format=yuv420p";
+  let args;
+  if (card && dur > 2) {
+    const CARD = 2.5, XF = 0.5, off = Math.max(0.5, dur - XF).toFixed(2);
+    const fc = [
+      `[0:v]${[fit, ...grade, ...textFx].join(",")}[main]`,
+      `[1:v]scale=720:1280,setsar=1,fps=24,format=yuv420p[card]`,
+      `[main][card]xfade=transition=fade:duration=${XF}:offset=${off}[v]`,
+    ];
+    if (hasAudio) fc.push(`[0:a]afade=t=out:st=${Math.max(0, dur - 1.2).toFixed(2)}:d=1.2,apad=pad_dur=${CARD}[a]`);
+    args = ["-y", "-i", srcFile, "-loop", "1", "-t", String(CARD + XF), "-i", card, "-filter_complex", fc.join(";"), "-map", "[v]",
+      ...(hasAudio ? ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"] : []),
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", outFile];
+  } else {
+    args = ["-y", "-i", srcFile, "-vf", [...grade, ...textFx].join(",") || "null", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", outFile];
+  }
   try {
-    execFileSync(
-      ffmpegPath,
-      ["-y", "-i", srcFile, "-vf", filters, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", outFile],
-      { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] }
-    );
+    execFileSync(ffmpegPath, args, { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] });
   } catch (e) {
     const tail = String(e.stderr || e.message || e).split("\n").filter(Boolean).slice(-3).join(" | ");
     throw new Error(`forge ffmpeg failed: ${tail.slice(0, 300)}`);
