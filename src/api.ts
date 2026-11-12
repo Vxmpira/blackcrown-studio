@@ -795,3 +795,29 @@ export async function getUsage(): Promise<UsageData | null> {
     return null;
   }
 }
+
+// ----- futures strategy lab ----------------------------------------------------
+export type LabStats = { trades: number; wins: number; win_rate: number | null; pnl: number; expectancy: number | null; profit_factor: number | null };
+export type LabStrategy = LabStats & {
+  id: string; gen: number; parent: string | null; family: string; status: "champion" | "active" | "retired";
+  created_utc: string; retired_utc: string | null; why: string; retired_why: string | null; rules: string;
+  open: { side: string; entry_px: number; target_px: number; stop_px: number; entry_utc: string; note: string } | null;
+  promoted_utc?: string; since_crowned?: LabStats;
+};
+export type LabMarket = { sym: string; name: string; price: number | null; price_utc: string | null; champion: string | null; created: number; running: number; retired: number; all: LabStats; strategies: LabStrategy[] };
+export type LabData = {
+  configured: boolean; reachable?: boolean; error?: string; enabled?: boolean; started?: boolean;
+  last_tick?: { t?: string; phase?: string; feed_ok?: boolean | null; feed?: string };
+  min_eval?: number; min_champion?: number; population?: number; costs?: { commission_rt: number; slippage_ticks: number };
+  markets?: LabMarket[]; log?: { t: string; sym: string; kind: string; text: string }[];
+  trades?: { strat: string; sym: string; side: string; entry_utc: string; entry_px: number; exit_utc: string | null; exit_px: number | null; reason: string | null; pnl: number | null; status: string; note: string }[];
+};
+export async function getLab(): Promise<LabData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/intel/lab`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}

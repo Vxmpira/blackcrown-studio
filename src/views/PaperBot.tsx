@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { FuturesLab } from "../components/FuturesLab";
 import {
   getIntel,
   getIntelLive,
@@ -552,6 +553,8 @@ export const PaperBot: React.FC = () => {
               </div>
             </>
           )}
+
+          <FuturesLab />
 
           {/* ---------------- path to live ---------------- */}
           <section className="pb-panel pb-path" style={{ marginTop: 18 }}>

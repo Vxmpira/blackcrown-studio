@@ -1802,6 +1802,28 @@ app.get("/api/intel/live", async (_req, res) => {
   }
 });
 
+// The futures strategy lab on the Korvus box: every strategy the bot has
+// created per market, why, and how each one is doing. Same key as the status.
+let labCache = { at: 0, data: null };
+app.get("/api/intel/lab", async (_req, res) => {
+  if (!INTEL_KEY) return res.json({ configured: false });
+  if (labCache.data && Date.now() - labCache.at < 15000) return res.json(labCache.data);
+  try {
+    const r = await fetch(INTEL_STATUS_URL.replace(/intel-status\/?$/, "lab"), {
+      headers: { "X-Intel-Key": INTEL_KEY },
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json().catch(() => ({}));
+    const data = r.ok
+      ? { configured: true, reachable: true, ...j }
+      : { configured: true, reachable: false, error: r.status === 404 ? "the lab is not deployed on Korvus yet" : r.status === 403 ? "key rejected by Korvus" : `HTTP ${r.status}` };
+    labCache = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.json({ configured: true, reachable: false, error: String(e?.message || e) });
+  }
+});
+
 // ----- staff: Herald (sales and ads) and Steward (project manager) ----------
 app.get("/api/staff", (_req, res) => res.json({ agents: staffStates() }));
 app.post("/api/staff/:key/cycle", async (req, res) => {
