@@ -1,51 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FuturesLab } from "../components/FuturesLab";
+import { FuturesBook, labState } from "../components/FuturesLab";
+import { StockBook } from "../components/StockBook";
+import { Empty, Seg, Spark, ageS, ago, et, mins, n0, pct, rmult, tone, usd } from "../components/botui";
 import {
   getIntel,
   getIntelLive,
+  getLab,
   type IntelData,
   type IntelLive,
-  type IntelTrade,
   type IntelEvent,
+  type LabData,
 } from "../api";
-
-/* ------------------------------------------------------------------ helpers */
-const ageS = (iso?: string | null, now = Date.now()) =>
-  iso ? Math.max(0, (now - new Date(iso).getTime()) / 1000) : Infinity;
-const ago = (iso?: string | null, now = Date.now()) => {
-  const s = ageS(iso, now);
-  if (!isFinite(s)) return "never";
-  if (s < 60) return `${Math.round(s)}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-};
-const et = (iso?: string | null, withDate = true) => {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString("en-US", {
-      timeZone: "America/New_York",
-      ...(withDate ? { month: "short", day: "numeric" } : {}),
-      hour: "numeric",
-      minute: "2-digit",
-      ...(withDate ? {} : { second: "2-digit" }),
-    });
-  } catch {
-    return iso;
-  }
-};
-const pct = (v: number | null | undefined, signed = true) =>
-  v === null || v === undefined ? "n/a" : `${signed && v > 0 ? "+" : ""}${v.toFixed(2)}%`;
-const usd = (v: number | null | undefined) =>
-  v === null || v === undefined
-    ? "n/a"
-    : `${v < 0 ? "-" : v > 0 ? "+" : ""}$${Math.abs(v).toLocaleString("en-US", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })}`;
-const tone = (v: number | null | undefined) =>
-  v === null || v === undefined || v === 0 ? "" : v > 0 ? "pos" : "neg";
-const n0 = (v: any) => (typeof v === "number" ? v.toLocaleString("en-US") : "0");
 
 type Health = "ok" | "warn" | "bad" | "idle";
 
@@ -100,69 +65,6 @@ const Pipeline: React.FC<{ nodes: Node[]; hits: Record<string, number>; now: num
   </div>
 );
 
-/* ------------------------------------------------------------------ equity */
-const Equity: React.FC<{ pts: { t: string; v: number; sym: string }[] }> = ({ pts }) => {
-  if (pts.length < 2)
-    return <div className="bl-empty">The curve draws itself after the first two closed trades.</div>;
-  const W = 640, H = 150, P = 8;
-  const vals = [0, ...pts.map((p) => p.v)];
-  const lo = Math.min(...vals), hi = Math.max(...vals);
-  const span = hi - lo || 1;
-  const x = (i: number) => P + (i / (vals.length - 1)) * (W - 2 * P);
-  const y = (v: number) => H - P - ((v - lo) / span) * (H - 2 * P);
-  const line = vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const last = vals[vals.length - 1];
-  return (
-    <svg className="pb-equity" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="pbEq" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor={last >= 0 ? "#35e08f" : "#ff5c7a"} stopOpacity="0.35" />
-          <stop offset="1" stopColor={last >= 0 ? "#35e08f" : "#ff5c7a"} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <line x1={P} x2={W - P} y1={y(0)} y2={y(0)} className="pb-eq-zero" />
-      <path d={`${line} L${x(vals.length - 1)},${H - P} L${x(0)},${H - P} Z`} fill="url(#pbEq)" />
-      <path d={line} className={`pb-eq-line ${last >= 0 ? "pos" : "neg"}`} />
-      <circle cx={x(vals.length - 1)} cy={y(last)} r="3.5" className={`pb-eq-dot ${last >= 0 ? "pos" : "neg"}`} />
-    </svg>
-  );
-};
-
-/* ------------------------------------------------------------------ rows */
-// a trade taken under an earlier rule version is marked, because the
-// scoreboard above only counts the current version
-const TradeRow: React.FC<{ t: IntelTrade; current?: string }> = ({ t, current }) => (
-  <div className="pb-row">
-    <span className="pb-row-t">{et(t.entry_utc)}</span>
-    <span className="pb-sym">{t.symbol}</span>
-    <span className="pb-row-m">
-      {current && t.strategy && t.strategy !== current ? (
-        <>
-          <span className="pb-tag retired" title={`Taken under ${t.strategy}. Not counted on the ${current} scoreboard.`}>
-            {t.strategy.split("-")[0]} rules
-          </span>{" "}
-        </>
-      ) : null}
-      <span className={`pb-tag side-${t.side || "long"}`}>{t.side === "short" ? "short" : "long"}</span>{" "}
-      {t.qty} @ ${t.entry_px.toFixed(2)}
-      {t.status === "closed" ? (
-        <>
-          {" "}
-          &rarr; ${t.exit_px?.toFixed(2)} <span className={`pb-tag ${t.exit_reason}`}>{t.exit_reason}</span>
-        </>
-      ) : (
-        <span className="pb-dim">
-          {" "}
-          · target ${t.target_px?.toFixed(2)} · stop ${t.stop_px?.toFixed(2)}
-        </span>
-      )}
-    </span>
-    <span className={`pb-row-v ${tone(t.pnl)}`}>
-      {t.status === "closed" ? `${usd(t.pnl)} (${pct(t.pnl_pct)})` : <span className="pb-tag open">open</span>}
-    </span>
-  </div>
-);
-
 const STAGE_LABEL: Record<string, string> = {
   universe: "SCREEN",
   edgar: "EDGAR",
@@ -180,8 +82,16 @@ const STAGE_LABEL: Record<string, string> = {
 export const PaperBot: React.FC = () => {
   const [data, setData] = useState<IntelData | null>(null);
   const [live, setLive] = useState<IntelLive | null>(null);
+  const [lab, setLab] = useState<LabData | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [view, setViewRaw] = useState<string>(() => {
+    try { return window.localStorage.getItem("pb.view") || "overview"; } catch { return "overview"; }
+  });
+  const setView = (v: string) => {
+    setViewRaw(v);
+    try { window.localStorage.setItem("pb.view", v); } catch {}
+  };
   const hits = useRef<Record<string, number>>({});
   const seen = useRef<Set<string>>(new Set());
 
@@ -200,12 +110,15 @@ export const PaperBot: React.FC = () => {
           }
         }
       });
+    const loadLab = () => getLab().then(setLab);
     loadData();
     loadLive();
+    loadLab();
     const a = setInterval(loadData, 60_000);
     const b = setInterval(loadLive, 5_000);
     const c = setInterval(() => setNow(Date.now()), 1_000);
-    return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
+    const d = setInterval(loadLab, 30_000);
+    return () => { clearInterval(a); clearInterval(b); clearInterval(c); clearInterval(d); };
   }, []);
 
   const st = live?.stages || {};
@@ -357,8 +270,30 @@ export const PaperBot: React.FC = () => {
   const allPass = gatesPassed === gates.length;
 
   const events: IntelEvent[] = (live?.events || []).slice().reverse().slice(0, 40);
-  const cats = Object.entries(sb?.by_catalyst ?? {}).sort((a, b) => b[1].trades - a[1].trades);
-  const sides = (["long", "short"] as const).map((k) => [k, sb?.by_side?.[k] ?? { trades: 0, wins: 0, pnl: 0 }] as const);
+
+  /* --------------------------- the two books, in one line each */
+  const bot = st.bot || {};
+  const watchN = Array.isArray(bot.watch) ? bot.watch.filter((w: any) => w.state === "confirming" || w.state === "waiting").length : 0;
+  const markets = lab?.markets || [];
+  const fut = useMemo(() => {
+    const trades = markets.reduce((a, m) => a + (m.all?.trades || 0), 0);
+    const wins = markets.reduce((a, m) => a + (m.all?.wins || 0), 0);
+    const pnl = markets.reduce((a, m) => a + (m.all?.pnl || 0), 0);
+    const holds = markets.filter((m) => m.all?.avg_hold_min != null && m.all.trades);
+    const hold = holds.length ? holds.reduce((a, m) => a + (m.all.avg_hold_min as number) * m.all.trades, 0) / holds.reduce((a, m) => a + m.all.trades, 0) : null;
+    const steps = markets.flatMap((m) => (m.equity || []).map((p, i, arr) => ({ t: p.t, d: p.v - (i ? arr[i - 1].v : 0) }))).sort((a, b) => a.t.localeCompare(b.t));
+    let cum = 0;
+    return { trades, wins, pnl, hold, open: markets.reduce((a, m) => a + (m.open || []).length, 0), curve: steps.map((x) => (cum += x.d)) };
+  }, [markets]);
+  const ls = labState(lab);
+  const stockPhase = !running ? "crawler offline" : bot.session_open ? (bot.in_window ? "in an entry window" : "managing exits only") : "market closed";
+
+  const VIEWS = [
+    { id: "overview", label: "Overview" },
+    { id: "stocks", label: "Company stock", note: sb ? `${sb.closed_trades} trades` : undefined },
+    { id: "futures", label: "Index futures", note: markets.length ? `${fut.trades} trades` : undefined },
+    { id: "crawler", label: "Crawler", note: running ? "live" : "offline" },
+  ];
 
   /* --------------------------- render */
   return (
@@ -368,8 +303,9 @@ export const PaperBot: React.FC = () => {
           <span className="eyebrow">Paper Bot</span>
           <h1>Korvus Intel</h1>
           <p>
-            The crawler reads SEC filings from stocks near $100 the moment they land, scores each one,
-            and the bot trades the catalysts on paper. No broker, no real money, until it earns it.
+            Two paper books, one standard. Company stock is traded on the filings the crawler reads: a scalp when the
+            filing is minutes old, a swing inside the day otherwise. Index futures are swing trades inside the day, never scalps.
+            No broker, no real money, until it earns it.
           </p>
         </div>
         <div className="pb-head-right">
@@ -385,223 +321,219 @@ export const PaperBot: React.FC = () => {
         <div className="soon-panel">Loading the scoreboard...</div>
       ) : (
         <>
-          {/* ---------------- pipeline ---------------- */}
-          <section className="pb-panel pb-hero">
-            <div className="pb-panel-h">
-              <span>The crawler, live</span>
-              <span className="pb-dim">
-                {running ? `heartbeat ${Math.round(live?.heartbeat_age_s || 0)}s ago` : "status updates every 5s"}
-              </span>
-            </div>
-            <Pipeline nodes={nodes} hits={hits.current} now={now} live={running} />
-          </section>
+          <Seg value={view} onChange={setView} options={VIEWS} />
 
-          <div className="pb-grid-2">
-            {/* ---------------- activity ---------------- */}
-            <section className="pb-panel">
-              <div className="pb-panel-h">
-                <span>Activity</span>
-                <span className="pb-dim">{events.length ? `${events.length} latest` : ""}</span>
+          {view === "overview" ? (
+            <div className="bk">
+              <div className="bk-books">
+                <button className="bk-book" onClick={() => setView("stocks")}>
+                  <div className="bk-book-top">
+                    <span className="bk-book-k">Company stock</span>
+                    <span className="pb-tag bk-pb">{sb?.strategy || rules?.strategy || "no rules yet"}</span>
+                  </div>
+                  <h3>Catalyst bot</h3>
+                  <p>Scalps a filing the crawler just read. Swings the rest inside the day. Flat by the close.</p>
+                  <div className="bk-book-main">
+                    <div>
+                      <strong className={tone(sb?.paper_pnl)}>{usd(sb?.paper_pnl ?? 0)}</strong>
+                      <span>paper P&amp;L under these rules</span>
+                    </div>
+                    <Spark pts={(data?.equity || []).map((p) => p.v)} />
+                  </div>
+                  <div className="bk-book-stats">
+                    <div><b>{sb?.closed_trades ?? 0}</b><span>closed trades</span></div>
+                    <div><b>{sb?.win_rate_pct != null ? `${sb.win_rate_pct}%` : "n/a"}</b><span>winners</span></div>
+                    <div><b className={tone(sb?.expectancy_r ?? sb?.expectancy_pct)}>{sb?.expectancy_r != null ? rmult(sb.expectancy_r) : pct(sb?.expectancy_pct)}</b><span>per trade</span></div>
+                    <div><b>{mins(sb?.avg_hold_min)}</b><span>average hold</span></div>
+                  </div>
+                  <div className="bk-book-foot">
+                    <i className={`pb-dot ${running ? "ok" : "bad"}`} />
+                    {stockPhase} · {n0(bot.open_positions ?? sb?.open_trades ?? 0)} open · {watchN} on the radar
+                    {data?.retired?.length ? ` · ${data.retired.reduce((a, r) => a + r.trades, 0)} earlier trades under retired rules` : ""}
+                  </div>
+                </button>
+
+                <button className="bk-book" onClick={() => setView("futures")}>
+                  <div className="bk-book-top">
+                    <span className="bk-book-k">Index futures</span>
+                    <span className="pb-tag bk-pb">{lab?.rules || "first-generation rules"}</span>
+                  </div>
+                  <h3>Strategy lab</h3>
+                  <p>MNQ and MES. The lab invents rule sets, keeps the ones that pay and retires the rest. Intraday swings only.</p>
+                  <div className="bk-book-main">
+                    <div>
+                      <strong className={tone(fut.pnl)}>{usd(fut.pnl)}</strong>
+                      <span>paper P&amp;L, every strategy, after costs</span>
+                    </div>
+                    <Spark pts={fut.curve} />
+                  </div>
+                  <div className="bk-book-stats">
+                    <div><b>{fut.trades}</b><span>closed trades</span></div>
+                    <div><b>{fut.trades ? `${Math.round((fut.wins / fut.trades) * 100)}%` : "n/a"}</b><span>winners</span></div>
+                    <div><b className={tone(fut.pnl)}>{fut.trades ? usd(fut.pnl / fut.trades) : "n/a"}</b><span>per trade</span></div>
+                    <div><b>{mins(fut.hold)}</b><span>average hold</span></div>
+                  </div>
+                  <div className="bk-book-foot">
+                    <i className={`pb-dot ${ls.ok ? "ok" : "warn"}`} />
+                    {markets.length
+                      ? markets.map((m) => `${m.sym} ${m.champion ? `champion ${m.champion}` : "no champion yet"}`).join(" · ") + ` · ${fut.open} open`
+                      : ls.text}
+                  </div>
+                </button>
               </div>
-              {events.length ? (
-                <div className="pb-feed">
-                  {events.map((e) => (
-                    <div className={`pb-ev ${e.level}`} key={e.t + e.msg}>
-                      <span className="pb-ev-t">{et(e.t, false)}</span>
-                      <span className={`pb-ev-s s-${e.stage}`}>{STAGE_LABEL[e.stage] || e.stage.toUpperCase()}</span>
-                      <span className="pb-ev-m">{e.msg}</span>
+
+              <section className="pb-panel">
+                <div className="pb-panel-h"><span>How each book trades</span><span className="pb-dim">the house style</span></div>
+                <div className="bk-style">
+                  <div>
+                    <em>Company stock · scalp</em>
+                    <p>{rules?.lines?.find((l) => /scalp/i.test(l.k))?.v || "Allowed only on company stock, on a high-impact filing the crawler read minutes ago. In and out inside 45 minutes."}</p>
+                  </div>
+                  <div>
+                    <em>Company stock · day swing</em>
+                    <p>{rules?.lines?.find((l) => /swing/i.test(l.k))?.v || "The main book. Enters after the opening range has formed, sizes the stop to the stock's own range, and is flat before the close."}</p>
+                  </div>
+                  <div>
+                    <em>Index futures · swing only</em>
+                    <p>
+                      {lab?.style
+                        ? `No scalping. Targets and stops are measured in ${lab.style.unit}, holds run from ${mins(lab.style.min_hold_cap_min)} up to six hours, each strategy takes at most ${lab.style.max_trades_day} trades a day, nothing new after ${lab.style.last_entry_et} ET and always flat by ${lab.style.flat_et} ET.`
+                        : "No scalping. Every strategy is built to hold for an hour or more and is always flat before the 5 PM ET maintenance hour."}
+                    </p>
+                  </div>
+                </div>
+              </section>
+
+              {/* ---------------- path to live ---------------- */}
+              <section className="pb-panel pb-path">
+                <div className="pb-panel-h">
+                  <span>Path to real money · company stock book</span>
+                  <span className={allPass ? "pb-pass" : "pb-dim"}>{gatesPassed}/{gates.length} gates passed</span>
+                </div>
+                <div className="pb-steps">
+                  {[
+                    ["Paper", "Simulated fills on live data. Rules frozen while the sample builds.", true],
+                    ["Broker paper", "Same rules routed to a broker's paper account for about 4 weeks, to compare real order handling against our fills.", false],
+                    ["Live pilot", "Real money, tiny size: one small position at a time, a hard daily loss stop, a kill switch, and your approval on each order.", false],
+                    ["Scale", "Size goes up in steps only while live results keep matching paper.", false],
+                  ].map(([t, d, cur], i) => (
+                    <div className={`pb-step${cur ? " cur" : ""}`} key={String(t)}>
+                      <span className="pb-step-n">{i + 1}</span>
+                      <div><b>{t}</b>{cur ? <em>you are here</em> : null}<p>{d}</p></div>
                     </div>
                   ))}
                 </div>
-              ) : (
-                <div className="bl-empty">
-                  {live?.configured ? "No activity reported yet." : "Connect the live link to watch the crawler work in real time."}
+                <div className="pb-gates">
+                  {gates.map((g) => (
+                    <div className={`pb-gate${g.ok ? " ok" : ""}`} key={g.label}>
+                      <div className="pb-gate-top"><span>{g.ok ? "✓" : "○"} {g.label}</span><b>{g.val}</b></div>
+                      <span className="pb-bar"><i style={{ width: `${g.prog * 100}%` }} /></span>
+                      <em>{g.note}</em>
+                    </div>
+                  ))}
                 </div>
-              )}
-            </section>
-
-            {/* ---------------- health ---------------- */}
-            <section className="pb-panel">
-              <div className="pb-panel-h">
-                <span>Health checks</span>
-                <span className="pb-dim">
-                  {[...nodes.map((x) => x.health), ...checks.map((c) => c.h)].filter((h) => h === "ok").length}/
-                  {[...nodes.map((x) => x.health), ...checks.map((c) => c.h)].filter((h) => h !== "idle").length} passing
-                </span>
-              </div>
-              <div className="pb-checks">
-                {nodes.map((n) => (
-                  <div className="pb-check" key={"n" + n.key}>
-                    <span className={`pb-dot ${n.health}`} />
-                    <span className="pb-check-l">{n.title}</span>
-                    <span className="pb-check-n">{n.detail}</span>
-                  </div>
-                ))}
-                {checks.map((c) => (
-                  <div className="pb-check" key={c.label}>
-                    <span className={`pb-dot ${c.h}`} />
-                    <span className="pb-check-l">{c.label}</span>
-                    <span className="pb-check-n">{c.note}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          {!data?.configured ? (
-            <div className="notice" style={{ marginTop: 18 }}>
-              <div className="notice-h">Waiting for intel/ to arrive on this box</div>
-              <p>
-                Looking in <code>{data?.dir}</code>. It appears after the next brain sync. If the brain lives
-                elsewhere, set INTEL_DIR in .env.
-              </p>
+                <p className="pb-fine">
+                  Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh
+                  scoreboard. The futures lab earns its own path the same way: a champion has to hold up after it is crowned.
+                  Passing the gates is evidence, not a guarantee. Markets change, and paper fills are kinder than real
+                  ones. Paper results are simulated and are not a promise of returns.
+                </p>
+              </section>
             </div>
-          ) : (
-            <>
-              {/* ---------------- scoreboard ---------------- */}
-              <section className="pb-panel" style={{ marginTop: 18 }}>
+          ) : null}
+
+          {view === "stocks" ? (
+            !data?.configured ? (
+              <div className="notice" style={{ marginTop: 18 }}>
+                <div className="notice-h">Waiting for intel/ to arrive on this box</div>
+                <p>
+                  Looking in <code>{data?.dir}</code>. It appears after the next brain sync. If the brain lives
+                  elsewhere, set INTEL_DIR in .env.
+                </p>
+              </div>
+            ) : <StockBook data={data} live={live} />
+          ) : null}
+
+          {view === "futures" ? <FuturesBook d={lab} /> : null}
+
+          {view === "crawler" ? (
+            <div className="bk">
+              <section className="pb-panel pb-hero">
                 <div className="pb-panel-h">
-                  <span>Scoreboard · {sb?.strategy || rules?.strategy}</span>
-                  <span className="pb-dim">data as of {et(data.board?.data_asof_utc) || "n/a"} ET</span>
+                  <span>The crawler, live</span>
+                  <span className="pb-dim">
+                    {running ? `heartbeat ${Math.round(live?.heartbeat_age_s || 0)}s ago` : "status updates every 5s"}
+                  </span>
                 </div>
-                {sb && !sb.sample_ok ? (
-                  <div className="pb-sample">
-                    <b>{sb.closed_trades} of {minSample}</b> trades before the win rate means anything.
-                    <span className="pb-bar"><i style={{ width: `${Math.min(100, (sb.closed_trades / minSample) * 100)}%` }} /></span>
-                  </div>
-                ) : null}
-                {data.retired?.length ? (
-                  <div className="pb-retired">
-                    <b>Not counted above:</b>{" "}
-                    {data.retired.map((r, i) => (
-                      <span key={r.strategy}>
-                        {i ? "; " : ""}
-                        {r.trades} closed trade{r.trades === 1 ? "" : "s"} under the retired <i>{r.strategy}</i> rules ({r.wins}W, {r.losses}L,{" "}
-                        <span className={tone(r.pnl)}>{usd(r.pnl)}</span>)
-                      </span>
-                    ))}
-                    . A rule change starts a fresh scoreboard so results from different rules are never mixed. Those trades stay on
-                    the record below, marked with their rule version.
-                  </div>
-                ) : null}
-                <div className="pb-stats">
-                  <div><span>Win rate</span><b>{sb?.win_rate_pct ?? "n/a"}{sb?.win_rate_pct != null ? "%" : ""}</b><em>{sb ? `${sb.wins}W · ${sb.losses}L` : ""}</em></div>
-                  <div><span>Paper P&amp;L</span><b className={tone(sb?.paper_pnl)}>{usd(sb?.paper_pnl ?? 0)}</b><em>simulated</em></div>
-                  <div><span>Expectancy</span><b className={tone(sb?.expectancy_pct)}>{pct(sb?.expectancy_pct)}</b><em>per trade</em></div>
-                  <div><span>Profit factor</span><b>{sb?.profit_factor ?? "n/a"}</b><em>wins ÷ losses</em></div>
-                  <div><span>Max drawdown</span><b>{sb?.max_drawdown_usd != null ? usd(-sb.max_drawdown_usd) : "n/a"}</b><em>{sb?.max_drawdown_pct != null ? `${sb.max_drawdown_pct}% of capital` : ""}</em></div>
-                  <div><span>Avg win / loss</span><b>{pct(sb?.avg_win_pct)}</b><em>{pct(sb?.avg_loss_pct)}</em></div>
-                </div>
-                <Equity pts={data.equity || []} />
+                <Pipeline nodes={nodes} hits={hits.current} now={now} live={running} />
               </section>
 
-              <div className="pb-grid-2">
-                <section className="pb-panel">
-                  <div className="pb-panel-h"><span>Open positions</span><span className="pb-dim">max {rules?.max_open ?? 5}</span></div>
-                  {data.open?.length ? data.open.map((t) => <TradeRow key={t.id} t={t} current={sb?.strategy} />) : <div className="bl-empty">No open paper positions.</div>}
-                </section>
+              <div className="bk-grid">
                 <section className="pb-panel">
                   <div className="pb-panel-h">
-                    <span>Long vs short</span>
-                    <span className="pb-dim">{rules?.allow_short === false ? "shorts switched off" : "bullish reads go long, bearish go short"}{data.retired?.length ? `, ${sb?.strategy} trades only` : ""}</span>
+                    <span>Activity</span>
+                    <span className="pb-dim">{events.length ? `${events.length} latest` : ""}</span>
                   </div>
-                  <div className="pb-sides">
-                    {sides.map(([k, v]) => (
-                      <div className={`pb-side ${k}`} key={k}>
-                        <span className={`pb-tag side-${k}`}>{k}</span>
-                        <b>{v.trades ? `${Math.round((v.wins / v.trades) * 100)}%` : "n/a"}</b>
-                        <em>{v.wins}/{v.trades} won</em>
-                        <em className={tone(v.pnl)}>{usd(v.pnl)}</em>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="pb-panel-h" style={{ marginTop: 16 }}><span>Win rate by catalyst</span></div>
-                  {cats.length ? (
-                    <div className="bl">
-                      {cats.map(([c, v]) => (
-                        <div className="bl-row" key={c}>
-                          <span className="bl-k">{c.replace(/_/g, " ")}</span>
-                          <span className="bl-track"><i style={{ width: `${v.trades ? (v.wins / v.trades) * 100 : 0}%` }} /></span>
-                          <span className="bl-n">{v.wins}/{v.trades}</span>
+                  {events.length ? (
+                    <div className="pb-feed">
+                      {events.map((e) => (
+                        <div className={`pb-ev ${e.level}`} key={e.t + e.msg}>
+                          <span className="pb-ev-t">{et(e.t, false)}</span>
+                          <span className={`pb-ev-s s-${e.stage}`}>{STAGE_LABEL[e.stage] || e.stage.toUpperCase()}</span>
+                          <span className="pb-ev-m" title={e.msg}>{e.msg}</span>
                         </div>
                       ))}
                     </div>
-                  ) : <div className="bl-empty">No closed trades yet.</div>}
+                  ) : (
+                    <Empty>{live?.configured ? "No activity reported yet." : "Connect the live link to watch the crawler work in real time."}</Empty>
+                  )}
+                </section>
+
+                <section className="pb-panel">
+                  <div className="pb-panel-h">
+                    <span>Health checks</span>
+                    <span className="pb-dim">
+                      {[...nodes.map((x) => x.health), ...checks.map((c) => c.h)].filter((h) => h === "ok").length}/
+                      {[...nodes.map((x) => x.health), ...checks.map((c) => c.h)].filter((h) => h !== "idle").length} passing
+                    </span>
+                  </div>
+                  <div className="pb-checks">
+                    {nodes.map((n) => (
+                      <div className="pb-check" key={"n" + n.key}>
+                        <span className={`pb-dot ${n.health}`} />
+                        <span className="pb-check-l">{n.title}</span>
+                        <span className="pb-check-n">{n.detail}</span>
+                      </div>
+                    ))}
+                    {checks.map((c) => (
+                      <div className="pb-check" key={c.label}>
+                        <span className={`pb-dot ${c.h}`} />
+                        <span className="pb-check-l">{c.label}</span>
+                        <span className="pb-check-n">{c.note}</span>
+                      </div>
+                    ))}
+                  </div>
                 </section>
               </div>
 
-              <div className="pb-grid-2">
-                <section className="pb-panel">
-                  <div className="pb-panel-h"><span>Recent paper trades</span></div>
-                  {data.recent?.length ? data.recent.map((t) => <TradeRow key={t.id} t={t} current={sb?.strategy} />)
-                    : <div className="bl-empty">No closed trades yet. The bot runs {rules?.window || "entries 9:45 AM to 3:30 PM ET on regular sessions"}.</div>}
-                </section>
-                <section className="pb-panel">
-                  <div className="pb-panel-h"><span>Latest scored filings</span></div>
-                  {data.filings?.length ? data.filings.map((f) => (
-                    <div className="pb-row" key={f.url + f.seen_utc}>
+              <section className="pb-panel">
+                <div className="pb-panel-h"><span>Latest scored filings</span><span className="pb-dim">{data?.filingsToday ?? 0} seen today</span></div>
+                {data?.filings?.length ? data.filings.map((f) => (
+                  <div className="bk-filing" key={f.url + f.seen_utc}>
+                    <div className="bk-filing-top">
                       <span className="pb-row-t">{et(f.seen_utc)}</span>
-                      <span className="pb-sym">{f.symbol}</span>
-                      <span className="pb-row-m">
-                        <span className={`pb-tag imp-${f.impact}`}>{f.impact}</span>{" "}
-                        <span className={`pb-tag dir-${f.direction}`}>{f.direction} {f.confidence}%</span>{" "}
-                        <a href={f.url} target="_blank" rel="noopener noreferrer">{f.headline}</a>
-                      </span>
+                      <span className="bk-sym">{f.symbol}</span>
+                      <span className={`pb-tag imp-${f.impact}`}>{f.impact}</span>
+                      <span className={`pb-tag dir-${f.direction}`}>{f.direction} {f.confidence}%</span>
+                      <span className="pb-tag">{String(f.catalyst || "other").replace(/_/g, " ")}</span>
+                      <a href={f.url} target="_blank" rel="noopener noreferrer">{f.headline}</a>
                     </div>
-                  )) : <div className="bl-empty">No scored filings yet.</div>}
-                </section>
-              </div>
-            </>
-          )}
-
-          <FuturesLab />
-
-          {/* ---------------- path to live ---------------- */}
-          <section className="pb-panel pb-path" style={{ marginTop: 18 }}>
-            <div className="pb-panel-h">
-              <span>Path to real money</span>
-              <span className={allPass ? "pb-pass" : "pb-dim"}>{gatesPassed}/{gates.length} gates passed</span>
+                    <p>{f.summary}</p>
+                  </div>
+                )) : <Empty>No scored filings yet.</Empty>}
+              </section>
             </div>
-            <div className="pb-steps">
-              {[
-                ["Paper", "Simulated fills on live data. Rules frozen while the sample builds.", true],
-                ["Broker paper", "Same rules routed to a broker's paper account for about 4 weeks, to compare real order handling against our fills.", false],
-                ["Live pilot", "Real money, tiny size: one small position at a time, a hard daily loss stop, a kill switch, and your approval on each order.", false],
-                ["Scale", "Size goes up in steps only while live results keep matching paper.", false],
-              ].map(([t, d, cur], i) => (
-                <div className={`pb-step${cur ? " cur" : ""}`} key={String(t)}>
-                  <span className="pb-step-n">{i + 1}</span>
-                  <div><b>{t}</b>{cur ? <em>you are here</em> : null}<p>{d}</p></div>
-                </div>
-              ))}
-            </div>
-            <div className="pb-gates">
-              {gates.map((g) => (
-                <div className={`pb-gate${g.ok ? " ok" : ""}`} key={g.label}>
-                  <div className="pb-gate-top"><span>{g.ok ? "✓" : "○"} {g.label}</span><b>{g.val}</b></div>
-                  <span className="pb-bar"><i style={{ width: `${g.prog * 100}%` }} /></span>
-                  <em>{g.note}</em>
-                </div>
-              ))}
-            </div>
-            <p className="pb-fine">
-              {rules ? (
-                <>
-                  Rules {rules.strategy}: a med/high read at {rules.min_confidence}%+ confidence, seen in the last{" "}
-                  {rules.lookback_hours}h. Bullish goes long if price holds above its pre-filing level and is up less
-                  than {rules.max_day_up_pct}% on the day.{" "}
-                  {rules.allow_short === false
-                    ? "Shorts are switched off. "
-                    : `Bearish goes short if price holds below it and is down less than ${rules.max_day_down_pct ?? 8}% on the day. `}
-                  ${n0(rules.notional)} paper per trade, {rules.target_pct}% target, {rules.stop_pct}% stop, flat at{" "}
-                  {rules.flat_at || "3:55 PM ET"}. Runs {rules.window || "entries 9:45 AM to 3:30 PM ET on regular sessions"}. Paper shorts assume shares can be borrowed with no borrow fee.{" "}
-                </>
-              ) : null}
-              Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh
-              scoreboard. Passing the gates is evidence, not a guarantee. Markets change, and paper fills are
-              kinder than real ones. Paper results are simulated and are not a promise of returns.
-            </p>
-          </section>
+          ) : null}
         </>
       )}
     </div>

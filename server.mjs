@@ -1790,14 +1790,23 @@ app.get("/api/intel", (_req, res) => {
   try {
     dataMtime = fs.statSync(path.join(dataDir, "filings.jsonl")).mtime.toISOString();
   } catch {}
+  // every trade carries the filing that triggered it, so the ledger can show why
+  const byAcc = new Map(filings.map((f) => [f.accession, f]));
+  const withFiling = (t) => {
+    const f = byAcc.get(t.accession);
+    return f
+      ? { ...t, filing: { headline: f.headline, url: f.url, form: f.form, catalyst: f.catalyst, impact: f.impact, direction: f.direction,
+          confidence: f.confidence, summary: f.summary, read: f.read, seen_utc: f.seen_utc, ref_price: f.ref_price } }
+      : t;
+  };
   res.json({
     configured: true,
     dataMtime,
     equity,
     board,
     retired: Object.values(retiredMap),
-    open: trades.filter((t) => t.status === "open").reverse(),
-    recent: trades.filter((t) => t.status === "closed").slice(-25).reverse(),
+    open: trades.filter((t) => t.status === "open").reverse().map(withFiling),
+    recent: trades.filter((t) => t.status === "closed").slice(-80).reverse().map(withFiling),
     filingsToday: filings.filter((f) => etDay(f.seen_utc) === today).length,
     filings: scored.slice(-15).reverse().map((f) => ({
       symbol: f.symbol, headline: f.headline, seen_utc: f.seen_utc, url: f.url,

@@ -168,3 +168,23 @@ written. Keys and headers are never shown to the desks.
 
 Only the TikTok scenario is open. `MAKE_EDITABLE=<id>,<id>` in `.env` opens
 more. The Make token needs the scenarios write scope for edits to land.
+
+## Paper Bot tab
+
+Four views. **Overview**: both books side by side, the house style, the path
+to real money. **Company stock**: the catalyst bot's scoreboard, what it is
+weighing right now and why it has or has not entered, open positions between
+stop and target, results by playbook, session, side and catalyst, a ledger
+where each row opens to the filing and the reasoning, the rules, and why the
+rules are what they are. **Index futures**: the lab per market (MNQ, MES), the
+bench of strategies with their rules, which ideas are working, the ledger and
+what the lab learned. **Crawler**: the pipeline, activity, health checks and
+the latest scored filings.
+
+The stock numbers come from `intel/data/` in the brain repo (synced every few
+minutes); the radar, live position marks and the lab come straight from the
+Korvus box through `KORVUS_INTEL_KEY`. The tab works against the older data
+format too, so it is safe to deploy before the Korvus box updates.
+
+House style, set by the owner: swing trades inside the day, no scalping,
+except on company stock when the crawler has just read a filing.
