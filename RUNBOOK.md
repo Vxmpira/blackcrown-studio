@@ -150,3 +150,21 @@ desk compares the funnel (visits, product clicks, Korvus signups, paying
 subscribers) with the week before and writes the verdict into Patterns.md.
 
 Brand changes themselves (look, names, prices, law) come through the engineer.
+
+## The TikTok engine (Make) is the desks' to direct
+
+Every desk can open the live engine with "read" page "make" and file changes
+to it: picture style and art direction, image prompts, the writer's
+instructions, captions, hashtags, slide specs, brief and call to action. You
+approve each one in #boardroom; Regent then writes it to the scenario and a
+raw backup lands in `make-backups/` first.
+
+Checked in code at filing and again at write time: the passage must exist in
+the live engine, every `{{...}}` mapping stays, model names, token limits, the
+Bloom brand, urls and keys cannot change, no colour codes outside the palette,
+no claims or prices the brand law forbids, no outside links, and a request
+body that was valid before the edit must be valid after it or nothing is
+written. Keys and headers are never shown to the desks.
+
+Only the TikTok scenario is open. `MAKE_EDITABLE=<id>,<id>` in `.env` opens
+more. The Make token needs the scenarios write scope for edits to land.

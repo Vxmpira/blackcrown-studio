@@ -21,7 +21,7 @@ import {
   spendSummary,
 } from "./agent.mjs";
 import { MODELS, callJSON, canSpend } from "./llm.mjs";
-import { brandLaw, BRAND_LAW_TEXT } from "./brandlaw.mjs";
+import { brandLaw, engineLaw, BRAND_LAW_TEXT } from "./brandlaw.mjs";
 import { staffStates } from "./staff.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -388,7 +388,12 @@ function preflightProposal(p) {
       }
       return null;
     }
-    if (kind === "brain" || kind === "automation" || /^make(:|$)/i.test(page)) return null;
+    if (/^make(:|$)/i.test(page)) {
+      if (deps.makeAllowed && !deps.makeAllowed(page)) return "engine law: that Make scenario is not one the desks may edit; only the TikTok engine (page make) is open";
+      const why = engineLaw({ current: section(p.detail, "CURRENT"), next: section(p.detail, "NEW"), engine: deps.engineText ? deps.engineText() || "" : "" });
+      return why ? `engine law: ${why}` : null;
+    }
+    if (kind === "brain" || kind === "automation") return null;
     if (!page) return null;
     const loc = resolveSiteFile(page);
     if (loc.err) return loc.err;
@@ -1052,6 +1057,9 @@ async function execute(p) {
     const current = section(p.detail, "CURRENT");
     const next = section(p.detail, "NEW");
     if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
+    // the law is checked again at the moment of writing, after the approval
+    const why = engineLaw({ current, next, engine: "" });
+    if (why) return { ok: false, msg: `engine law blocked the write: ${why}` };
     const sid = (String(p.page).match(/^make:(\d+)/i) || [])[1];
     return deps.makeEdit({ scenarioId: sid, current, next });
   }

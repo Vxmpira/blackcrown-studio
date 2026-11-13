@@ -254,3 +254,101 @@ export function brandLaw({ repo = "site", file = "", before = "", after = "", re
 
 // one paragraph the desks carry in their orders, so they know the law before they file
 export const BRAND_LAW_TEXT = `THE BRAND LAW, enforced in code, an edit that breaks it never reaches the owner: (1) OWNER-ONLY FILES: terms, privacy and disclaimer pages, the design system files (assets/site.css and the site scripts), blackcrown-bar.html, robots.txt, the sign-in, account and admin pages, and anything that handles money, deploys or server config; code files and page scripts are the owner's too, describe a behaviour change and ask him. (2) THE LOOK: no colour outside the palette already on the page (pink #FF2D95, LodeStone cyan #49D7FF, gold #E8C77F, violet #8B5CFF, blacks, whites, greys), no new typeface, the crown mark untouched. (3) THE NAMES, spelled exactly: BlackCrown, Korvus, LodeStone, Crown, Eclipse-X. (4) PRICES are the owner's: restate an existing price or leave the number out, and never write a dollar amount into the Korvus landing page. (5) HONEST CLAIMS: no invented customer counts, ratings or testimonials, no promised profits, no signals, never "unlimited", no superlatives we cannot prove, and Crown is sold on ownership (never sold, never trained on), never on memory or forgetting. (6) THE FRAME: the header and footer, visit tracking, canonical link and search visibility stay; no scripts or embeds from other sites; change one section at a time, never gut a page. Inside that law the sites are yours: rewrite any headline, lead, section, call to action, title, description or internal link, reorder sections, add structured data, and build new pages.`;
+
+// ---------------------------------------------------------------------------
+// The engine law: what a desk may change inside the Make TikTok engine. The
+// desks own the creative (picture style, writer prompts, captions, hashtags,
+// slide specs). The wiring, the keys, the model, the Bloom brand and the
+// house claims stay the owner's.
+const HOUSE_HOSTS = /^(www\.)?(korvus\.industries|blackcrown-intelligence\.com|blackcrownvxj\.com|discord\.gg|discord\.com)$/i;
+const WIRING_KEYS = /\\?"(model|max_tokens|brand|brand_id|brandId|workspace|workspace_id|webhook|url|endpoint|api_key|apiKey|key|token|authorization|anthropic-version)\\?"\s*:\s*\\?"?[^,}\]\\"]*/gi;
+const SECRETISH = /sk-ant-|bloom_sk_|\bBearer\s|\bx-api-key\b|\bauthorization\b|\[key\]|\[token\]|\[long-token\]|[A-Za-z0-9_-]{40,}/i;
+const maps = (t) => (String(t).match(/\{\{[^}]*\}\}/g) || []).sort().join("|");
+const wiring = (t) => (String(t).match(WIRING_KEYS) || []).map((x) => x.replace(/\s+/g, "")).sort().join("|");
+
+export function engineLaw({ current = "", next = "", engine = "" }) {
+  const cur = String(current || "");
+  const nxt = String(next || "");
+  if (!cur.trim() || /^none$/i.test(cur.trim())) return "engine edits need CURRENT copied exactly from the engine (read page make first)";
+  if (!nxt.trim()) return "engine edits need a NEW block";
+  if (cur === nxt) return "NEW is identical to CURRENT, nothing would change";
+  if (engine) {
+    const n = engine.split(cur).length - 1;
+    if (n === 0) return "CURRENT is not in the live engine word for word; read page make again and copy the passage exactly";
+    if (n > 3) return `CURRENT appears ${n} times in the engine; copy a longer passage so the edit lands in one place`;
+  }
+  // wiring
+  if (maps(cur) !== maps(nxt)) return "the {{...}} mappings inside the passage are wiring; keep every one exactly as it is and change only the words around them";
+  if (wiring(cur) !== wiring(nxt)) return "model, token limits, the Bloom brand, urls and keys are wiring and stay the owner's; change the creative text only";
+  if (SECRETISH.test(nxt) && !SECRETISH.test(cur)) return "NEW carries something shaped like a key or an auth header; those never go into the engine";
+  if (SECRETISH.test(cur)) return "that passage sits next to a key or auth value; pick a passage that holds only creative text";
+  for (const m of nxt.matchAll(/https?:\/\/([^\s\/"'\\)]+)/gi)) {
+    if (cur.includes(m[0])) continue;
+    if (!HOUSE_HOSTS.test(m[1])) return `NEW adds a link to ${m[1]}; only the house sites and the Eclipse-X invite may appear`;
+  }
+  // size: a rewrite, not a wipe and not a novel
+  if (cur.length > 400 && nxt.length < cur.length * 0.4) return "NEW throws away more than half of the passage; change one thing at a time";
+  if (nxt.length > cur.length * 3 + 1500) return "NEW is far longer than the passage it replaces; keep the engine lean";
+  // the brand inside the creative
+  for (const h of hexes(nxt)) {
+    if (hexes(cur).has(h) || hexes(engine).has(h)) continue;
+    if (!onBrand(h)) return `colour #${h} is not a house colour; the pictures stay in pink #FF2D95, cyan #49D7FF, gold #E8C77F, violet #8B5CFF and the blacks`;
+  }
+  for (const [re, right] of NAMES) {
+    if (count(nxt, re) > count(cur, re)) return `a house name is misspelled; it is written ${right}`;
+  }
+  for (const d of dollars(nxt)) {
+    if (dollars(cur).has(d) || PRICES.includes(d)) continue;
+    return `$${d} is not on the owner's price list`;
+  }
+  for (const [re, why] of CLAIMS) {
+    if (asserted(nxt, re).length > asserted(cur, re).length) return `claim not allowed: ${why}`;
+  }
+  return null;
+}
+
+export const ENGINE_LAW_TEXT = `THE TIKTOK ENGINE IS YOURS TO DIRECT (the Make automation that builds the daily TikTok and Instagram posts: pictures, captions, hashtags). Read it with "read" page "make" (add find words such as style, image, caption, hashtag to jump to a part). To change it, file a proposal with page "make", CURRENT a passage copied word for word from what you read, NEW the replacement. What is yours: the picture style and art direction, the image prompts, the writer's instructions, hooks, captions, hashtags, slide count and slide specs, the product brief and call to action. What is not: every {{...}} mapping stays exactly as written, and model names, token limits, the Bloom brand, urls and keys are the owner's wiring. Pictures stay in the house palette and carry the product they sell; the brand law on names, prices and claims applies to every word. One change per filing, say in the detail what you expect it to do to the posts, and after it ships look at the next days' posts before changing the same passage again. The owner posts by hand, so tell him in the ask what will look different.`;
+
+// What the desks see of the engine: every creative string, labelled by the
+// module it lives in. Headers, query strings, connections and anything named
+// like a secret are never read out, and the scrubber runs over the rest.
+export function engineDigest(flow, scrub, id) {
+  const parts = [`TikTok Engine live config (scenario ${id}, read ${new Date().toISOString().slice(0, 10)}). The text under each label is what the engine uses today; headers, keys and connections are never shown.`];
+  const SECRET_NAME = /key|token|secret|password|auth|credential|signature|cookie|^headers?$|^qs$|^url$|^ca$|connection/i;
+  const TEXT_NAME = /prompt|text|content|caption|description|message|style|instruction|system|body|title|hashtag|negative/i;
+  const host = (u) => { try { return new URL(String(u)).host; } catch { return ""; } };
+  const emit = (label, value) => {
+    const v = scrub(String(value));
+    if (v.trim()) parts.push(`[${label}]\n${v}`);
+  };
+  const strings = (node, trail, label) => {
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Array.isArray(node) ? node.map((x, n) => [String(n), x]) : Object.entries(node)) {
+      if (SECRET_NAME.test(k)) continue;
+      if (typeof v === "string") {
+        if (v.length >= 40 && TEXT_NAME.test(k) && !/^https?:\/\/\S+$/.test(v.trim())) emit(`${label}, ${[...trail, k].join(".")}`, v);
+      } else if (v && typeof v === "object") strings(v, [...trail, k], label);
+    }
+  };
+  const walk = (mods) => {
+    for (const m of mods || []) {
+      const name = `module ${m.id} ${m.module || ""}${m.metadata?.designer?.name ? ` "${m.metadata.designer.name}"` : ""}`;
+      if (m.module === "util:SetVariables" && Array.isArray(m.mapper?.variables)) {
+        for (const v of m.mapper.variables) {
+          if (!v || SECRET_NAME.test(String(v.name || ""))) continue;
+          if (typeof v.value === "string") emit(`${name}, variable ${v.name}`, v.value);
+        }
+      } else if (/^http:/.test(String(m.module || ""))) {
+        const h = host(m.mapper?.url);
+        for (const f of ["data", "body", "jsonStringBodyContent"]) {
+          if (typeof m.mapper?.[f] === "string" && m.mapper[f].trim()) emit(`${name}, request body sent to ${h || "a web address"}`, m.mapper[f]);
+        }
+      } else if (m.mapper) {
+        strings(m.mapper, [], name);
+      }
+      for (const r of m.routes || []) walk(r.flow);
+    }
+  };
+  walk(flow);
+  return parts.join("\n\n");
+}

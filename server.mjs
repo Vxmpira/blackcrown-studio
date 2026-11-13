@@ -1,6 +1,7 @@
 // Small render + generation service. The admin page calls this; this calls
 // your AWS for rendering and the Anthropic API for writing new ads.
 // All keys are read from .env and never leave your machine.
+import { engineDigest } from "./brandlaw.mjs";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -1419,7 +1420,9 @@ function scrubSecrets(s) {
   return String(s)
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[key]")
     .replace(/bloom_sk_[A-Za-z0-9]+/g, "[key]")
-    .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]");
+    .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]{12,}/g, "Bearer [token]")
+    .replace(/[A-Za-z0-9_-]{40,}/g, "[long-token]");
 }
 
 // write access to Make, used ONLY by Regent executing an owner-approved ask.
@@ -1434,16 +1437,34 @@ function walkReplace(node, current, next, stats) {
       if (v.includes(current)) {
         stats.hits += v.split(current).length - 1;
         stats.fields++;
-        node[k] = v.split(current).join(next);
+        const out = v.split(current).join(next);
+        // a field that was valid JSON before the edit must be valid after it
+        const t = v.trim();
+        if (t.startsWith("{") || t.startsWith("[")) {
+          let was = false;
+          try { JSON.parse(v); was = true; } catch {}
+          if (was) {
+            try { JSON.parse(out); } catch { stats.broken = (stats.broken || 0) + 1; }
+          }
+        }
+        node[k] = out;
       }
     } else if (v && typeof v === "object") {
       walkReplace(v, current, next, stats);
     }
   }
 }
+// the desks may edit the TikTok engine and nothing else in Make, unless the
+// owner lists more scenario ids in MAKE_EDITABLE
+const MAKE_EDITABLE = [TIKTOK_SCENARIO_ID, ...(process.env.MAKE_EDITABLE || "").split(",").map((x) => x.replace(/[^0-9]/g, "")).filter(Boolean)];
+function makeAllowed(page) {
+  const sid = (String(page || "").match(/^make:(\d+)/i) || [])[1];
+  return !sid || MAKE_EDITABLE.includes(sid);
+}
 async function applyMakeEdit({ scenarioId, current, next }) {
   if (!MAKE_TOKEN) return { ok: false, msg: "MAKE_API_TOKEN is not set in .env" };
   const id = String(scenarioId || TIKTOK_SCENARIO_ID).replace(/[^0-9]/g, "") || TIKTOK_SCENARIO_ID;
+  if (!MAKE_EDITABLE.includes(id)) return { ok: false, msg: `scenario ${id} is not open to the desks; only the TikTok engine is` };
   if (!current || current.toLowerCase() === "none") {
     return { ok: false, msg: "Make edits need CURRENT copied exactly from the engine feed, none given" };
   }
@@ -1467,6 +1488,9 @@ async function applyMakeEdit({ scenarioId, current, next }) {
     if (stats.hits > 3) {
       return { ok: false, msg: `CURRENT appears ${stats.hits} times in the blueprint, refusing an ambiguous edit` };
     }
+    if (stats.broken) {
+      return { ok: false, msg: "the edit would break the request body the engine sends (a quote or line break that is not escaped the way the passage around it is). Nothing was written. Copy the escaping style of CURRENT exactly" };
+    }
     const w = await fetch(`https://${MAKE_ZONE}/api/v2/scenarios/${id}`, {
       method: "PATCH",
       headers: { Authorization: `Token ${MAKE_TOKEN}`, "content-type": "application/json" },
@@ -1489,6 +1513,25 @@ async function applyMakeEdit({ scenarioId, current, next }) {
   }
 }
 
+// "read" page make: the desks open the engine the same way they open a page
+function readAnySource(page, find) {
+  if (/^make(:\d+)?$/i.test(String(page || "").trim())) {
+    if (!MAKE_TOKEN) return { err: "MAKE_API_TOKEN is not set on the server, the engine cannot be read" };
+    const text = engineCache.text;
+    if (!text) {
+      readEngine().catch(() => {});
+      return { err: "the engine is loading, read it again on your next step" };
+    }
+    let from = 0;
+    if (find) {
+      const at = text.toLowerCase().indexOf(String(find).toLowerCase());
+      if (at >= 0) from = Math.max(0, at - 500);
+    }
+    const out = text.slice(from, from + 7000);
+    return { page: "make (the TikTok engine)", from, text: out, size: text.length, more: from + out.length < text.length };
+  }
+  return readPageSource(page, find);
+}
 async function readEngine() {
   if (!MAKE_TOKEN) return null;
   if (engineCache.text && Date.now() - engineCache.at < 6 * 3600 * 1000) {
@@ -1503,25 +1546,8 @@ async function readEngine() {
     const j = await r.json();
     const bp = j?.response?.blueprint || j?.blueprint || j;
     const flow = Array.isArray(bp?.flow) ? bp.flow : [];
-    const parts = [`TikTok Engine live config (scenario ${TIKTOK_SCENARIO_ID}, read ${new Date().toISOString().slice(0, 10)})`];
-    for (const m of flow) {
-      if (m.module === "util:SetVariables" && m.mapper?.variables) {
-        for (const v of m.mapper.variables) {
-          if (["product", "brief", "why", "cta", "slides"].includes(v.name)) {
-            parts.push(`${v.name}: ${scrubSecrets(v.value)}`);
-          }
-        }
-      }
-      if (
-        m.module === "http:ActionSendData" &&
-        typeof m.mapper?.url === "string" &&
-        m.mapper.url.includes("api.anthropic.com") &&
-        typeof m.mapper?.data === "string"
-      ) {
-        parts.push(`writer prompt payload: ${scrubSecrets(m.mapper.data)}`);
-      }
-    }
-    engineCache = { at: Date.now(), text: parts.join("\n\n").slice(0, 12000) };
+    const digest = engineDigest(flow, scrubSecrets, TIKTOK_SCENARIO_ID);
+    engineCache = { at: Date.now(), text: digest.slice(0, 40000) };
     try {
       fs.writeFileSync(
         path.join(brainDirPath(), "TikTok-Engine-Live.md"),
@@ -1954,6 +1980,9 @@ const companyFeed = async (key) => {
     } catch {
       // optional
     }
+    if (key === "bard") {
+      lines.push('TIKTOK ENGINE: yours to art direct. "read" page "make" (find: style or image) shows the live picture prompts.');
+    }
     if (key === "herald") {
       try {
         const t = await readTrends();
@@ -1963,7 +1992,7 @@ const companyFeed = async (key) => {
       }
       try {
         const e = await readEngine();
-        if (e) lines.push(`TIKTOK ENGINE: ${String(e).slice(0, 1200)}`);
+        if (e) lines.push(`TIKTOK ENGINE (start only, "read" page "make" for the rest): ${String(e).slice(0, 900)}`);
       } catch {
         // optional
       }
@@ -1985,7 +2014,7 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed, wire: recordWire, readPage: (page, find) => readPageSource(page, find) });
+wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource });
 
 // ---------------------------------------------------------------------------
 // the immune system: every 10 minutes the healer makes the floor whole again.
@@ -2553,6 +2582,8 @@ wireCeo({
   audit: async () => (await doAudit()).pages,
   createJob: createJobFromProposal,
   makeEdit: applyMakeEdit,
+  makeAllowed,
+  engineText: () => engineCache.text,
   publish: publishPost,
   staffChannels: {
     Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
@@ -3455,7 +3486,7 @@ function recordWire(from, to, text) {
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 
 wireHooks({
-  readPage: (page, find) => readPageSource(page, find),
+  readPage: readAnySource,
   forge: forgeOverlay,
   awsRender: awsRenderVideo,
   requestStaff: (to, title) => {
