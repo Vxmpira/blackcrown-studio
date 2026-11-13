@@ -15,11 +15,13 @@ import {
   brainFile,
   brainSave,
   addTask,
+  bookMeasurement,
   buildEmbeds,
   agentState,
   spendSummary,
 } from "./agent.mjs";
 import { MODELS, callJSON, canSpend } from "./llm.mjs";
+import { brandLaw, BRAND_LAW_TEXT } from "./brandlaw.mjs";
 import { staffStates } from "./staff.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -322,7 +324,9 @@ const REVIEW_SYSTEM = `${IDENTITY}
 Review each filed proposal. Veto anything off brand, not data backed, duplicate, or spend without a reason. THE ASK IS THE LOCK: the owner's green light on an ask approves everything inside it, overlay lines, copy, and spec included. NEVER veto for missing approvals, locks, or sign-offs that the green light itself would grant, and never invent new approval layers; there is exactly one approval: the owner's word on the ask. Endorse the rest, amending the summary for clarity if needed.
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
-{"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}`;
+{"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}
+
+${BRAND_LAW_TEXT} You hold the desks to this law: veto any filing that restyles a page, renames anything, moves a price, or makes a claim we cannot prove, however good the conversion argument sounds. Improving the sites means sharper words and structure inside the brand, never a different brand.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -427,6 +431,17 @@ function preflightProposal(p) {
           return "the page has a flat background; the Page Frame's atmosphere block (glows, grid, vignette) is law on every page";
         }
       }
+      const law = brandLaw({ repo: loc.rootKey, file: loc.file, before: "", after: body, reference: brandReference(loc.rootKey, loc.rootDir) });
+      if (law) return `brand law: ${law}`;
+      return null;
+    }
+    // an edit to a live file: apply it in memory and hold the result to the law
+    {
+      const before = fs.readFileSync(loc.full, "utf8");
+      const next = String(section(detail, "NEW") || "");
+      const after = cur && before.includes(cur) ? before.replace(cur, next) : `${before}\n${next}`;
+      const law = brandLaw({ repo: loc.rootKey, file: loc.file, before, after, reference: brandReference(loc.rootKey, loc.rootDir) });
+      if (law) return `brand law: ${law}`;
     }
     return null;
   } catch (e) {
@@ -584,6 +599,26 @@ function section(detail, label) {
   const re = new RegExp(`${label}:\\s*([\\s\\S]*?)(?=\\n(?:WHAT|WHY|CURRENT|NEW|GREEN LIGHT MEANS):|$)`, "i");
   const m = String(detail).match(re);
   return m ? m[1].trim() : "";
+}
+
+// what "the brand" looks like in each repo: the files a new colour or
+// typeface is compared against, so product pages keep their own palette
+const BRAND_REFS = { site: ["assets/site.css"], korvus: ["korvus_landing.html", "korvus_lodestone.html"], crown: ["index.html"] };
+let refCache = {};
+function brandReference(rootKey, rootDir) {
+  const c = refCache[rootKey];
+  if (c && Date.now() - c.at < 10 * 60000) return c.text;
+  let text = "";
+  for (const f of BRAND_REFS[rootKey] || []) {
+    try {
+      text += fs.readFileSync(path.join(rootDir, f), "utf8").slice(0, 400000) + "\n";
+    } catch {}
+  }
+  try {
+    text += String((brainFile("Page-Frame.md") || {}).body || "");
+  } catch {}
+  refCache[rootKey] = { at: Date.now(), text };
+  return text;
 }
 
 function resolveSiteFile(page) {
@@ -874,6 +909,10 @@ async function executeSiteEdit(p) {
   if (invalid) {
     return { ok: false, msg: `safety guard blocked the write: ${invalid}` };
   }
+  const law = brandLaw({ repo: rootKey, file, before: html, after: updated, reference: brandReference(rootKey, rootDir) });
+  if (law) {
+    return { ok: false, msg: `brand law blocked the write: ${law}` };
+  }
   try {
     if (!creating) fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
     fs.writeFileSync(full, updated);
@@ -1076,6 +1115,10 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   state.status = "watching";
   saveState();
   vaultAppend("Ledger.md", `- ${etDayKey()}: #${p.number} ${p.summary} > ${r.ok ? "DONE" : "FAILED"}: ${r.msg.slice(0, 160)}`);
+  // a site change that shipped gets measured a week later
+  if (r.ok && ["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) && p.page && !/^make(:|$)/i.test(String(p.page))) {
+    bookMeasurement(p.number, p.page, p.summary);
+  }
   log(r.ok ? "exec" : "error", `#${p.number} ${r.ok ? "done" : "failed"}: ${r.msg}`);
   await send(`**REGENT // ${r.ok ? "DONE" : "FAILED"}** · #${p.number} ${p.summary}\n${r.msg}`);
   if (!r.ok && deps.assignFix) {

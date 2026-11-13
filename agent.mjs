@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { BRAND_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
 export { recordSpend, getSpend, spendSummary };
 
@@ -628,9 +629,12 @@ function aggregates() {
   })();
   const visits7 = tot(w7.visit);
   const visitsPrev7 = tot(w7prev.visit);
+  let signups7 = 0;
+  for (const day of days) if (day >= etDayKey(6)) signups7 += tot((s[day] && s[day].signup) || {});
   return {
     visits7,
     visitsPrev7,
+    signups7,
     deltaPct: visitsPrev7 ? Math.round(((visits7 - visitsPrev7) / visitsPrev7) * 100) : null,
     clicks7: w7.click,
     pages7: w7.visit,
@@ -859,7 +863,8 @@ POSTING TO THE WEB, kind "post": detail MUST carry: PLATFORM: <platform> on its 
 TIKTOK ENGINE EDITS: to change the Make automation itself (writer prompts, captions, slide specs, variable values), file with page "make", CURRENT an exact passage copied from the TIKTOK ENGINE feed, NEW the replacement. Content strings only, never urls, keys, tokens, or module wiring. GREEN LIGHT MEANS Regent applies it to the live scenario, raw backup saved first.
 RECURRING REPORTS, kind "job": for any recurring digest, report, or monitoring post, file kind "job" instead of an automation paste. The server itself runs these, no Make involved. detail MUST carry, each on its own line: SCHEDULE: daily HH:MM ET, or weekly <monday..sunday> HH:MM ET. CHANNEL: corvid or boardroom. NEW: the exact content spec, what the report covers, in what order, pulled from live analytics, revenue, uptime, and SEO data. GREEN LIGHT MEANS the server registers the job and posts the report on schedule from then on.
 ADDING HEAD TAGS: to add canonical, og, twitter, or other meta and link tags to an html page, set CURRENT: none and make NEW only the tags themselves, nothing else. Regent merges them into the head, updating any tag that already exists and inserting the rest. Never guess head text as a CURRENT anchor. Sitemap entries work the same way: NEW is just the url blocks, Regent appends what is missing.
-kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (page "make" edits to the TikTok Engine; green light means Regent applies it to the live scenario, backup first), "campaign" (a plan), "job" (a recurring server-run report, see RECURRING REPORTS), "creative" (a new TikTok post, VIDEO or slides; set "format":"video" with "video" carrying the full clip direction, or "format":"slides" with "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"]; always "caption": "keyword first line, 2-3 short lines, Link in bio plus destination", "target": the destination it sells, "brand": "korvus" or "default"; green light means Regent renders it through Bloom, video or stills, Herald finalizes the caption and hashtags for the target, and the finished package posts in this channel for the owner to post manually).`;
+kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (page "make" edits to the TikTok Engine; green light means Regent applies it to the live scenario, backup first), "campaign" (a plan), "job" (a recurring server-run report, see RECURRING REPORTS), "creative" (a new TikTok post, VIDEO or slides; set "format":"video" with "video" carrying the full clip direction, or "format":"slides" with "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"]; always "caption": "keyword first line, 2-3 short lines, Link in bio plus destination", "target": the destination it sells, "brand": "korvus" or "default"; green light means Regent renders it through Bloom, video or stills, Herald finalizes the caption and hashtags for the target, and the finished package posts in this channel for the owner to post manually).
+${BRAND_LAW_TEXT}`;
 
 const CYCLE_SYSTEM = `${IDENTITY}
 
@@ -935,6 +940,7 @@ export async function runCycle(trigger = "schedule") {
     let rev = null;
     try {
       rev = feeds.revenue ? await feeds.revenue() : null;
+      lastRev = rev || lastRev;
     } catch {
       rev = null;
     }
@@ -1531,6 +1537,32 @@ function pickOpenTask() {
     .sort((a, b) => (a.lastStepAt || 0) - (b.lastStepAt || 0))[0];
 }
 
+// the money line every task step sees: where visitors go and whether they pay
+let lastRev = null;
+function funnelLine(agg) {
+  const top = (o, n) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
+  const clicks = Object.values(agg.clicks7 || {}).reduce((a, b) => a + b, 0);
+  const paid = lastRev ? `${lastRev.subscribers ?? 0} paying, MRR $${lastRev.mrr ?? 0}` : "paying subscribers unknown until the next cycle reads Stripe";
+  return `FUNNEL, last 7 days: ${agg.visits7} visits (was ${agg.visitsPrev7}) > ${clicks} product clicks > ${agg.signups7} Korvus signups > ${paid}. Pages: ${top(agg.pages7, 6)}. Clicks: ${top(agg.clicks7, 5)}. Sources: ${top(agg.sources7, 5)}. The weakest step of that chain is where the next site change belongs.`;
+}
+// When a site change ships, book its own follow-up: the same numbers a week
+// later, so the desks learn what worked instead of guessing.
+export function bookMeasurement(number, page, summary) {
+  try {
+    const agg = aggregates();
+    const clicks = Object.values(agg.clicks7 || {}).reduce((a, b) => a + b, 0);
+    const t = {
+      id: crypto.randomBytes(4).toString("hex"),
+      title: `Measure #${number} ${String(page).slice(0, 34)}: before it was ${agg.visits7} visits, ${clicks} clicks, ${agg.signups7} signups a week`.slice(0, 120),
+      status: "open",
+      parkUntil: Date.now() + 7 * 86400000,
+      measure: { number, page, summary: String(summary || "").slice(0, 80), at: Date.now(), visits7: agg.visits7, clicks7: clicks, signups7: agg.signups7 },
+    };
+    state.tasks.push(t);
+    saveState();
+    log("task", `booked for 7 days out: ${t.title}`);
+  } catch {}
+}
 async function workTick() {
   if (busy || !state.enabled || !canSpend("corvid")) return;
   const t = pickOpenTask();
@@ -1559,7 +1591,10 @@ async function workTick() {
       `Other open tasks (context only, work THE TASK): ${JSON.stringify(
         state.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title)
       )}`,
-      `ANALYTICS 7d: visits ${agg.visits7} (prev ${agg.visitsPrev7})`,
+      funnelLine(agg),
+      ...(t.measure
+        ? [`THIS IS A MEASUREMENT. #${t.measure.number} (${t.measure.summary}) shipped on ${new Date(t.measure.at).toISOString().slice(0, 10)} to ${t.measure.page}. The week before it: ${t.measure.visits7} visits, ${t.measure.clicks7} product clicks, ${t.measure.signups7} signups. Compare with the FUNNEL line above, say plainly whether it helped, hurt or made no difference (small numbers mean "too early to tell", say so), write the verdict into Patterns.md with a note, then either file the next change on that page or, if it hurt, file the revert.`]
+        : []),
       `PENDING PROPOSALS (never re-file): ${JSON.stringify(pending)}`,
       `BRAIN Strategy.md (excerpt):\n${brainRead("Strategy.md").slice(0, 1200)}`,
       `BRAIN Playbook.md (excerpt):\n${brainRead("Playbook.md").slice(0, 800)}`,
@@ -1577,7 +1612,8 @@ async function workTick() {
         : { note: `${r.page}, characters ${r.from} to ${r.from + r.text.length} of ${r.size}${r.more ? ", more follows (read again with find to move)" : ""}`, text: r.text };
       log("work", `read ${out.read.page}${r.err ? `: ${r.err}` : ` (${r.text.length} chars)`}`);
       out.status = "doing";
-      state.lastWorkAt = 0; // the source is in hand, use it on the very next tick
+      t.reads = (t.reads || 0) + 1;
+      if (t.reads <= 4) state.lastWorkAt = 0; // the source is in hand, use it on the very next tick (a task that keeps reading waits its turn)
     }
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";

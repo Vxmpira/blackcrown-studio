@@ -123,3 +123,30 @@ five times as much.
 **Where to look.** The dashboard's "Model spend today" panel, or
 `GET /api/usage`: dollars per desk, calls, and the share of input read from
 cache. A desk that works all day should read most of its input from cache.
+
+## Brand law (what the desks can and cannot change on the sites)
+
+All four desks can read any page on the three sites and file changes to copy,
+titles, descriptions, structure inside a page, internal links and structured
+data. Every filing is checked by `brandlaw.mjs` twice: when it is filed and
+again at the moment of writing, after your approval. A change that breaks the
+law never reaches Discord, and never reaches the file.
+
+Owner-only, always: legal pages, the design system (`assets/site.css` and the
+site scripts), `blackcrown-bar.html`, `robots.txt`, sign-in, account and admin
+pages, anything touching money, deploys or server config. Code files and page
+scripts are owner-only unless `BRAND_ALLOW_CODE=1` is set in `.env`.
+
+Blocked inside pages: colours outside the house palette, new typefaces,
+changes to the crown mark, misspelt product names, prices not on the price
+list (`BRAND_PRICES` overrides the list), any dollar amount added to the
+Korvus landing page, claims we cannot prove (memory, unlimited, guaranteed
+results, signals, customer counts, ratings), header or footer changes, removed
+tracking, outside scripts, iframes, forms posting elsewhere, noindex, and
+removing more than 40 percent of a page's text in one edit.
+
+Each site change that ships books its own follow-up task seven days out. The
+desk compares the funnel (visits, product clicks, Korvus signups, paying
+subscribers) with the week before and writes the verdict into Patterns.md.
+
+Brand changes themselves (look, names, prices, law) come through the engineer.

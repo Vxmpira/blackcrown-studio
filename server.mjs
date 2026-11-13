@@ -1985,7 +1985,7 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed, wire: recordWire });
+wireStaff({ feed: companyFeed, wire: recordWire, readPage: (page, find) => readPageSource(page, find) });
 
 // ---------------------------------------------------------------------------
 // the immune system: every 10 minutes the healer makes the floor whole again.
