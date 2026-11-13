@@ -51,6 +51,7 @@ import {
   ceoBrainSave,
   ceoVaultPath,
   REPO_ROOTS,
+  readPageSource,
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
 import { execFile as execFileCb } from "child_process";
@@ -3454,6 +3455,7 @@ function recordWire(from, to, text) {
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 
 wireHooks({
+  readPage: (page, find) => readPageSource(page, find),
   forge: forgeOverlay,
   awsRender: awsRenderVideo,
   requestStaff: (to, title) => {

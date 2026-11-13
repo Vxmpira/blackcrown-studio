@@ -614,6 +614,25 @@ function resolveSiteFile(page) {
   return { rootKey, file, rootDir, full: path.join(rootDir, file) };
 }
 
+// Read-only view of a site or product file, for the desks that write the
+// fixes. Same address rules as an edit (so never .env, never outside the
+// repos). Returns a window of the file: around "find" when given, otherwise
+// the head and the first stretch of the body.
+export function readPageSource(page, find = "", max = 7000) {
+  const r = resolveSiteFile(page);
+  if (r.err) return { err: r.err };
+  if (!fs.existsSync(r.full)) return { err: `${page} does not exist yet` };
+  const text = fs.readFileSync(r.full, "utf8");
+  let at = 0;
+  const needle = String(find || "").trim();
+  if (needle) {
+    const i = text.toLowerCase().indexOf(needle.toLowerCase());
+    if (i >= 0) at = Math.max(0, i - Math.floor(max / 3));
+    else return { err: `"${needle.slice(0, 60)}" is not in ${page}`, size: text.length };
+  }
+  return { page, size: text.length, from: at, text: text.slice(at, at + max), more: at + max < text.length };
+}
+
 // the safety guard: refuse to write a result that would break the file
 async function validateEdit(file, before, after) {
   if (!after || !after.trim()) return "the result would leave the file empty";
