@@ -45,7 +45,7 @@ const CROWN_MARK = "M4 24 L4 9 L12 16 L18 5 L24 16 L32 9 L32 24 Z";
 const OWNER_FILES = {
   site: [
     /^(terms|privacy|disclaimer)\.html$/i,
-    /^assets\/(site\.css|site\.js|space\.js|art\.js|crown3d\.js|bc3d\.js)$/i,
+    /^assets\/(site\.css|site\.js|stone\.js|motion\.js|art\.js|space\.js|crown3d\.js|bc3d\.js)$/i,
     /^blackcrown-bar\.html$/i,
     /^robots\.txt$/i,
   ],
