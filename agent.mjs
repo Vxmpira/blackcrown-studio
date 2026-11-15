@@ -1074,7 +1074,7 @@ export async function runCycle(trigger = "schedule") {
         id: crypto.randomBytes(5).toString("hex"),
         number: n++,
         page: String(p.page || "site").slice(0, 60),
-        kind: String(p.kind || "other").slice(0, 20),
+        kind: normKind(p.kind),
         summary: String(p.summary || "").slice(0, 120),
         detail: String(p.detail || "").slice(0, 2400),
         slides: Array.isArray(p.slides)
@@ -1861,6 +1861,20 @@ export function addTask(title, opts = {}) {
 }
 // staff agents (Herald, Steward) file through the same book so Regent reviews
 // everything in one pipeline and numbering never collides
+// the executor keys on these labels; a desk that writes "edit" or "cta" for a
+// page change gets it filed as content so it runs instead of stalling
+const KINDS = ["title", "meta", "content", "automation", "campaign", "creative", "job", "post", "brain", "other"];
+function normKind(kind) {
+  const k = String(kind || "other").trim().toLowerCase();
+  if (KINDS.includes(k)) return k;
+  if (/^(edit|copy|copyedit|cta|fix|seo|html|text|page|update|change|rewrite|hero|button|ux|conversion|ab_?test|experiment|layout|section)$/.test(k)) return "content";
+  if (/^(schema|tag|tags|head|og|description|title_tag|meta_description)$/.test(k)) return "meta";
+  if (/^(report|digest|schedule|recurring)$/.test(k)) return "job";
+  if (/^(video|slides|tiktok|reel|short)$/.test(k)) return "creative";
+  if (/^(x|tweet|youtube|social)$/.test(k)) return "post";
+  return k.slice(0, 20) || "other";
+}
+
 export function fileProposals(list, author = "staff") {
   const filed = [];
   let n = state.proposals.reduce((a, p) => Math.max(a, p.number || 0), 0) + 1;
@@ -1870,7 +1884,7 @@ export function fileProposals(list, author = "staff") {
       number: n++,
       author,
       page: String(p.page || "site").slice(0, 60),
-      kind: String(p.kind || "other").slice(0, 20),
+      kind: normKind(p.kind),
       summary: String(p.summary || "").slice(0, 120),
       detail: String(p.detail || "").slice(0, 2400),
       slides: Array.isArray(p.slides) ? p.slides.slice(0, 6).map((s) => String(s).slice(0, 480)) : undefined,

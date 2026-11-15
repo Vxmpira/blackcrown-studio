@@ -626,6 +626,9 @@ function brandReference(rootKey, rootDir) {
   return text;
 }
 
+// labels the desks use for page edits besides the official title/meta/content
+const EDIT_KINDS = /^(edit|copy|copyedit|cta|fix|seo|html|text|page|update|change|rewrite|hero|button|ux|conversion|ab_?test|experiment|layout|section)$/;
+
 function resolveSiteFile(page) {
   let file = String(page || "").trim();
   // "korvus:engine/feed.js" or "crown:server/config.json" routes to that repo;
@@ -1063,7 +1066,14 @@ async function execute(p) {
     const sid = (String(p.page).match(/^make:(\d+)/i) || [])[1];
     return deps.makeEdit({ scenarioId: sid, current, next });
   }
-  if (["title", "meta", "content", "other"].includes(p.kind)) {
+  // a page edit is a page edit whatever label the desk wrote on it ("edit",
+  // "copy", "cta"...): the shape outranks the tag, same as SCHEDULE above
+  const kind = String(p.kind || "").trim().toLowerCase();
+  const fileEdit =
+    !["post", "creative", "job", "automation", "campaign", "brain"].includes(kind) &&
+    !!section(p.detail, "NEW") &&
+    !resolveSiteFile(p.page).err;
+  if (["title", "meta", "content", "other"].includes(kind) || EDIT_KINDS.test(kind) || fileEdit) {
     let r = await executeSiteEdit(p);
     if (!r.ok && !/not set up on this server|not a file I can edit|write failed/i.test(r.msg)) {
       log("repair", `#${p.number}: ${r.msg}. Running self repair against the live file.`);
@@ -1086,10 +1096,16 @@ async function execute(p) {
     const r = deps.createJob(p);
     if (r) return r;
   }
-  const next = section(p.detail, "NEW");
+  // a plan with no schedule is a decision on record, nothing to run
+  if (kind === "campaign") {
+    return { ok: true, msg: "plan approved and logged. It carries no SCHEDULE line, so nothing runs on the server; its pieces ship as their own content, post or job asks." };
+  }
+  // never report DONE for something that did not happen: this goes back to
+  // the desk that filed it, as a failure, so it gets refiled in a shape the
+  // executor can carry out
   return {
-    ok: true,
-    msg: `manual step, no SCHEDULE line found so I cannot register it as a server job. Paste this yourself or refile as kind job with SCHEDULE and CHANNEL lines:\n${(next || p.detail).slice(0, 600)}`,
+    ok: false,
+    msg: `NOT applied: a "${p.kind || "?"}" ask on "${p.page || "?"}" is not something I can execute. Page edits need a real file (bare name, korvus:path or crown:path) with exact CURRENT and NEW blocks; reports need kind job with SCHEDULE and CHANNEL lines.`,
   };
 }
 
@@ -1124,7 +1140,7 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   saveState();
   vaultAppend("Ledger.md", `- ${etDayKey()}: #${p.number} ${p.summary} > ${r.ok ? "DONE" : "FAILED"}: ${r.msg.slice(0, 160)}`);
   // a site change that shipped gets measured a week later
-  if (r.ok && ["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) && p.page && !/^make(:|$)/i.test(String(p.page))) {
+  if (r.ok && (["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) || EDIT_KINDS.test(String(p.kind || "").toLowerCase())) && p.page && !/^make(:|$)/i.test(String(p.page))) {
     bookMeasurement(p.number, p.page, p.summary);
   }
   log(r.ok ? "exec" : "error", `#${p.number} ${r.ok ? "done" : "failed"}: ${r.msg}`);

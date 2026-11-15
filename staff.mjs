@@ -410,7 +410,7 @@ const CYCLE_SCHEMA = `Output STRICT JSON only:
  "message": "the Discord report in your template, or empty string when nothing is worth saying",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "brain_notes": [{"name":"Projects.md","body":"full markdown content"}],
- "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage", "overlay":[{"text":"exact words baked on screen later, max 44 chars","t":0,"d":3}] up to 3 timed lines, video only","slides":["..."],"caption":"...","brand":"korvus"}],
+ "proposals": [{"page":"...","kind":"title|meta|content|job|post|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage", "overlay":[{"text":"exact words baked on screen later, max 44 chars","t":0,"d":3}] up to 3 timed lines, video only","slides":["..."],"caption":"...","brand":"korvus"}],
  "delegations": [{"minion":"...","task":"one focused job","context":"what it needs"}],
  "assignments": [{"to":"corvid|herald","task":"max 12 words"}],
  "requests": [{"to":"corvid|herald|steward|bard","ask":"WORK you need from that desk, max 14 words, never data"}],
