@@ -878,3 +878,89 @@ export async function getLab(): Promise<LabData | null> {
     return null;
   }
 }
+
+// ----- the tuner: live dials and scorecards for every desk -------------------
+export type TuningField = {
+  label: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  type?: "bool" | "model" | "time";
+  def: number | boolean | string;
+};
+export type TuningValue = { value: number | boolean | string; overridden: boolean; def: number | boolean | string };
+export type DeskCard = {
+  name: string;
+  enabled: boolean | null;
+  status: string | null;
+  model: string | null;
+  today: { usd: number; calls: number; cachePct: number };
+  week: { usd: number; calls: number; cachePct: number };
+  steps: number | null;
+  openTasks: number;
+  doneToday: number;
+  asks: { filed: number; approved: number; rejected: number; pending: number; approvalPct: number | null } | null;
+  costPerApproved: number | null;
+  asksOut: number | null;
+  asksIn: number;
+};
+export type TunerData = {
+  schema: Record<string, TuningField>;
+  values: Record<string, TuningValue>;
+  models: string[];
+  defaults: { head: string; hands: string; minion: string };
+  stats: { desks: Record<string, DeskCard>; budget: { cap: number; spent: number; left: number | null; level: string }; gaps: number };
+};
+export async function getTuning(): Promise<TunerData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/tuning`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+export async function saveTuning(patch: Record<string, unknown>): Promise<TunerData> {
+  const r = await fetch(`${BASE}/api/tuning`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patch }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Save failed (${r.status})`);
+  return j;
+}
+export type BriefRun = { at: number; day: string; reason: string; ok?: boolean; url?: string; seconds?: number; mb?: number; hook?: string; stories?: string[]; asks?: number[]; dropped?: boolean; error?: string };
+export async function getPremarket(): Promise<{ lastDay: string; running: boolean; runs: BriefRun[] } | null> {
+  try {
+    const r = await fetch(`${BASE}/api/premarket`);
+    return r.ok ? r.json() : null;
+  } catch {
+    return null;
+  }
+}
+export async function runPremarketNow(): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`${BASE}/api/premarket/run`, { method: "POST" });
+  return r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+}
+export type ExpressionShelf = {
+  tier: number;
+  boosts: number | null;
+  emojiLimit: number;
+  staticUsed: number;
+  animatedUsed: number;
+  stickerLimit: number;
+  stickersUsed: number;
+  pack: { emojis: number; stickers: number };
+  waiting: { emojis: number; stickers: number };
+  error?: string;
+};
+export async function getExpressionShelf(): Promise<ExpressionShelf | null> {
+  try {
+    const r = await fetch(`${BASE}/api/discord/expressions`);
+    return r.json();
+  } catch {
+    return null;
+  }
+}

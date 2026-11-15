@@ -22,6 +22,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { tune } from "./tuning.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPEND_PATH = path.join(__dirname, "studio-spend.json");
@@ -126,9 +127,11 @@ export function spentToday() {
 // ---------------------------------------------------------------------------
 const rawBudget = Number(process.env.AGENT_DAILY_BUDGET_USD);
 export const DAILY_BUDGET = Number.isFinite(rawBudget) && rawBudget >= 0 ? rawBudget : 5;
+// the live cap: the owner's tuner value, else the .env default
 export function budget() {
   const spent = spentToday();
-  const cap = DAILY_BUDGET;
+  const tuned = tune.budgetUsd();
+  const cap = Number.isFinite(tuned) && tuned >= 0 ? tuned : DAILY_BUDGET;
   const level = !cap ? "off" : spent >= cap ? "out" : spent >= cap * 0.7 ? "tight" : "ok";
   return { cap, spent: Math.round(spent * 100) / 100, left: cap ? Math.max(0, Math.round((cap - spent) * 100) / 100) : null, level };
 }
@@ -138,6 +141,8 @@ export function budget() {
 // percent of the budget; the other desks default to 30 percent each.
 const SHARE = { corvid: 0.4 };
 function shareOf(who) {
+  const tuned = tune.share(who);
+  if (tuned) return tuned;
   const v = Number(process.env[`AGENT_SHARE_${String(who).toUpperCase().replace(/[^A-Z]/g, "_")}`]);
   return Number.isFinite(v) && v > 0 ? Math.min(1, v) : SHARE[who] || 0.3;
 }

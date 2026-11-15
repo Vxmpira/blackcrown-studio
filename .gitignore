@@ -21,3 +21,7 @@ make-backups/
 arcade-scores.json
 studio-spend.json
 studio-crew.json
+studio-tuning.json
+studio-premarket.json
+studio-jobs-archive.json
+renders/

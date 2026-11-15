@@ -10,6 +10,7 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
+import { tune, tuningFlat } from "./tuning.mjs";
 import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
 export { recordSpend, getSpend, spendSummary };
 
@@ -29,6 +30,14 @@ const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
 // watchman tick below already reacts within a minute for free when something happens.
 const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
 const CYCLE_MS = CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
+// the live cadence: the owner's tuner wins; with no override and no .env
+// cadence Corvid keeps its once-a-day cycle at the set hour
+function cycleMs() {
+  try {
+    if (tuningFlat()["corvid.cycleEveryMin"].overridden || CYCLE_MS > 0) return tune.corvidCycleMs();
+  } catch {}
+  return CYCLE_MS;
+}
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 // Corvid thinks on the head model (strategy cycles, replies to the owner) and
 // works on the hands model (task steps, scheduled reports). Regent reviews every
@@ -494,7 +503,7 @@ export function heal() {
     const tidied = tidyCorvidQueue();
     if (tidied) report.push(`tidied the queue, closed ${tidied}`);
     // 4. kickstart: enabled but silent for 3x the cadence means the clock died
-    if (state.enabled && CYCLE_MS > 0 && state.lastCycleAt && now - state.lastCycleAt > CYCLE_MS * 3 + 10 * 60000) {
+    if (state.enabled && cycleMs() > 0 && state.lastCycleAt && now - state.lastCycleAt > cycleMs() * 3 + 10 * 60000) {
       pokeCycle("healer kickstart, the cycle clock went silent");
       report.push("kickstarted a silent cycle clock");
     }
@@ -746,7 +755,7 @@ export function parseModelJson(text) {
 // slows the task engine overnight, and again when the day's budget runs low
 export function nightFactor() {
   const h = etHour();
-  return (h >= 1 && h < 7 ? 2 : 1) * thrift();
+  return (tune.nightThrottle() && h >= 1 && h < 7 ? 2 : 1) * thrift();
 }
 
 let instCache = { at: 0, text: "" };
@@ -771,7 +780,7 @@ setInstitution(institutionBlock);
 
 // opts: { model, tier: "hands", who, hot, priority }
 function pickModel(opts) {
-  return opts.model || (opts.tier === "hands" ? WORK_MODEL : MODEL);
+  return opts.model || (opts.tier === "hands" ? tune.corvidWorkModel() || WORK_MODEL : tune.corvidModel() || MODEL);
 }
 async function think(system, user, maxTokens = 4000, opts = {}) {
   return callJSON(
@@ -1127,7 +1136,7 @@ export async function runCycle(trigger = "schedule") {
     return { ok: true };
   } catch (e) {
     state.status = "error";
-    if (CYCLE_MS) state.lastCycleAt = Date.now() - CYCLE_MS + 15 * 60000;
+    if (cycleMs()) state.lastCycleAt = Date.now() - cycleMs() + 15 * 60000;
     log("error", `Cycle failed, retrying in 15 min: ${e.message || e}`);
     if (!state.lastErrorPingAt || Date.now() - state.lastErrorPingAt > 6 * 3600 * 1000) {
       state.lastErrorPingAt = Date.now();
@@ -1413,6 +1422,13 @@ async function executeVideo(p) {
     }
     await discordSend(lines.join("\n"), { link: finalUrl });
     log("render", `#${p.number} video delivered`);
+    // the owner's TikTok channel gets the same file and caption, ready to
+    // download and post by hand
+    if (hooks.tiktokDrop) {
+      hooks
+        .tiktokDrop({ url: finalUrl, caption: p.caption || "", title: `#${p.number} ${p.summary || p.page}`, note: p.target ? `Selling ${p.target}.` : "" })
+        .catch((e) => log("error", `TikTok channel drop failed: ${String(e.message || e).slice(0, 160)}`));
+    }
   } catch (e) {
     p.renderingSince = 0;
     saveState();
@@ -1522,8 +1538,9 @@ async function reactToMessages(msgs) {
 // step budget, and tasks blocked on an owner decision are skipped until the
 // decision lands, so a self-feeding queue can never become runaway spend.
 // ---------------------------------------------------------------------------
-const WORK_GAP_MIN = Math.max(2, Number(process.env.AGENT_WORK_GAP_MIN || 5));
-const WORK_DAILY_CAP = Math.max(0, Number(process.env.AGENT_WORK_DAILY_CAP || 48));
+// live from the owner's tuner, .env values as defaults
+const workGapMin = () => Math.max(2, Number(tune.corvidWorkGapMin()) || 5);
+const workDailyCap = () => Math.max(0, Number(tune.corvidDailySteps()) || 0);
 
 const WORK_SYSTEM = `${IDENTITY}
 ${PROPOSAL_RULES}
@@ -1619,8 +1636,8 @@ async function workTick() {
     state.workDay = day;
     state.workSteps = 0;
   }
-  if (WORK_DAILY_CAP && (state.workSteps || 0) >= Math.floor(WORK_DAILY_CAP / nightFactor())) return;
-  if (state.lastWorkAt && Date.now() - state.lastWorkAt < WORK_GAP_MIN * nightFactor() * 60000) return;
+  if (workDailyCap() && (state.workSteps || 0) >= Math.floor(workDailyCap() / nightFactor())) return;
+  if (state.lastWorkAt && Date.now() - state.lastWorkAt < workGapMin() * nightFactor() * 60000) return;
   if (state.lastCycleAt && Date.now() - state.lastCycleAt < 2 * 60000) return;
   busy = true;
   state.lastWorkAt = Date.now();
@@ -1744,8 +1761,8 @@ export function startAgent() {
       // watchman is best effort, the schedule below still runs
     }
     if (!canSpend("corvid")) return;
-    if (CYCLE_MS > 0) {
-      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
+    if (cycleMs() > 0) {
+      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= cycleMs()) {
         runCycle("schedule").catch(() => {});
         return;
       }
@@ -1767,8 +1784,8 @@ export function startAgent() {
   log(
     "boot",
     `${AGENT_NAME} online. Discord: ${discordMode()}. Cadence: ${
-      CYCLE_MS > 0
-        ? `every ${CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN + "min" : CYCLE_EVERY_H + "h"}, around the clock`
+      cycleMs() > 0
+        ? `every ${Math.round(cycleMs() / 60000)}min, around the clock`
         : `daily ${CYCLE_HOUR_ET}:00 ET`
     } Watchman: checking signals every minute, cycles fire instantly on events.`
   );
@@ -1797,7 +1814,8 @@ export function agentState() {
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
     cycleEveryH: CYCLE_EVERY_H,
-    cycleEveryMin: CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN : 0,
+    cycleEveryMin: cycleMs() > 0 ? Math.round(cycleMs() / 60000) : 0,
+    workSteps: state.workDay === etDayKey() ? state.workSteps || 0 : 0,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
     minionReports: (state.minionReports || []).slice(-6).reverse(),
@@ -1807,6 +1825,10 @@ export function agentState() {
     log: state.log.slice(-40).reverse(),
     discord: state.discord,
   };
+}
+// the whole ask book, for the tuner's per-desk scorecard
+export function proposalBook() {
+  return (state.proposals || []).map((p) => ({ number: p.number, author: p.author || AGENT_NAME, status: p.status, kind: p.kind, createdAt: p.createdAt }));
 }
 export function setEnabled(on) {
   state.enabled = Boolean(on);

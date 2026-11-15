@@ -9,12 +9,15 @@ import { fileURLToPath } from "url";
 import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, nightFactor } from "./agent.mjs";
 import { MODELS, callLLM, callJSON, canSpend } from "./llm.mjs";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
-import { CREW_RULES, QUEUE_CAP, WAKE_GAP_MIN, admitRequest, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
+import { tune } from "./tuning.mjs";
+import { CREW_RULES, queueCap, wakeGapMin, admitRequest, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MODEL = (process.env.STAFF_MODEL || MODELS.minion).trim();
-const CYCLE_EVERY_H = Math.max(1, Number(process.env.STAFF_CYCLE_EVERY_H || 2));
+// live dials from the owner's tuner (Settings tab), .env values as defaults
+const staffModel = () => tune.staffModel() || MODEL;
+const cycleH = () => Math.max(1, Number(tune.staffCycleMs()) / 3600000 || 2);
 const POLL_SECONDS = Math.max(45, Number(process.env.STAFF_POLL_SECONDS || 75));
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const SEO_CHANNEL = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
@@ -306,12 +309,12 @@ async function fetchNew(key) {
 // opts: { who, hot, priority }. who is the desk (bard, herald, steward) so the
 // spend meter shows each one on its own line.
 async function callModel(system, user, maxTokens, opts = {}) {
-  const r = await callLLM({ who: opts.who || "staff", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority });
+  const r = await callLLM({ who: opts.who || "staff", model: staffModel(), system, user, maxTokens, hot: opts.hot, priority: opts.priority });
   return r.text;
 }
 async function think(system, user, maxTokens = 3200, opts = {}) {
   return callJSON(
-    { who: opts.who || "staff", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority },
+    { who: opts.who || "staff", model: staffModel(), system, user, maxTokens, hot: opts.hot, priority: opts.priority },
     parseModelJson
   );
 }
@@ -505,7 +508,7 @@ async function runStaffCycle(key, trigger = "schedule") {
     return { ok: true };
   } catch (e) {
     a.status = "watching";
-    a.lastCycleAt = Date.now() - CYCLE_EVERY_H * 3600000 + 15 * 60000;
+    a.lastCycleAt = Date.now() - cycleH() * 3600000 + 15 * 60000;
     log(key, "error", `cycle failed, retrying in 15 min: ${String(e.message || e).slice(0, 200)}`);
     saveState();
     return { ok: false, error: String(e.message || e) };
@@ -514,8 +517,8 @@ async function runStaffCycle(key, trigger = "schedule") {
 
 // the task engine: between cycles, staff grind their queues one step at a
 // time. Same guards as Corvid: step gap, daily budget, blocked tasks skipped.
-const WORK_GAP_MIN = Math.max(2, Number(process.env.STAFF_WORK_GAP_MIN || 6));
-const WORK_DAILY_CAP = Math.max(0, Number(process.env.STAFF_WORK_DAILY_CAP || 32));
+const workGapMin = () => Math.max(2, Number(tune.staffWorkGapMin()) || 6);
+const workDailyCap = () => Math.max(0, Number(tune.staffDailySteps()) || 0);
 
 const WORK_SCHEMA = `TASK MODE: advance ONE task right now, doing its real work, not planning it.
 Output STRICT JSON only:
@@ -549,8 +552,8 @@ async function staffWorkTick(key) {
     a.workDay = day;
     a.workSteps = 0;
   }
-  if (WORK_DAILY_CAP && (a.workSteps || 0) >= Math.floor(WORK_DAILY_CAP / nightFactor())) return;
-  if (a.lastWorkAt && Date.now() - a.lastWorkAt < WORK_GAP_MIN * nightFactor() * 60000) return;
+  if (workDailyCap() && (a.workSteps || 0) >= Math.floor(workDailyCap() / nightFactor())) return;
+  if (a.lastWorkAt && Date.now() - a.lastWorkAt < workGapMin() * nightFactor() * 60000) return;
   if (a.lastCycleAt && Date.now() - a.lastCycleAt < 2 * 60000) return;
   a.status = "thinking";
   a.lastWorkAt = Date.now();
@@ -658,7 +661,7 @@ export function startStaff() {
       const n = tidyStaffQueue(key);
       state[key].queueReset = "crew-v1";
       state[key].asap = "";
-      log(key, "task", `crew reset: ${n} duplicate or overflow tasks closed, queue capped at ${QUEUE_CAP} open`);
+      log(key, "task", `crew reset: ${n} duplicate or overflow tasks closed, queue capped at ${queueCap()} open`);
     }
   }
   saveState();
@@ -668,7 +671,7 @@ export function startStaff() {
       if (!a.enabled || a.status === "thinking") continue;
       // an owner task cycles within the minute; event cycles never run closer
       // than the crew wake gap, so a desk cannot be kept in back-to-back cycles
-      if (a.asap && (!a.lastCycleAt || Date.now() - a.lastCycleAt > WAKE_GAP_MIN * 60000)) {
+      if (a.asap && (!a.lastCycleAt || Date.now() - a.lastCycleAt > wakeGapMin() * 60000)) {
         const why = a.asap;
         a.asap = "";
         saveState();
@@ -676,7 +679,7 @@ export function startStaff() {
         continue;
       }
       if (!canSpend()) continue;
-      if (!a.lastCycleAt || Date.now() - a.lastCycleAt >= CYCLE_EVERY_H * 3600000) {
+      if (!a.lastCycleAt || Date.now() - a.lastCycleAt >= cycleH() * 3600000) {
         runStaffCycle(key, "schedule").catch(() => {});
         continue;
       }
@@ -700,7 +703,7 @@ export function startStaff() {
     log(
       key,
       "boot",
-      `${ROLES[key].name} hired and online. Cadence: every ${CYCLE_EVERY_H}h. Channel: ${
+      `${ROLES[key].name} hired and online. Cadence: every ${cycleH()}h. Channel: ${
         ROLES[key].channel ? (ROLES[key].channel === SEO_CHANNEL || ROLES[key].channel === CEO_CHANNEL ? "shared" : "own, two-way") : "none"
       }.${key === "steward" ? ` Community posting: ${ROLES[key].community ? "armed, max 2 a day" : "not wired"}.` : ""}`
     );
@@ -721,7 +724,9 @@ export function staffStates() {
       ? "working the queue"
       : state[key].status,
     lastCycleAt: state[key].lastCycleAt,
-    cycleEveryH: CYCLE_EVERY_H,
+    cycleEveryH: cycleH(),
+    workSteps: state[key].workDay === dayKey() ? state[key].workSteps || 0 : 0,
+    model: staffModel(),
     focus: state[key].focus,
     thought: state[key].thought,
     tasks: state[key].tasks,
@@ -829,7 +834,7 @@ export function staffHeal() {
           report.push(`${key}: requeued stale task ${String(tk.title).slice(0, 50)}`);
         }
       }
-      if (a.enabled && a.lastCycleAt && now - a.lastCycleAt > CYCLE_EVERY_H * 3600000 * 3 + 10 * 60000) {
+      if (a.enabled && a.lastCycleAt && now - a.lastCycleAt > cycleH() * 3600000 * 3 + 10 * 60000) {
         a.lastCycleAt = 0;
         report.push(`${key}: kickstarted a silent cycle clock`);
       }

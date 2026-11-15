@@ -23,12 +23,14 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { tune } from "./tuning.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CREW_PATH = process.env.CREW_STATE_PATH || path.join(__dirname, "studio-crew.json");
-export const QUEUE_CAP = Math.max(5, Number(process.env.CREW_QUEUE_CAP || 15));
-export const STALE_HOURS = Math.max(12, Number(process.env.CREW_STALE_HOURS || 72));
-export const WAKE_GAP_MIN = Math.max(1, Number(process.env.CREW_WAKE_GAP_MIN || 15));
+// live dials from the owner's tuner (Settings tab), .env values as defaults
+export const queueCap = () => Math.max(5, Number(tune.queueCap()) || 15);
+export const staleHours = () => Math.max(12, Number(tune.staleHours()) || 72);
+export const wakeGapMin = () => Math.max(1, Number(tune.wakeGapMin()) || 15);
 const REQUEST_TTL_H = 24;
 const MAX_OPEN_PER_PAIR = 2;
 const DUP_AT = 0.55; // similarity at which two asks or two tasks are the same thing
@@ -233,7 +235,7 @@ export function gapDigest(day) {
 export function shouldWake(desk) {
   const k = deskKey(desk);
   const last = crew.wakes[k] || 0;
-  if (Date.now() - last < WAKE_GAP_MIN * 60000) return false;
+  if (Date.now() - last < wakeGapMin() * 60000) return false;
   crew.wakes[k] = Date.now();
   save();
   return true;
@@ -258,9 +260,9 @@ export function findTwin(tasks, title) {
 // be closed by hygiene (measurements, tasks waiting on a pending proposal).
 // Returns {tasks, closed}; the caller closes ledger requests for closed tasks.
 export function tidyQueue(list, opts = {}) {
-  const cap = opts.cap || QUEUE_CAP;
+  const cap = opts.cap || queueCap();
   const protect = opts.protect || (() => false);
-  const staleMs = (opts.staleHours || STALE_HOURS) * 3600000;
+  const staleMs = (opts.staleHours || staleHours()) * 3600000;
   const keepDone = opts.keepDone ?? 12;
   const now = Date.now();
   const tasks = Array.isArray(list) ? list.filter(Boolean) : [];
@@ -490,7 +492,7 @@ export function crewState() {
   return {
     requests: crew.requests.slice(-60).reverse(),
     gaps: crew.gaps.slice().reverse(),
-    rules: { queueCap: QUEUE_CAP, staleHours: STALE_HOURS, wakeGapMin: WAKE_GAP_MIN, requestTtlHours: REQUEST_TTL_H, maxOpenPerPair: MAX_OPEN_PER_PAIR },
+    rules: { queueCap: queueCap(), staleHours: staleHours(), wakeGapMin: wakeGapMin(), requestTtlHours: REQUEST_TTL_H, maxOpenPerPair: MAX_OPEN_PER_PAIR },
   };
 }
 
@@ -500,4 +502,4 @@ export const CREW_RULES = `CREW RULES, how the desks work together:
 - Asks to another desk are for WORK only that desk can do (a render, a caption, a page, a test). Never ask a desk to paste data, numbers, html or a balance: read the page yourself with "read", or it is a tool gap.
 - CAN'T SEE: when a task needs something no tool and no Board line gives you, set "cant_see" to what is missing (max 12 words) and the task closes. The server puts it on the owner's tool-gap list and answers the asking desk for you. Never re-ask for anything on the tool-gap list.
 - One open ask per topic: an ask already listed under OPEN ASKS is still in flight; asking again does nothing.
-- Your queue holds 15 open tasks at most and duplicates merge, so queue the work that moves a number, not reminders.`;
+- Your queue holds a capped number of open tasks and duplicates merge, so queue the work that moves a number, not reminders.`;

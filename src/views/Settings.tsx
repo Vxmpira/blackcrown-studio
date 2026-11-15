@@ -6,6 +6,7 @@ import {
   resetBrief,
   type StudioConfig,
 } from "../api";
+import { Tuner } from "./Tuner";
 
 const Row: React.FC<{ k: string; ok?: boolean; value: React.ReactNode }> = ({
   k,
@@ -65,12 +66,15 @@ export const Settings: React.FC = () => {
     <>
       <div className="page-head">
         <span className="eyebrow">Settings</span>
-        <h1>Configuration</h1>
+        <h1>Control room</h1>
         <p>
-          Coach your generator and check your setup. Keys live in the .env file
-          on your server and are never shown here.
+          Tune every agent against what it costs and what it ships, run the
+          Pre-market Brief, and check your setup. Keys live in the .env file on
+          your server and are never shown here.
         </p>
       </div>
+
+      <Tuner />
 
       <div className="sgroup brief-group">
         <div className="sgroup-h">Marketing brief</div>

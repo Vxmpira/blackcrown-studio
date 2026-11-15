@@ -37,9 +37,14 @@ import {
   spendSummary,
   heal as corvidHeal,
   librarian as corvidLibrarian,
+  fileProposals,
+  parseModelJson,
+  proposalBook,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
-import { usageReport } from "./llm.mjs";
+import { usageReport, callJSON, MODELS } from "./llm.mjs";
+import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
+import { wirePremarket, runPremarket, premarketDue, premarketState } from "./premarket.mjs";
 import {
   startCeo,
   wireCeo,
@@ -2273,13 +2278,40 @@ app.post("/api/jobs/:id/toggle", (req, res) => {
   saveJobs(jobs);
   res.json({ ok: true, enabled: job.enabled });
 });
+// a deleted job is archived, never lost: the archive can put it back as it was
+const JOBS_ARCHIVE_PATH = path.join(__dirname, "studio-jobs-archive.json");
+function loadJobArchive() {
+  try {
+    return JSON.parse(fs.readFileSync(JOBS_ARCHIVE_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+}
 app.delete("/api/jobs/:id", (req, res) => {
   const jobs = loadJobs();
   const idx = jobs.findIndex((x) => x.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: "no such job" });
-  jobs.splice(idx, 1);
+  const [gone] = jobs.splice(idx, 1);
+  try {
+    const arc = loadJobArchive();
+    arc.push({ ...gone, deletedAt: Date.now() });
+    fs.writeFileSync(JOBS_ARCHIVE_PATH, JSON.stringify(arc.slice(-200), null, 2));
+  } catch {}
   saveJobs(jobs);
-  res.json({ ok: true });
+  res.json({ ok: true, archived: true });
+});
+app.get("/api/jobs/archive", (_req, res) => res.json({ jobs: loadJobArchive().slice().reverse() }));
+app.post("/api/jobs/archive/:id/restore", (req, res) => {
+  const arc = loadJobArchive();
+  const idx = arc.findIndex((x) => x.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "not in the archive" });
+  const [job] = arc.splice(idx, 1);
+  delete job.deletedAt;
+  const jobs = loadJobs();
+  if (!jobs.some((x) => x.id === job.id)) jobs.push(job);
+  saveJobs(jobs);
+  fs.writeFileSync(JOBS_ARCHIVE_PATH, JSON.stringify(arc, null, 2));
+  res.json({ ok: true, job });
 });
 
 // ----- the bot, alive: gateway presence + owner slash commands --------------
@@ -2415,29 +2447,103 @@ const STICKER_META = {
   blkc_onit: { description: "Corvid is on it", tags: "bird" },
   blkc_filed: { description: "Filed with Regent", tags: "file_folder" },
 };
+// how full the server's emoji and sticker shelves are: Discord's slot count
+// grows with the boost tier, static and animated emojis count separately
+const EMOJI_SLOTS = [50, 100, 150, 250];
+const STICKER_SLOTS = [5, 15, 30, 60];
+async function expressionShelf() {
+  const h = { authorization: `Bot ${BOT}` };
+  const [g, e, st] = await Promise.all([
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}`, { headers: h }).then((r) => r.json()),
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/emojis`, { headers: h }).then((r) => r.json()),
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/stickers`, { headers: h }).then((r) => r.json()),
+  ]);
+  const tier = Math.max(0, Math.min(3, Number(g?.premium_tier) || 0));
+  const emojis = Array.isArray(e) ? e : [];
+  const stickers = Array.isArray(st) ? st : [];
+  return {
+    tier,
+    boosts: g?.premium_subscription_count ?? null,
+    emojiLimit: EMOJI_SLOTS[tier],
+    staticUsed: emojis.filter((x) => !x.animated).length,
+    animatedUsed: emojis.filter((x) => x.animated).length,
+    stickerLimit: STICKER_SLOTS[tier],
+    stickersUsed: stickers.length,
+    emojiNames: emojis.map((x) => x.name),
+    stickerNames: stickers.map((x) => x.name),
+  };
+}
+app.get("/api/discord/expressions", async (_req, res) => {
+  if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
+  try {
+    const shelf = await expressionShelf();
+    const edir = path.join(__dirname, "assets/discord/emoji");
+    const sdir = path.join(__dirname, "assets/discord/stickers");
+    const list = (d, ext) => (fs.existsSync(d) ? fs.readdirSync(d).filter((x) => ext.test(x)) : []);
+    const packEmoji = list(edir, /\.(png|gif)$/i).map((f) => f.replace(/\.(png|gif)$/i, ""));
+    const packStickers = list(sdir, /\.png$/i).map((f) => f.replace(/\.png$/i, ""));
+    res.json({
+      ...shelf,
+      pack: { emojis: packEmoji.length, stickers: packStickers.length },
+      waiting: {
+        emojis: packEmoji.filter((n) => !shelf.emojiNames.includes(n)).length,
+        stickers: packStickers.filter((n) => !shelf.stickerNames.includes(n)).length,
+      },
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+// stock the shelves: uploads every pack file the server does not have yet,
+// never a duplicate name, and stops at the tier's slot limit
 app.post("/api/discord/expressions", async (_req, res) => {
   if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
   const out = { emojis: [], stickers: [] };
+  let shelf;
+  try {
+    shelf = await expressionShelf();
+  } catch (e) {
+    return res.status(502).json({ error: `could not read the server's shelves: ${String(e.message || e).slice(0, 160)}` });
+  }
+  let staticFree = shelf.emojiLimit - shelf.staticUsed;
+  let animatedFree = shelf.emojiLimit - shelf.animatedUsed;
+  let stickerFree = shelf.stickerLimit - shelf.stickersUsed;
   const edir = path.join(__dirname, "assets/discord/emoji");
-  for (const f of fs.existsSync(edir) ? fs.readdirSync(edir).filter((x) => x.endsWith(".png")) : []) {
-    const name = f.replace(/\.png$/, "");
+  for (const f of fs.existsSync(edir) ? fs.readdirSync(edir).filter((x) => /\.(png|gif)$/i.test(x)).sort() : []) {
+    const name = f.replace(/\.(png|gif)$/i, "").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32);
+    const animated = /\.gif$/i.test(f);
+    if (shelf.emojiNames.includes(name)) continue;
+    if (animated ? animatedFree <= 0 : staticFree <= 0) {
+      out.emojis.push(`${name}: skipped, no ${animated ? "animated" : "static"} slots left`);
+      continue;
+    }
     try {
       const b64 = fs.readFileSync(path.join(edir, f)).toString("base64");
       const r = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/emojis`, {
         method: "POST",
         headers: { authorization: `Bot ${BOT}`, "content-type": "application/json" },
-        body: JSON.stringify({ name, image: `data:image/png;base64,${b64}` }),
+        body: JSON.stringify({ name, image: `data:image/${animated ? "gif" : "png"};base64,${b64}` }),
       });
       const j = await r.json().catch(() => ({}));
       out.emojis.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+      if (r.ok) {
+        if (animated) animatedFree--;
+        else staticFree--;
+      }
+      if (r.status === 429) await new Promise((ok) => setTimeout(ok, (Number(j?.retry_after) || 2) * 1000));
     } catch (e) {
       out.emojis.push(`${name}: ${e.message || e}`);
     }
   }
   const sdir = path.join(__dirname, "assets/discord/stickers");
-  for (const f of fs.existsSync(sdir) ? fs.readdirSync(sdir).filter((x) => x.endsWith(".png")) : []) {
+  for (const f of fs.existsSync(sdir) ? fs.readdirSync(sdir).filter((x) => x.endsWith(".png")).sort() : []) {
     const name = f.replace(/\.png$/, "");
-    const meta = STICKER_META[name] || { description: "BlackCrown sticker", tags: "crown" };
+    if (shelf.stickerNames.includes(name)) continue;
+    if (stickerFree <= 0) {
+      out.stickers.push(`${name}: skipped, no sticker slots left`);
+      continue;
+    }
+    const meta = STICKER_META[name] || { description: "Eclipse-X sticker", tags: "crown" };
     try {
       const fd = new FormData();
       fd.append("name", name);
@@ -2451,6 +2557,7 @@ app.post("/api/discord/expressions", async (_req, res) => {
       });
       const j = await r.json().catch(() => ({}));
       out.stickers.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+      if (r.ok) stickerFree--;
     } catch (e) {
       out.stickers.push(`${name}: ${e.message || e}`);
     }
@@ -2827,6 +2934,98 @@ async function forgeOverlay({ src, lines, name, target }) {
   } catch {}
   return `${ADMIN_PUBLIC_URL}/api/renders/${clean}.mp4`;
 }
+
+// ---------------------------------------------------------------------------
+// THE TIKTOK DROP: every finished video lands in the owner's #tiktok-automation
+// channel as a file to download, with its caption ready to paste. TikTok
+// posting stays by his hand; nothing here posts to TikTok.
+// ---------------------------------------------------------------------------
+const TIKTOK_CHANNEL = (process.env.TIKTOK_CHANNEL_ID || "1532802248042610738").trim();
+const DROP_BOT = (process.env.DISCORD_BOT_TOKEN || "").trim();
+const DROP_MAX_BYTES = Math.max(1, Number(process.env.TIKTOK_DROP_MAX_MB || 9.5)) * 1048576;
+let lastDrop = null;
+function renderFileFor(url) {
+  const m = String(url || "").match(/\/(?:api\/)?renders\/([A-Za-z0-9._-]+\.mp4)(?:\?|$)/);
+  if (!m) return null;
+  const f = path.join(RENDERS_DIR, m[1]);
+  return fs.existsSync(f) ? f : null;
+}
+async function postToChannel(channel, content, file) {
+  if (!(DROP_BOT && channel)) return { ok: false, status: "no bot token or channel" };
+  if (file) {
+    const fd = new FormData();
+    fd.append("payload_json", JSON.stringify({ content }));
+    fd.append("files[0]", new Blob([fs.readFileSync(file)], { type: "video/mp4" }), path.basename(file));
+    const r = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, { method: "POST", headers: { authorization: `Bot ${DROP_BOT}` }, body: fd });
+    if (r.ok) return { ok: true, attached: true };
+  }
+  const r = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bot ${DROP_BOT}` },
+    body: JSON.stringify({ content }),
+  });
+  return { ok: r.ok, attached: false, status: r.status };
+}
+async function tiktokDrop({ file, url, caption, title, note }) {
+  const f = file || renderFileFor(url);
+  let size = 0;
+  try {
+    size = f ? fs.statSync(f).size : 0;
+  } catch {}
+  const cap = String(caption || "").trim();
+  const content = [
+    `**${String(title || "New video").slice(0, 120)}** · ready for TikTok`,
+    note ? String(note).slice(0, 600) : "",
+    cap ? "Caption, ready to paste:\n```\n" + cap.slice(0, 1100).replace(/```/g, "'''") + "\n```" : "",
+    `Download: ${fixRenderUrl(url)}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1990);
+  const attach = f && size && size <= DROP_MAX_BYTES ? f : null;
+  let r = await postToChannel(TIKTOK_CHANNEL, content, attach);
+  // the bot cannot reach the TikTok channel: Corvid's channel gets it instead
+  if (!r.ok && JOBS_CH.corvid) r = { ...(await postToChannel(JOBS_CH.corvid, `${content}\n(TikTok channel unreachable for the bot, delivered here instead)`.slice(0, 1990), attach)), fallback: true };
+  lastDrop = { at: Date.now(), title: String(title || "").slice(0, 120), ok: r.ok, attached: Boolean(r.attached), fallback: Boolean(r.fallback), status: r.status || null };
+  return r.ok;
+}
+app.get("/api/tiktok-drop", (_req, res) => res.json({ channel: TIKTOK_CHANNEL, last: lastDrop }));
+
+// ---------------------------------------------------------------------------
+// THE PRE-MARKET BRIEF: Korvus's overnight read as a daily 35 second video,
+// rendered here for free, dropped in the TikTok channel, X and YouTube filed
+// as asks through Regent. premarket.mjs holds the whole pipeline.
+// ---------------------------------------------------------------------------
+wirePremarket({
+  feedUrl: INTEL_STATUS_URL.replace(/intel-status\/?$/, "brief"),
+  feedKey: INTEL_KEY,
+  rendersDir: RENDERS_DIR,
+  publicUrl: ADMIN_PUBLIC_URL,
+  callJSON,
+  parseJson: parseModelJson,
+  model: MODELS.hands,
+  drop: (x) => tiktokDrop(x),
+  fileAsks: (list, author) => fileProposals(list, author),
+  community: async (text) => {
+    const ch = (process.env.STEWARD_COMMUNITY_CHANNEL_ID || "").trim();
+    return (await postToChannel(ch, String(text).slice(0, 1990))).ok;
+  },
+  settings: () => tune.brief(),
+  log: (m) => console.log("[premarket]", m),
+});
+setInterval(() => {
+  try {
+    if (premarketDue()) runPremarket({ reason: "schedule" }).catch(() => {});
+  } catch {}
+}, 60 * 1000);
+app.get("/api/premarket", (_req, res) => res.json({ ...premarketState(), settings: tune.brief() }));
+// rendering takes most of a minute, so the button starts it and the page polls
+app.post("/api/premarket/run", (_req, res) => {
+  const st = premarketState();
+  if (st.running) return res.json({ ok: false, error: "a brief is already rendering" });
+  runPremarket({ force: true, reason: "owner pressed run" }).catch(() => {});
+  res.json({ ok: true, started: true });
+});
 
 // ---------------------------------------------------------------------------
 // THE FURNACE: video rendering on the company's own AWS. An approved creative
@@ -3575,6 +3774,82 @@ function recordWire(from, to, text) {
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 // the crew ledger: every desk-to-desk ask and the owner's tool-gap list
 app.get("/api/crew", (_req, res) => res.json(crewState()));
+// ---------------------------------------------------------------------------
+// THE TUNER: the owner's live dials for every desk plus each desk's
+// scorecard, so he can see what an agent costs against what it ships and
+// turn the dial on the spot. Values persist in studio-tuning.json and apply
+// on the next tick, no restart.
+// ---------------------------------------------------------------------------
+const TUNER_DESKS = {
+  corvid: { name: "Corvid", spend: ["corvid", "minions"], author: "corvid" },
+  herald: { name: "Herald", spend: ["herald", "herald-minions"], author: "herald" },
+  steward: { name: "Steward", spend: ["steward", "steward-minions"], author: "steward" },
+  bard: { name: "Bard", spend: ["bard", "bard-minions"], author: "bard" },
+  regent: { name: "Regent", spend: ["regent"], author: null },
+  brief: { name: "Pre-market Brief", spend: ["brief"], author: "brief" },
+  jobs: { name: "Scheduled jobs", spend: ["jobs"], author: null },
+};
+function tunerStats() {
+  const spend = getSpend();
+  const days = Object.keys(spend).sort();
+  const today = dayKey();
+  const last7 = days.slice(-7);
+  const book = proposalBook();
+  const weekAgo = Date.now() - 7 * 864e5;
+  const dayAgo = Date.now() - 864e5;
+  const staff = Object.fromEntries(staffStates().map((x) => [x.key, x]));
+  const corvid = agentState();
+  const crew = crewState();
+  const out = {};
+  for (const [key, d] of Object.entries(TUNER_DESKS)) {
+    const sum = (list) =>
+      list.reduce(
+        (a, day) => {
+          for (const w of d.spend) {
+            const e = (spend[day] || {})[w];
+            if (!e) continue;
+            a.usd += e.usd || 0;
+            a.calls += e.calls || 0;
+            a.read += e.cacheRead || 0;
+            a.total += (e.in || 0) + (e.cacheRead || 0) + (e.cacheWrite || 0);
+          }
+          return a;
+        },
+        { usd: 0, calls: 0, read: 0, total: 0 }
+      );
+    const t = sum([today]);
+    const w = sum(last7);
+    const mine = d.author ? book.filter((p) => String(p.author || "").toLowerCase() === d.author && (p.createdAt || 0) >= weekAgo) : [];
+    const approved = mine.filter((p) => ["approved", "executed", "done"].includes(String(p.status))).length;
+    const rejected = mine.filter((p) => String(p.status) === "rejected").length;
+    const tasks = key === "corvid" ? corvid.tasks || [] : staff[key] ? staff[key].tasks || [] : [];
+    out[key] = {
+      name: d.name,
+      enabled: key === "corvid" ? corvid.enabled : staff[key] ? staff[key].enabled : null,
+      status: key === "corvid" ? corvid.status : staff[key] ? staff[key].status : null,
+      model: key === "corvid" ? tune.corvidModel() || null : staff[key] ? staff[key].model : null,
+      today: { usd: Math.round(t.usd * 100) / 100, calls: t.calls, cachePct: t.total ? Math.round((t.read / t.total) * 100) : 0 },
+      week: { usd: Math.round(w.usd * 100) / 100, calls: w.calls, cachePct: w.total ? Math.round((w.read / w.total) * 100) : 0 },
+      steps: key === "corvid" ? corvid.workSteps || 0 : staff[key] ? staff[key].workSteps || 0 : null,
+      openTasks: tasks.filter((x) => x.status !== "done").length,
+      doneToday: tasks.filter((x) => x.status === "done" && (x.closedAt || x.lastStepAt || 0) >= dayAgo && !x.closed).length,
+      asks: d.author ? { filed: mine.length, approved, rejected, pending: mine.filter((p) => p.status === "pending").length, approvalPct: mine.length ? Math.round((approved / mine.length) * 100) : null } : null,
+      costPerApproved: d.author && approved ? Math.round((w.usd / approved) * 100) / 100 : null,
+      asksOut: d.author ? crew.requests.filter((r) => r.from === key && r.status === "open").length : null,
+      asksIn: crew.requests.filter((r) => r.to === key && r.status === "open").length,
+    };
+  }
+  return { desks: out, budget: usageReport().budget, gaps: crew.gaps.filter((g) => g.status === "open").length };
+}
+const TUNER_MODELS = ["", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];
+app.get("/api/tuning", (_req, res) => {
+  res.json({ schema: TUNING_SCHEMA, values: tuningFlat(), models: TUNER_MODELS, defaults: MODELS, stats: tunerStats() });
+});
+app.post("/api/tuning", (req, res) => {
+  const changed = setTuning(req.body?.patch || {});
+  if (changed.length) console.log("tuner changed:", changed.join(", "));
+  res.json({ ok: true, changed, values: tuningFlat(), stats: tunerStats() });
+});
 app.post("/api/crew/gaps/:id/close", (req, res) => {
   const g = closeGap(String(req.params.id));
   if (!g) return res.status(404).json({ error: "No such gap." });
@@ -3583,6 +3858,8 @@ app.post("/api/crew/gaps/:id/close", (req, res) => {
 
 wireHooks({
   readPage: readAnySource,
+  // every finished video also lands in the TikTok channel, unless the tuner says no
+  tiktokDrop: (x) => (tune.videoDrop() ? tiktokDrop(x) : Promise.resolve(false)),
   forge: forgeOverlay,
   awsRender: awsRenderVideo,
   // Corvid's asks go through the crew ledger like every other desk's: a
