@@ -5,11 +5,11 @@
 // same proposal book Corvid uses, so Regent reviews one pipeline.
 import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, noteTitle, nightFactor } from "./agent.mjs";
 import { MODELS, callLLM, callJSON, canSpend } from "./llm.mjs";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
+import { CREW_RULES, QUEUE_CAP, WAKE_GAP_MIN, admitRequest, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -328,9 +328,11 @@ function dayKey() {
 async function runStaffMinion(key, minion, task, context) {
   const sys = ROLES[key].minions[minion];
   if (!sys) return;
+  // minions are never blind: any page the brief names rides along, read live
+  const eyes = minionEyes(`${task}\n${context || ""}`, deps.readPage);
   const report = await callModel(
     sys,
-    `Task from ${ROLES[key].name}: ${task}\n\nContext:\n${String(context || "").slice(0, 2500)}`,
+    `Task from ${ROLES[key].name}: ${task}\n\nContext:\n${String(context || "").slice(0, 2500)}${eyes ? `\n\n${eyes}` : ""}`,
     9000,
     { who: `${key}-minions` }
   );
@@ -355,6 +357,49 @@ export function wireStaff(d) {
   deps = { ...deps, ...d };
 }
 
+// Every desk-to-desk ask goes through the crew ledger first: a repeat merges,
+// a desk holds at most two open asks to another desk, and anything on the
+// tool-gap list is refused. Only an admitted ask becomes a task, and it nudges
+// the receiver's task engine instead of ordering a paid cycle.
+function routeRequest(fromKey, to, ask, prefix) {
+  const from = String(fromKey || "").toLowerCase();
+  const dest = String(to || "").toLowerCase();
+  const text = String(ask || "").trim().slice(0, 120);
+  if (!text || dest === from || !(dest === "corvid" || ROLES[dest])) return { ok: false, reason: "no such desk" };
+  const adm = admitRequest(from, dest, text);
+  if (!adm.ok) {
+    log(from, "request", `not sent to ${dest}: ${String(adm.reason).slice(0, 140)}`);
+    return adm;
+  }
+  const title = `${prefix || `From ${ROLES[from]?.name || from}`}: ${text}`;
+  if (dest === "corvid") corvidAddTask(title, { from, reqId: adm.id });
+  else staffAddTask(dest, title, { from, reqId: adm.id });
+  deps.wire?.(from, dest, text);
+  log(from, "request", `${dest} <- ${text.slice(0, 80)}`);
+  return adm;
+}
+// a desk said CAN'T SEE: the task closes, the gap goes on the owner's list,
+// and the desk that asked is told once instead of asking again
+function cantSee(key, t, what) {
+  const gap = recordGap(key, what, t.title);
+  t.status = "done";
+  t.closed = `can't see: ${String(what).slice(0, 80)}`;
+  if (t.reqId) {
+    const r = closeRequest(t.reqId, "cant_see", String(what));
+    if (r && r.from && r.from !== key) deps.wire?.(key, r.from, `can't see: ${String(what).slice(0, 80)} (on the owner's tool-gap list)`);
+  }
+  log(key, "work", `can't see "${String(what).slice(0, 80)}", on the owner's tool-gap list${gap ? ` (${gap.count}x)` : ""}`);
+}
+function tidyStaffQueue(key) {
+  const a = state[key];
+  const r = tidyQueue(a.tasks, { protect: (t) => Boolean(t.source), keepDone: 6 });
+  a.tasks = r.tasks;
+  for (const t of r.closed) if (t.reqId) closeRequest(t.reqId, "closed", t.closed || "");
+  if (r.closed.length) log(key, "task", `queue tidied: closed ${r.closed.length} (duplicates, stale or over the cap)`);
+  saveState();
+  return r.closed.length;
+}
+
 const CYCLE_SCHEMA = `Output STRICT JSON only:
 {
  "focus": "what you are on, under 15 words",
@@ -365,11 +410,12 @@ const CYCLE_SCHEMA = `Output STRICT JSON only:
  "proposals": [{"page":"...","kind":"title|meta|content|automation|campaign|creative|other","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video, shots, motion, pacing, NEVER any words or typography in the footage", "overlay":[{"text":"exact words baked on screen later, max 44 chars","t":0,"d":3}] up to 3 timed lines, video only","slides":["..."],"caption":"...","brand":"korvus"}],
  "delegations": [{"minion":"...","task":"one focused job","context":"what it needs"}],
  "assignments": [{"to":"corvid|herald","task":"max 12 words"}],
- "requests": [{"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"}],
+ "requests": [{"to":"corvid|herald|steward|bard","ask":"WORK you need from that desk, max 14 words, never data"}],
  "community_post": "a post for the Eclipse-X community channel, or empty string"
 }
-Max 2 brain_notes, 2 proposals, 2 delegations, 2 assignments, 2 requests per cycle. Only Steward uses assignments and community_post; requests are for EVERY desk, use them to pull what you need from the floor. Never re-file anything listed as pending.
-NEVER END A CYCLE WITH AN EMPTY QUEUE: if your open tasks would drop below 2, create the next highest leverage tasks from your doctrine and the data before you finish. Delegate every parallelizable job, an unused minion is wasted payroll.`;
+Max 2 brain_notes, 2 proposals, 2 delegations, 2 assignments, 2 requests per cycle. Only Steward uses assignments and community_post; requests are for EVERY desk, but only for work that desk alone can do. Never re-file anything listed as pending, and never repeat an ask listed under OPEN ASKS on the Board.
+NEVER END A CYCLE WITH AN EMPTY QUEUE: if your open tasks would drop below 2, queue the next tasks that move a number (visits, signups, paid, MRR) before you finish. Delegate a job to a minion when it saves you a step.
+${CREW_RULES}`;
 
 async function runStaffCycle(key, trigger = "schedule") {
   const a = state[key];
@@ -399,14 +445,12 @@ async function runStaffCycle(key, trigger = "schedule") {
     a.thought = String(out.thought || "").slice(0, 700);
     a.focus = String(out.focus || a.focus).slice(0, 180);
     if (Array.isArray(out.tasks)) {
-      a.tasks = out.tasks
-        .slice(0, 8)
-        .map((t) => ({
-          id: crypto.randomBytes(4).toString("hex"),
-          title: String(t.title || "").slice(0, 120),
-          status: ["open", "doing", "done"].includes(t.status) ? t.status : "open",
-        }))
-        .filter((t) => t.title);
+      // merge, never replace: a restated task keeps its page source, park and
+      // request link; an ask from another desk stays until it is answered or
+      // closed as can't see
+      a.tasks = mergeCycleTasks(a.tasks, out.tasks, { max: 8, protect: (t) => Boolean(t.reqId) }).tasks;
+      for (const t of a.tasks) if (t.status === "done" && t.reqId) closeRequest(t.reqId, "answered");
+      tidyStaffQueue(key);
     }
     for (const note of Array.isArray(out.brain_notes) ? out.brain_notes.slice(0, 2) : []) {
       const nm = String(note.name || "").replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
@@ -415,27 +459,12 @@ async function runStaffCycle(key, trigger = "schedule") {
     const filed = fileProposals(Array.isArray(out.proposals) ? out.proposals.slice(0, 2) : [], role.name);
     if (filed.length) log(key, "filed", filed.map((p) => `#${p.number} ${p.summary}`).join("; "));
     if (Array.isArray(out.requests)) {
-      for (const rq of out.requests.slice(0, 2)) {
-        const ask = String(rq.ask || "").trim().slice(0, 120);
-        const to = String(rq.to || "").toLowerCase();
-        if (!ask || to === key) continue;
-        const title = `From ${role.name}: ${ask}`;
-        if (to === "corvid") corvidAddTask(title);
-        else if (ROLES[to]) staffAddTask(to, title);
-        else continue;
-        deps.wire?.(key, to, ask);
-        log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
-      }
+      for (const rq of out.requests.slice(0, 2)) routeRequest(key, rq.to, rq.ask);
     }
     if (role.flags.assigns && Array.isArray(out.assignments)) {
       for (const as of out.assignments.slice(0, 2)) {
-        const title = `${role.name}: ${String(as.task || "").slice(0, 100)}`;
-        if (!String(as.task || "").trim()) continue;
-        if (as.to === "corvid") corvidAddTask(title);
-        else if (as.to === "herald") staffAddTask("herald", title);
-        else continue;
-        deps.wire?.(key, as.to, String(as.task));
-        log(key, "assign", `${as.to} <- ${String(as.task).slice(0, 80)}`);
+        if (!String(as.task || "").trim() || !["corvid", "herald"].includes(as.to)) continue;
+        routeRequest(key, as.to, String(as.task).slice(0, 100), role.name);
       }
     }
     if (
@@ -500,18 +529,20 @@ Output STRICT JSON only:
  "request": {"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"} optional, any desk,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, an approval, tomorrow's data), park it that long instead of burning steps on it,
  "read": {"page":"korvus.html or korvus:path/file","find":"optional words near the part you need"} optional: the server hands you that file's real source on your next step,
+ "cant_see": "optional, max 12 words: what this task needs that no read and no BOARD line shows you; the task closes and it goes on the owner's tool-gap list",
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
-Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing and park it. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.`;
+Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing and park it. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.
+${CREW_RULES}`;
 
 async function staffWorkTick(key) {
   const a = state[key];
   const role = ROLES[key];
   if (!a.enabled || a.status === "thinking") return;
-  // round robin through the queue, skipping parked tasks, oldest step first
+  // round robin through the queue, skipping parked tasks, oldest step first;
+  // a task holding the page source it asked for always goes next
   const nowMs = Date.now();
-  const open = a.tasks.filter((x) => x.status !== "done" && !(x.parkUntil && x.parkUntil > nowMs));
-  const t = open.sort((x, y) => (x.lastStepAt || 0) - (y.lastStepAt || 0))[0];
+  const t = pickNext(a.tasks, (x) => !(x.parkUntil && x.parkUntil > nowMs));
   if (!t) return;
   const day = dayKey();
   if (a.workDay !== day) {
@@ -527,9 +558,17 @@ async function staffWorkTick(key) {
   saveState();
   log(key, "work", `advancing: ${t.title}`);
   try {
+    let board = "";
+    try {
+      board = deps.board ? String((await deps.board(key)) || "") : "";
+    } catch {
+      board = "";
+    }
     const user = [
       `THE TASK: ${t.title}`,
+      t.reqId ? `THIS TASK IS AN ASK FROM ANOTHER DESK. Do the work and mark it done, or answer cant_see once if no read and no BOARD line can give it. Never answer with an ask of your own about the same thing.` : "",
       `Current focus: ${a.focus}`,
+      board,
       `Other open tasks (context only): ${JSON.stringify(a.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title))}`,
       `YOUR Playbook.md (excerpt):\n${vaultRead(key, "Playbook.md").slice(0, 800) || "(not started)"}`,
       key === "steward" ? `YOUR Projects.md (excerpt):\n${vaultRead(key, "Projects.md").slice(0, 1200) || "(not started)"}` : "",
@@ -552,6 +591,8 @@ async function staffWorkTick(key) {
     if (out.thought) a.thought = String(out.thought).slice(0, 700);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
+    if (out.cant_see && String(out.cant_see).trim() && !t.source) cantSee(key, t, String(out.cant_see).trim());
+    if (t.status === "done" && t.reqId) closeRequest(t.reqId, "answered");
     if (out.park_hours && t.status !== "done") {
       const h = Math.min(24, Math.max(1, Number(out.park_hours) || 1));
       t.parkUntil = Date.now() + h * 3600000;
@@ -561,19 +602,7 @@ async function staffWorkTick(key) {
       const filed = fileProposals([out.proposal], role.name);
       if (filed.length) log(key, "filed", `#${filed[0].number} ${filed[0].summary}`);
     }
-    if (out.request && out.request.ask) {
-      const to = String(out.request.to || "").toLowerCase();
-      const ask = String(out.request.ask).trim().slice(0, 120);
-      if (ask && to !== key) {
-        const title = `From ${role.name}: ${ask}`;
-        if (to === "corvid") corvidAddTask(title);
-        else if (ROLES[to]) staffAddTask(to, title);
-        if (to === "corvid" || ROLES[to]) {
-          deps.wire?.(key, to, ask);
-          log(key, "request", `${to} <- ${ask.slice(0, 80)}`);
-        }
-      }
-    }
+    if (out.request && out.request.ask) routeRequest(key, out.request.to, out.request.ask);
     if (out.note && out.note.name && out.note.body) {
       const nm = String(out.note.name).replace(/[^a-zA-Z0-9 ._-]/g, "").trim();
       if (nm) vaultWrite(key, nm.replace(/\.?md$/i, "") + ".md", String(out.note.body).slice(0, 12000));
@@ -581,11 +610,8 @@ async function staffWorkTick(key) {
     if (out.delegation && out.delegation.minion) {
       await runStaffMinion(key, String(out.delegation.minion).trim(), String(out.delegation.task || t.title).slice(0, 160), out.delegation.context);
     }
-    if (role.flags.assigns && out.assignment && out.assignment.to && out.assignment.task) {
-      const title = `${role.name}: ${String(out.assignment.task).slice(0, 100)}`;
-      if (out.assignment.to === "corvid") corvidAddTask(title);
-      else if (out.assignment.to === "herald") staffAddTask("herald", title);
-      log(key, "assign", `${out.assignment.to} <- ${String(out.assignment.task).slice(0, 80)}`);
+    if (role.flags.assigns && out.assignment && ["corvid", "herald"].includes(out.assignment.to) && out.assignment.task) {
+      routeRequest(key, out.assignment.to, String(out.assignment.task).slice(0, 100), role.name);
     }
     if (out.say && String(out.say).trim()) {
       await sendTo(role.channel, `**${role.name.toUpperCase()} //** ${String(out.say).slice(0, 300)}`, { agent: key });
@@ -627,14 +653,22 @@ export function startStaff() {
   for (const key of Object.keys(ROLES)) {
     ensureVault(key);
     if (state[key].status === "thinking") state[key].status = "watching";
+    // one-time reset of the request storm: duplicates merge, the queue caps
+    if (state[key].queueReset !== "crew-v1") {
+      const n = tidyStaffQueue(key);
+      state[key].queueReset = "crew-v1";
+      state[key].asap = "";
+      log(key, "task", `crew reset: ${n} duplicate or overflow tasks closed, queue capped at ${QUEUE_CAP} open`);
+    }
   }
   saveState();
   setInterval(() => {
     for (const key of Object.keys(ROLES)) {
       const a = state[key];
       if (!a.enabled || a.status === "thinking") continue;
-      // a fresh task never waits for the schedule: cycle within the minute
-      if (a.asap && (!a.lastCycleAt || Date.now() - a.lastCycleAt > 2 * 60000)) {
+      // an owner task cycles within the minute; event cycles never run closer
+      // than the crew wake gap, so a desk cannot be kept in back-to-back cycles
+      if (a.asap && (!a.lastCycleAt || Date.now() - a.lastCycleAt > WAKE_GAP_MIN * 60000)) {
         const why = a.asap;
         a.asap = "";
         saveState();
@@ -799,6 +833,9 @@ export function staffHeal() {
         a.lastCycleAt = 0;
         report.push(`${key}: kickstarted a silent cycle clock`);
       }
+      // queue hygiene: duplicates merge, 72h dead tasks close, 15 open max
+      const tidied = tidyStaffQueue(key);
+      if (tidied) report.push(`${key}: tidied the queue, closed ${tidied}`);
     }
     if (report.length) {
       saveState();
@@ -810,13 +847,29 @@ export function staffHeal() {
   return report;
 }
 
-export function staffAddTask(key, title) {
+// opts.from: the desk that asked; opts.reqId: the ledger entry it answers.
+// The owner's own tasks (admin, Discord) still order a cycle within the
+// minute. An ask from another desk only nudges the task engine, and at most
+// once every 15 minutes, so two desks can never ping-pong paid cycles.
+export function staffAddTask(key, title, opts = {}) {
   if (!state[key]) return null;
-  const t = { id: crypto.randomBytes(4).toString("hex"), title: String(title || "").slice(0, 120), status: "open" };
-  if (!t.title) return null;
-  state[key].tasks.push(t);
-  state[key].tasks = state[key].tasks.slice(-12);
-  state[key].asap = `a new task just landed: ${t.title}`.slice(0, 140);
+  const text = String(title || "").slice(0, 120);
+  if (!text) return null;
+  const a = state[key];
+  const twin = findTwin(a.tasks, text);
+  if (twin) {
+    twin.merged = (twin.merged || 0) + 1;
+    if (opts.reqId && !twin.reqId) twin.reqId = opts.reqId;
+    else if (opts.reqId) closeRequest(opts.reqId, "merged", `same as the open task "${twin.title.slice(0, 60)}"`);
+    log(key, "task", `merged into an open task: ${text}`);
+    saveState();
+    return twin;
+  }
+  const t = newTask(text, { ...(opts.from ? { from: String(opts.from) } : {}), ...(opts.reqId ? { reqId: opts.reqId } : {}) });
+  a.tasks.push(t);
+  tidyStaffQueue(key);
+  if (!opts.from) a.asap = `a new task just landed: ${t.title}`.slice(0, 140);
+  else if (shouldWake(key)) a.lastWorkAt = 0;
   log(key, "task", `queued: ${t.title}`);
   saveState();
   return t;

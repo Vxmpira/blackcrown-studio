@@ -55,6 +55,7 @@ import {
   readPageSource,
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
+import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines } from "./crew.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -1514,7 +1515,7 @@ async function applyMakeEdit({ scenarioId, current, next }) {
 }
 
 // "read" page make: the desks open the engine the same way they open a page
-function readAnySource(page, find) {
+function readAnySource(page, find, max) {
   if (/^make(:\d+)?$/i.test(String(page || "").trim())) {
     if (!MAKE_TOKEN) return { err: "MAKE_API_TOKEN is not set on the server, the engine cannot be read" };
     const text = engineCache.text;
@@ -1530,7 +1531,62 @@ function readAnySource(page, find) {
     const out = text.slice(from, from + 7000);
     return { page: "make (the TikTok engine)", from, text: out, size: text.length, more: from + out.length < text.length };
   }
-  return readPageSource(page, find);
+  return max ? readPageSource(page, find, max) : readPageSource(page, find);
+}
+
+// ---------------------------------------------------------------------------
+// THE BOARD: the facts every desk kept asking each other to paste, kept by
+// the server in one place. Every desk reads it every cycle and every task
+// step, so "send me the hero anchor" and "send me the Bloom balance" never
+// cross the wire again.
+// ---------------------------------------------------------------------------
+const BOARD_PAGES = [
+  ["BRAND HOME index.html", "index.html"],
+  ["KORVUS HOME korvus:korvus_landing.html", "korvus:korvus_landing.html"],
+  ["KORVUS SIGNUP korvus:korvus_signup.html", "korvus:korvus_signup.html"],
+  ["CROWN HOME crown:index.html", "crown:index.html"],
+];
+let boardPageCache = { at: 0, text: "" };
+function boardPages() {
+  if (boardPageCache.text && Date.now() - boardPageCache.at < 10 * 60000) return boardPageCache.text;
+  const lines = [];
+  for (const [label, page] of BOARD_PAGES) {
+    try {
+      const r = readPageSource(page, "", 8000000);
+      if (r && !r.err && r.text) lines.push(`${label}: ${keyLines(r.text)}`);
+    } catch {
+      // a page that will not open is left off the board, never guessed
+    }
+  }
+  boardPageCache = { at: Date.now(), text: lines.join("\n") };
+  return boardPageCache.text;
+}
+async function boardFeed() {
+  const lines = ["THE BOARD, live facts the server keeps (read this before you ask any desk for anything):"];
+  try {
+    const p = boardPages();
+    lines.push(p ? `LIVE PAGES (exact text and href, refreshed every 10 minutes):\n${p}` : "LIVE PAGES: unavailable right now");
+  } catch {}
+  try {
+    const c = await bloomCredits();
+    lines.push(`BLOOM CREDITS: ${c ? (c.unlimited ? "unlimited" : `${c.balance} left`) : "unknown, the Bloom key did not answer"}`);
+  } catch {}
+  try {
+    const props = agentState().proposals || [];
+    const link = (p) => (Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null);
+    const done = props.filter((p) => link(p)).slice(0, 5).map((p) => `#${p.number} ${String(p.summary).slice(0, 50)}: ${link(p)}`);
+    const rolling = props.filter((p) => p.renderingSince && !link(p)).slice(0, 3).map((p) => `#${p.number} ${String(p.summary).slice(0, 50)}`);
+    lines.push(`LATEST RENDERS (the link is the finished file): ${done.join("; ") || "none in the last 25 asks"}${rolling.length ? `. Rendering now: ${rolling.join("; ")}` : ""}`);
+  } catch {}
+  try {
+    const body = ceoBrainFile("Ledger.md").body || "";
+    const tail = body.trim().split("\n").filter((l) => l.startsWith("- ")).slice(-5).join("\n");
+    if (tail) lines.push(`REGENT LEDGER, latest executions:\n${tail}`);
+  } catch {}
+  try {
+    lines.push(crewBoardLines());
+  } catch {}
+  return lines.join("\n");
 }
 async function readEngine() {
   if (!MAKE_TOKEN) return null;
@@ -1670,6 +1726,7 @@ wireFeeds({
     const lines = body.trim().split("\n").filter((l) => l.startsWith("- "));
     return lines.slice(-8).join("\n");
   },
+  board: () => boardFeed(),
 });
 // ----- brain sync: push the vaults to a git repo so Obsidian stays live ----
 // Set BRAIN_SYNC=1 and point AGENT_BRAIN_DIR / CEO_BRAIN_DIR inside a cloned
@@ -1935,6 +1992,9 @@ function submitIndexNow(rootKey, file) {
 
 const companyFeed = async (key) => {
     const lines = [];
+    if (key !== "jobs") {
+      try { lines.push(await boardFeed()); } catch {}
+    }
     try { lines.push(spendSummary()); } catch {}
     try {
       const js = loadJobs();
@@ -2023,7 +2083,7 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource });
+wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource, board: boardFeed });
 
 // ---------------------------------------------------------------------------
 // the immune system: every 10 minutes the healer makes the floor whole again.
@@ -2047,10 +2107,28 @@ function diskHygiene() {
     }
   } catch {}
 }
+// once a day, after 9 ET, the new tool gaps reach the boardroom as ONE card:
+// the walls the desks hit, so the owner decides what to wire
+async function sendGapDigest() {
+  try {
+    const hr = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date()), 10) % 24;
+    if (hr < 9 || !(JOBS_BOT && JOBS_CH.boardroom)) return;
+    const text = gapDigest(dayKey());
+    if (!text) return;
+    await fetch(`https://discord.com/api/v10/channels/${JOBS_CH.boardroom}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bot ${JOBS_BOT}` },
+      body: JSON.stringify({ content: text.slice(0, 1900) }),
+    });
+  } catch (e) {
+    console.log("gap digest:", e?.message || e);
+  }
+}
 function runHealer() {
   try { corvidHeal(); } catch (e) { console.log("healer corvid:", e?.message || e); }
   try { staffHeal(); } catch (e) { console.log("healer staff:", e?.message || e); }
   try { diskHygiene(); } catch {}
+  sendGapDigest().catch(() => {});
 }
 setTimeout(runHealer, 90 * 1000);
 setInterval(runHealer, 10 * 60 * 1000);
@@ -2599,10 +2677,12 @@ wireCeo({
     Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
   },
   jobNames: () => loadJobs().map((j) => j.name).filter(Boolean),
+  // Regent's "fix and refile" orders nudge the desk's task engine; they no
+  // longer order a full paid cycle on every bounce
   assignFix: (author, text) => {
     const key = String(author || "").toLowerCase();
-    if (key === "herald" || key === "steward") return staffAddTask(key, text);
-    return addTask(text);
+    if (key === "herald" || key === "steward" || key === "bard") return staffAddTask(key, text, { from: "regent" });
+    return addTask(text, { from: "regent" });
   },
 });
 // ---------------------------------------------------------------------------
@@ -3493,16 +3573,28 @@ function recordWire(from, to, text) {
   if (WIRE.length > 80) WIRE.length = 80;
 }
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
+// the crew ledger: every desk-to-desk ask and the owner's tool-gap list
+app.get("/api/crew", (_req, res) => res.json(crewState()));
+app.post("/api/crew/gaps/:id/close", (req, res) => {
+  const g = closeGap(String(req.params.id));
+  if (!g) return res.status(404).json({ error: "No such gap." });
+  res.json({ ok: true, gap: g });
+});
 
 wireHooks({
   readPage: readAnySource,
   forge: forgeOverlay,
   awsRender: awsRenderVideo,
+  // Corvid's asks go through the crew ledger like every other desk's: a
+  // repeat merges, two open asks per desk pair at most, tool gaps refused
   requestStaff: (to, title) => {
-    if (["herald", "steward", "bard"].includes(to)) {
-      staffAddTask(to, title);
-      recordWire("corvid", to, title);
-    }
+    if (!["herald", "steward", "bard"].includes(to)) return { ok: false, reason: "no such desk" };
+    const ask = String(title || "").replace(/^From Corvid:\s*/i, "");
+    const adm = admitRequest("corvid", to, ask);
+    if (!adm.ok) return adm;
+    staffAddTask(to, `From Corvid: ${ask}`, { from: "corvid", reqId: adm.id });
+    recordWire("corvid", to, ask);
+    return adm;
   },
   onFiled: receiveProposals,
   ownerDecision,
