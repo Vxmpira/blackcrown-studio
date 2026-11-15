@@ -1792,3 +1792,8 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .tn-unit { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--mute); min-width: 30px; }
 .tn-lower { margin-top: 4px; }
 @media (max-width: 640px) { .tn-stats { grid-template-columns: repeat(2, 1fr); } }
+
+/* Paper Bot tab: second crawler (Korvus Compass) */
+.pb-cmp-lede { color: var(--bone); font-size: 13px; line-height: 1.55; margin: 0 0 14px; max-width: 900px; }
+.pb-stats b.pos { color: var(--ok); } .pb-stats b.neg { color: var(--bad); }
+.pb-head-right { flex-wrap: wrap; justify-content: flex-end; }

@@ -1905,6 +1905,30 @@ app.get("/api/intel/live", async (_req, res) => {
   }
 });
 
+// The second crawler (Korvus Compass, the long-term board) and its analyst
+// agent. Same shared key as the Intel crawler; URL override optional.
+const COMPASS_STATUS_URL =
+  process.env.KORVUS_COMPASS_STATUS_URL || INTEL_STATUS_URL.replace(/intel-status$/, "compass-status");
+let compassLive = { at: 0, data: null };
+app.get("/api/compass/live", async (_req, res) => {
+  if (!INTEL_KEY) return res.json({ configured: false });
+  if (compassLive.data && Date.now() - compassLive.at < 8000) return res.json(compassLive.data);
+  try {
+    const r = await fetch(COMPASS_STATUS_URL, {
+      headers: { "X-Intel-Key": INTEL_KEY },
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json().catch(() => ({}));
+    const data = r.ok
+      ? { configured: true, reachable: true, ...j }
+      : { configured: true, reachable: false, error: r.status === 403 ? "key rejected by Korvus" : `HTTP ${r.status}` };
+    compassLive = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.json({ configured: true, reachable: false, error: String(e?.message || e) });
+  }
+});
+
 // The futures strategy lab on the Korvus box: every strategy the bot has
 // created per market, why, and how each one is doing. Same key as the status.
 let labCache = { at: 0, data: null };
