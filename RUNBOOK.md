@@ -73,3 +73,118 @@ Render & export. When it finishes you get a Download MP4 link.
   `npm run deploy:fn -- --memory=2048`.
 - Put the admin behind a login on a public URL later if you want it off your
   machine. Until then, local is the simplest and safest.
+
+
+## Model spend: how the agents use tokens
+
+Every agent reaches the model through `llm.mjs`. Nothing else calls the API
+for agent work.
+
+**Tiers.** Three models, each with a job:
+
+| Tier | Default | Used for |
+| :-- | :-- | :-- |
+| head | `claude-fable-5-2` | Corvid's strategy cycles and replies to the owner; everything Regent does (reviews, repairs, replies) |
+| hands | `claude-sonnet-5-5` | Corvid's task steps and the scheduled report jobs |
+| minion | `claude-haiku-5-5` | Bard, Herald, Steward, every minion, the librarians, JSON repair |
+
+Regent reviews every proposal on the head model before the owner sees it, so
+work done on the hands model never ships unchecked.
+
+**Caching.** The request is ordered most stable first: the company
+constitution (Institution.md, identical for every agent, so they share one
+cached copy), then the role prompt, then the live data. Both stable layers use
+the 1 hour cache, and each read renews the hour. The old default 5 minute
+cache expired between task steps, so it was paid for and never read.
+
+**Budget.** `AGENT_DAILY_BUDGET_USD` (default 5). At 70 percent the task
+engine runs at half pace. At 100 percent background work (task steps,
+scheduled cycles, Regent's initiative) pauses until midnight ET. The owner's
+messages, proposal reviews and approved executions always run. Set it to 0 to
+turn the guard off.
+
+**.env knobs.**
+
+```
+MODEL_HEAD=claude-fable-5-2        # head tier for every agent
+MODEL_HANDS=claude-sonnet-5-5      # hands tier
+MINION_MODEL=claude-haiku-5-5      # minion tier
+AGENT_MODEL=                       # Corvid's head model only; leave unset to follow MODEL_HEAD
+AGENT_WORK_MODEL=                  # Corvid's task steps; set to the head model to undo the split
+CEO_MODEL=                         # Regent only
+STAFF_MODEL=                       # Bard, Herald, Steward
+AGENT_DAILY_BUDGET_USD=5
+```
+
+If `.env` still pins `AGENT_MODEL` or `CEO_MODEL` to `claude-fable-5`, remove
+those lines: that older model costs more per token and its cache reads cost
+five times as much.
+
+**Where to look.** The dashboard's "Model spend today" panel, or
+`GET /api/usage`: dollars per desk, calls, and the share of input read from
+cache. A desk that works all day should read most of its input from cache.
+
+## Brand law (what the desks can and cannot change on the sites)
+
+All four desks can read any page on the three sites and file changes to copy,
+titles, descriptions, structure inside a page, internal links and structured
+data. Every filing is checked by `brandlaw.mjs` twice: when it is filed and
+again at the moment of writing, after your approval. A change that breaks the
+law never reaches Discord, and never reaches the file.
+
+Owner-only, always: legal pages, the design system (`assets/site.css` and the
+site scripts), `blackcrown-bar.html`, `robots.txt`, sign-in, account and admin
+pages, anything touching money, deploys or server config. Code files and page
+scripts are owner-only unless `BRAND_ALLOW_CODE=1` is set in `.env`.
+
+Blocked inside pages: colours outside the house palette, new typefaces,
+changes to the crown mark, misspelt product names, prices not on the price
+list (`BRAND_PRICES` overrides the list), any dollar amount added to the
+Korvus landing page, claims we cannot prove (memory, unlimited, guaranteed
+results, signals, customer counts, ratings), header or footer changes, removed
+tracking, outside scripts, iframes, forms posting elsewhere, noindex, and
+removing more than 40 percent of a page's text in one edit.
+
+Each site change that ships books its own follow-up task seven days out. The
+desk compares the funnel (visits, product clicks, Korvus signups, paying
+subscribers) with the week before and writes the verdict into Patterns.md.
+
+Brand changes themselves (look, names, prices, law) come through the engineer.
+
+## The TikTok engine (Make) is the desks' to direct
+
+Every desk can open the live engine with "read" page "make" and file changes
+to it: picture style and art direction, image prompts, the writer's
+instructions, captions, hashtags, slide specs, brief and call to action. You
+approve each one in #boardroom; Regent then writes it to the scenario and a
+raw backup lands in `make-backups/` first.
+
+Checked in code at filing and again at write time: the passage must exist in
+the live engine, every `{{...}}` mapping stays, model names, token limits, the
+Bloom brand, urls and keys cannot change, no colour codes outside the palette,
+no claims or prices the brand law forbids, no outside links, and a request
+body that was valid before the edit must be valid after it or nothing is
+written. Keys and headers are never shown to the desks.
+
+Only the TikTok scenario is open. `MAKE_EDITABLE=<id>,<id>` in `.env` opens
+more. The Make token needs the scenarios write scope for edits to land.
+
+## Paper Bot tab
+
+Four views. **Overview**: both books side by side, the house style, the path
+to real money. **Company stock**: the catalyst bot's scoreboard, what it is
+weighing right now and why it has or has not entered, open positions between
+stop and target, results by playbook, session, side and catalyst, a ledger
+where each row opens to the filing and the reasoning, the rules, and why the
+rules are what they are. **Index futures**: the lab per market (MNQ, MES), the
+bench of strategies with their rules, which ideas are working, the ledger and
+what the lab learned. **Crawler**: the pipeline, activity, health checks and
+the latest scored filings.
+
+The stock numbers come from `intel/data/` in the brain repo (synced every few
+minutes); the radar, live position marks and the lab come straight from the
+Korvus box through `KORVUS_INTEL_KEY`. The tab works against the older data
+format too, so it is safe to deploy before the Korvus box updates.
+
+House style, set by the owner: swing trades inside the day, no scalping,
+except on company stock when the crawler has just read a filing.

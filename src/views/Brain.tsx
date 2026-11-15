@@ -1016,7 +1016,10 @@ export const Brain: React.FC = () => {
         last = now;
         return;
       }
-      const dt = Math.min(0.05, (now - last) / 1000);
+      // raw is the true frame time; dt is capped so a long frame cannot fling
+      // the simulation forward. The FPS readout and AUTO use the true one.
+      const raw = (now - last) / 1000;
+      const dt = Math.min(0.05, raw);
       last = now;
       const t = (now - t0) / 1000;
       for (const u of timeUniforms) u.value = t;
@@ -1085,11 +1088,12 @@ export const Brain: React.FC = () => {
 
       // AUTO: trim render scale while frames run long, give it back while they
       // run clean, never returning to a scale that was already too slow
-      ema = ema * 0.94 + dt * 1000 * 0.06;
+      ema = ema * 0.94 + Math.min(250, raw * 1000) * 0.06;
       warm += dt;
       if (curQ === "auto" && warm > 2.5) {
-        slowFor = ema > 24 ? slowFor + dt : 0;
-        fastFor = ema < 18.5 ? fastFor + dt : 0;
+        const stepT = Math.min(0.25, raw);
+        slowFor = ema > 24 ? slowFor + stepT : 0;
+        fastFor = ema < 18.5 ? fastFor + stepT : 0;
         if (slowFor > 1.5) {
           slowFor = 0;
           if (pr > 0.65) {

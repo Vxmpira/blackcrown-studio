@@ -15,12 +15,13 @@ import {
   brainFile,
   brainSave,
   addTask,
+  bookMeasurement,
   buildEmbeds,
-  recordSpend,
   agentState,
   spendSummary,
-  institutionBlock,
 } from "./agent.mjs";
+import { MODELS, callJSON, canSpend } from "./llm.mjs";
+import { brandLaw, engineLaw, BRAND_LAW_TEXT } from "./brandlaw.mjs";
 import { staffStates } from "./staff.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CEO_NAME = "Regent";
 const STATE_PATH = path.join(__dirname, "studio-ceo.json");
 const VAULT = process.env.CEO_BRAIN_DIR || path.join(__dirname, "brain-ceo");
-const MODEL = process.env.CEO_MODEL || "claude-fable-5";
+const MODEL = (process.env.CEO_MODEL || MODELS.head).trim();
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
 const INITIATIVE_EVERY_H = Math.max(2, Number(process.env.CEO_CYCLE_EVERY_H || 6));
 
@@ -306,37 +307,14 @@ function parseModelJson(text) {
   throw new Error("agent returned no parseable JSON");
 }
 
-async function think(system, user, maxTokens = 1400) {
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  if (!r.ok) throw new Error(`Anthropic (${r.status})`);
-  const data = await r.json();
-  recordSpend("regent", MODEL, data.usage);
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/^```(json)?/i, "")
-    .replace(/```$/i, "")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
-  return parseModelJson(text);
+// Regent rules on what reaches the owner and edits live files, so every call
+// stays on the head model. Reviews, replies and repairs are owner priority and
+// run even when the day's budget for background work is spent.
+async function think(system, user, maxTokens = 1400, opts = {}) {
+  return callJSON(
+    { who: "regent", model: MODEL, system, user, maxTokens, hot: opts.hot, priority: opts.priority || "owner" },
+    parseModelJson
+  );
 }
 
 const IDENTITY = `You are ${CEO_NAME}, the chief executive agent of BlackCrownVxJ LLC. The owner is Vxmpira.N. Corvid, the SEO agent, files proposals with you; you review them against the Charter, veto what wastes the owner's time or money, take the rest to him on Discord, and once he green lights, you execute and confirm. You never execute without his word. You are direct, brief, and final. Never use em dashes or en dashes. He reads on his phone.`;
@@ -346,7 +324,9 @@ const REVIEW_SYSTEM = `${IDENTITY}
 Review each filed proposal. Veto anything off brand, not data backed, duplicate, or spend without a reason. THE ASK IS THE LOCK: the owner's green light on an ask approves everything inside it, overlay lines, copy, and spec included. NEVER veto for missing approvals, locks, or sign-offs that the green light itself would grant, and never invent new approval layers; there is exactly one approval: the owner's word on the ask. Endorse the rest, amending the summary for clarity if needed.
 
 Respond ONLY with JSON that passes JSON.parse (line breaks inside strings written as \\n):
-{"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}`;
+{"verdicts":[{"id":"...","action":"endorse|veto","note":"max 12 words why"}]}
+
+${BRAND_LAW_TEXT} You hold the desks to this law: veto any filing that restyles a page, renames anything, moves a price, or makes a claim we cannot prove, however good the conversion argument sounds. Improving the sites means sharper words and structure inside the brand, never a different brand.`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -408,7 +388,12 @@ function preflightProposal(p) {
       }
       return null;
     }
-    if (kind === "brain" || kind === "automation" || /^make(:|$)/i.test(page)) return null;
+    if (/^make(:|$)/i.test(page)) {
+      if (deps.makeAllowed && !deps.makeAllowed(page)) return "engine law: that Make scenario is not one the desks may edit; only the TikTok engine (page make) is open";
+      const why = engineLaw({ current: section(p.detail, "CURRENT"), next: section(p.detail, "NEW"), engine: deps.engineText ? deps.engineText() || "" : "" });
+      return why ? `engine law: ${why}` : null;
+    }
+    if (kind === "brain" || kind === "automation") return null;
     if (!page) return null;
     const loc = resolveSiteFile(page);
     if (loc.err) return loc.err;
@@ -451,6 +436,17 @@ function preflightProposal(p) {
           return "the page has a flat background; the Page Frame's atmosphere block (glows, grid, vignette) is law on every page";
         }
       }
+      const law = brandLaw({ repo: loc.rootKey, file: loc.file, before: "", after: body, reference: brandReference(loc.rootKey, loc.rootDir) });
+      if (law) return `brand law: ${law}`;
+      return null;
+    }
+    // an edit to a live file: apply it in memory and hold the result to the law
+    {
+      const before = fs.readFileSync(loc.full, "utf8");
+      const next = String(section(detail, "NEW") || "");
+      const after = cur && before.includes(cur) ? before.replace(cur, next) : `${before}\n${next}`;
+      const law = brandLaw({ repo: loc.rootKey, file: loc.file, before, after, reference: brandReference(loc.rootKey, loc.rootDir) });
+      if (law) return `brand law: ${law}`;
     }
     return null;
   } catch (e) {
@@ -610,6 +606,26 @@ function section(detail, label) {
   return m ? m[1].trim() : "";
 }
 
+// what "the brand" looks like in each repo: the files a new colour or
+// typeface is compared against, so product pages keep their own palette
+const BRAND_REFS = { site: ["assets/site.css"], korvus: ["korvus_landing.html", "korvus_lodestone.html"], crown: ["index.html"] };
+let refCache = {};
+function brandReference(rootKey, rootDir) {
+  const c = refCache[rootKey];
+  if (c && Date.now() - c.at < 10 * 60000) return c.text;
+  let text = "";
+  for (const f of BRAND_REFS[rootKey] || []) {
+    try {
+      text += fs.readFileSync(path.join(rootDir, f), "utf8").slice(0, 400000) + "\n";
+    } catch {}
+  }
+  try {
+    text += String((brainFile("Page-Frame.md") || {}).body || "");
+  } catch {}
+  refCache[rootKey] = { at: Date.now(), text };
+  return text;
+}
+
 function resolveSiteFile(page) {
   let file = String(page || "").trim();
   // "korvus:engine/feed.js" or "crown:server/config.json" routes to that repo;
@@ -636,6 +652,25 @@ function resolveSiteFile(page) {
     return { err: `"${file}" is not a file I can edit` };
   }
   return { rootKey, file, rootDir, full: path.join(rootDir, file) };
+}
+
+// Read-only view of a site or product file, for the desks that write the
+// fixes. Same address rules as an edit (so never .env, never outside the
+// repos). Returns a window of the file: around "find" when given, otherwise
+// the head and the first stretch of the body.
+export function readPageSource(page, find = "", max = 7000) {
+  const r = resolveSiteFile(page);
+  if (r.err) return { err: r.err };
+  if (!fs.existsSync(r.full)) return { err: `${page} does not exist yet` };
+  const text = fs.readFileSync(r.full, "utf8");
+  let at = 0;
+  const needle = String(find || "").trim();
+  if (needle) {
+    const i = text.toLowerCase().indexOf(needle.toLowerCase());
+    if (i >= 0) at = Math.max(0, i - Math.floor(max / 3));
+    else return { err: `"${needle.slice(0, 60)}" is not in ${page}`, size: text.length };
+  }
+  return { page, size: text.length, from: at, text: text.slice(at, at + max), more: at + max < text.length };
 }
 
 // the safety guard: refuse to write a result that would break the file
@@ -879,6 +914,10 @@ async function executeSiteEdit(p) {
   if (invalid) {
     return { ok: false, msg: `safety guard blocked the write: ${invalid}` };
   }
+  const law = brandLaw({ repo: rootKey, file, before: html, after: updated, reference: brandReference(rootKey, rootDir) });
+  if (law) {
+    return { ok: false, msg: `brand law blocked the write: ${law}` };
+  }
   try {
     if (!creating) fs.copyFileSync(full, `${full}.bak-${Date.now()}`);
     fs.writeFileSync(full, updated);
@@ -1018,6 +1057,9 @@ async function execute(p) {
     const current = section(p.detail, "CURRENT");
     const next = section(p.detail, "NEW");
     if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
+    // the law is checked again at the moment of writing, after the approval
+    const why = engineLaw({ current, next, engine: "" });
+    if (why) return { ok: false, msg: `engine law blocked the write: ${why}` };
     const sid = (String(p.page).match(/^make:(\d+)/i) || [])[1];
     return deps.makeEdit({ scenarioId: sid, current, next });
   }
@@ -1081,6 +1123,10 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   state.status = "watching";
   saveState();
   vaultAppend("Ledger.md", `- ${etDayKey()}: #${p.number} ${p.summary} > ${r.ok ? "DONE" : "FAILED"}: ${r.msg.slice(0, 160)}`);
+  // a site change that shipped gets measured a week later
+  if (r.ok && ["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) && p.page && !/^make(:|$)/i.test(String(p.page))) {
+    bookMeasurement(p.number, p.page, p.summary);
+  }
   log(r.ok ? "exec" : "error", `#${p.number} ${r.ok ? "done" : "failed"}: ${r.msg}`);
   await send(`**REGENT // ${r.ok ? "DONE" : "FAILED"}** · #${p.number} ${p.summary}\n${r.msg}`);
   if (!r.ok && deps.assignFix) {
@@ -1180,7 +1226,7 @@ export async function runInitiative(trigger = "schedule") {
       )}`,
       `Current Agenda:\n${vaultRead("Agenda.md").slice(0, 900)}`,
     ].join("\n\n");
-    const out = await think(INITIATIVE_SYSTEM, user, 1400);
+    const out = await think(INITIATIVE_SYSTEM, user, 1400, { priority: "background" });
     if (out.agenda_md) {
       ensureVault();
       fs.writeFileSync(path.join(VAULT, "Agenda.md"), String(out.agenda_md).slice(0, 8000).replace(/\u2014|\u2013/g, ", "));
@@ -1217,7 +1263,7 @@ export function startCeo() {
   // decisions arrive routed through Corvid's reactor.
   setInterval(() => {
     if (!state.enabled || initiativeBusy) return;
-    if (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000) {
+    if (canSpend() && (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000)) {
       runInitiative("schedule").catch(() => {});
     }
   }, 60 * 1000);

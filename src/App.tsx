@@ -48,7 +48,9 @@ export const App: React.FC = () => {
 
   return (
     <>
-      <Metropolis />
+      {/* the Grid and the Brain run their own live 3D scene, so the ambient
+          backdrop holds still behind them instead of competing for frames */}
+      <Metropolis quiet={tab === "dashboard" || tab === "brain"} />
       <div className="layout">
       <Sidebar active={tab} onChange={setTab} onLogout={signOut} />
       <main className="main">

@@ -666,7 +666,31 @@ export type IntelTrade = {
   pnl: number | null;
   pnl_pct: number | null;
   status: "open" | "closed";
+  // v4: which playbook took it, how it was sized, and how far it ran each way
+  accession?: string;
+  playbook?: "scalp" | "swing" | null;
+  phase?: string | null;
+  risk_usd?: number | null;
+  init_stop_px?: number | null;
+  stop_pct?: number | null;
+  mfe_pct?: number | null;
+  mae_pct?: number | null;
+  r_mult?: number | null;
+  hold_min?: number | null;
+  note?: string | null;
+  filing?: {
+    headline: string; url: string; form?: string; catalyst: string; impact: string; direction: string; confidence: number;
+    summary: string; read?: string; seen_utc: string; ref_price?: number | null;
+  };
 };
+export type IntelBucket = { trades: number; wins: number; pnl: number; avg_r?: number | null; avg_hold_min?: number | null };
+export type IntelWatch = {
+  symbol: string; accession: string; side: "long" | "short"; impact: string; confidence: number; catalyst: string; headline: string;
+  age_min: number | null; ref: number | null; playbook: "scalp" | "swing" | null; state: "waiting" | "confirming" | "skipped" | "traded";
+  why: string; price?: number; move_pct?: number | null; need_pct?: number; checks?: number; need_checks?: number;
+};
+export type IntelPosition = { id: number; symbol: string; price: number; fresh: boolean; run_pct: number; pnl: number; stop_px: number };
+export type IntelChange = { date: string; version: string; title: string; found: string[]; changed: string[] };
 export type IntelFiling = {
   symbol: string;
   headline: string;
@@ -699,6 +723,14 @@ export type IntelBoard = {
     exits: Record<string, number>;
     by_catalyst: Record<string, { trades: number; wins: number }>;
     by_side?: Record<string, { trades: number; wins: number; pnl: number }>;
+    by_playbook?: Record<string, IntelBucket>;
+    by_phase?: Record<string, IntelBucket>;
+    expectancy_r?: number | null;
+    avg_hold_min?: number | null;
+    avg_mfe_pct?: number | null;
+    avg_mae_pct?: number | null;
+    stop_slip_pct?: number | null;
+    risk_per_trade?: number;
     capital_at_work?: number;
     max_drawdown_usd?: number;
     max_drawdown_pct?: number | null;
@@ -707,32 +739,38 @@ export type IntelBoard = {
     trading_days?: number;
     last30_expectancy_pct?: number | null;
   };
+  changes?: IntelChange[];
   rules: {
     strategy: string;
     notional: number;
     max_open: number;
-    target_pct: number;
-    stop_pct: number;
-    min_confidence: number;
-    max_day_up_pct: number;
+    risk_usd?: number;
+    lines?: { k: string; v: string }[];
+    target_pct?: number;
+    stop_pct?: number;
+    min_confidence?: number;
+    max_day_up_pct?: number;
     max_day_down_pct?: number;
-    session?: string;
-    window?: string;
-    flat_at?: string;
     allow_short?: boolean;
     lookback_hours: number;
     slippage_pct: number;
     tick_seconds: number;
     price_band: [number, number];
     mcap_max: number;
+    session?: string;
+    window?: string;
+    flat_at?: string;
   };
 };
+// closed trades taken under an earlier rule version: on the record, not on the scoreboard
+export type IntelRetired = { strategy: string; trades: number; wins: number; losses: number; pnl: number; last_utc: string | null };
 export type IntelData = {
   configured: boolean;
   dir?: string;
   dataMtime?: string | null;
   equity?: { t: string; v: number; sym: string }[];
   board?: IntelBoard | null;
+  retired?: IntelRetired[];
   open?: IntelTrade[];
   recent?: IntelTrade[];
   filingsToday?: number;
@@ -801,6 +839,158 @@ export async function getIntelLive(): Promise<IntelLive | null> {
   try {
     const r = await fetch(`${BASE}/api/intel/live`, { cache: "no-store" });
     if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+// ----- model spend ------------------------------------------------------------
+export type UsageAgent = { who: string; model: string; calls: number; input: number; cached: number; written: number; output: number; usd: number; cacheHitPct: number };
+export type UsageData = {
+  budget: { cap: number; spent: number; left: number | null; level: "off" | "ok" | "tight" | "out" };
+  models: { head: string; hands: string; minion: string };
+  days: { day: string; usd: number; agents: UsageAgent[] }[];
+};
+export async function getUsage(): Promise<UsageData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/usage`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.budget ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+// ----- futures strategy lab ----------------------------------------------------
+export type LabStats = {
+  trades: number; wins: number; win_rate: number | null; pnl: number; expectancy: number | null; profit_factor: number | null;
+  avg_win?: number | null; avg_loss?: number | null; avg_hold_min?: number | null; max_drawdown?: number;
+};
+export type LabOpen = {
+  side: string; entry_px: number; target_px: number; stop_px: number; entry_utc: string; note: string;
+  deadline_utc?: string; mfe?: number | null; mae?: number | null; unrealized?: number | null; hold_min?: number | null;
+  strat?: string; family?: string;
+};
+export type LabStrategy = LabStats & {
+  id: string; gen: number; parent: string | null; family: string; family_label?: string; era?: string;
+  status: "champion" | "active" | "retired";
+  created_utc: string; retired_utc: string | null; why: string; retired_why: string | null; rules: string;
+  open: LabOpen | null;
+  promoted_utc?: string; since_crowned?: LabStats;
+};
+export type LabMarket = {
+  sym: string; name: string; price: number | null; price_utc: string | null; champion: string | null;
+  created: number; running: number; retired: number; all: LabStats; strategies: LabStrategy[];
+  hour_move?: number | null; point_value?: number; today?: LabStats;
+  previous?: LabStats & { era: string; strategies: number };
+  by_family?: Record<string, LabStats>; equity?: { t: string; v: number }[]; open?: LabOpen[];
+};
+export type LabTrade = {
+  id?: number; strat: string; sym: string; side: string; entry_utc: string; entry_px: number; exit_utc: string | null;
+  exit_px: number | null; reason: string | null; pnl: number | null; status: string; note: string;
+  target_px?: number; stop_px?: number; init_stop_px?: number | null; mfe?: number | null; mae?: number | null;
+  family?: string; era?: string; hold_min?: number | null;
+};
+export type LabData = {
+  configured: boolean; reachable?: boolean; error?: string; enabled?: boolean; started?: boolean; rules?: string;
+  last_tick?: { t?: string; phase?: string; feed_ok?: boolean | null; feed?: string };
+  min_eval?: number; min_champion?: number; population?: number; costs?: { commission_rt: number; slippage_ticks: number };
+  style?: { label: string; max_trades_day: number; cooldown_min: number; min_hold_cap_min: number; last_entry_et: string; flat_et: string; unit: string };
+  markets?: LabMarket[]; log?: { t: string; sym: string; kind: string; text: string }[];
+  trades?: LabTrade[];
+};
+export async function getLab(): Promise<LabData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/intel/lab`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+// ----- the tuner: live dials and scorecards for every desk -------------------
+export type TuningField = {
+  label: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  type?: "bool" | "model" | "time";
+  def: number | boolean | string;
+};
+export type TuningValue = { value: number | boolean | string; overridden: boolean; def: number | boolean | string };
+export type DeskCard = {
+  name: string;
+  enabled: boolean | null;
+  status: string | null;
+  model: string | null;
+  today: { usd: number; calls: number; cachePct: number };
+  week: { usd: number; calls: number; cachePct: number };
+  steps: number | null;
+  openTasks: number;
+  doneToday: number;
+  asks: { filed: number; approved: number; rejected: number; pending: number; approvalPct: number | null } | null;
+  costPerApproved: number | null;
+  asksOut: number | null;
+  asksIn: number;
+};
+export type TunerData = {
+  schema: Record<string, TuningField>;
+  values: Record<string, TuningValue>;
+  models: string[];
+  defaults: { head: string; hands: string; minion: string };
+  stats: { desks: Record<string, DeskCard>; budget: { cap: number; spent: number; left: number | null; level: string }; gaps: number };
+};
+export async function getTuning(): Promise<TunerData | null> {
+  try {
+    const r = await fetch(`${BASE}/api/tuning`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+export async function saveTuning(patch: Record<string, unknown>): Promise<TunerData> {
+  const r = await fetch(`${BASE}/api/tuning`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patch }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Save failed (${r.status})`);
+  return j;
+}
+export type BriefRun = { at: number; day: string; reason: string; ok?: boolean; url?: string; seconds?: number; mb?: number; hook?: string; stories?: string[]; asks?: number[]; dropped?: boolean; error?: string };
+export async function getPremarket(): Promise<{ lastDay: string; running: boolean; runs: BriefRun[] } | null> {
+  try {
+    const r = await fetch(`${BASE}/api/premarket`);
+    return r.ok ? r.json() : null;
+  } catch {
+    return null;
+  }
+}
+export async function runPremarketNow(): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`${BASE}/api/premarket/run`, { method: "POST" });
+  return r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+}
+export type ExpressionShelf = {
+  tier: number;
+  boosts: number | null;
+  emojiLimit: number;
+  staticUsed: number;
+  animatedUsed: number;
+  stickerLimit: number;
+  stickersUsed: number;
+  pack: { emojis: number; stickers: number };
+  waiting: { emojis: number; stickers: number };
+  error?: string;
+};
+export async function getExpressionShelf(): Promise<ExpressionShelf | null> {
+  try {
+    const r = await fetch(`${BASE}/api/discord/expressions`);
     return r.json();
   } catch {
     return null;

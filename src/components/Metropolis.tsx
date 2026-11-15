@@ -3,8 +3,8 @@ import React from "react";
 // The city behind every view: a perspective avenue grid, a skyline, and
 // light packets running the avenues. Pure ambience, zero interaction,
 // honors prefers-reduced-motion via CSS.
-export const Metropolis: React.FC = () => (
-  <div className="metro" aria-hidden="true">
+export const Metropolis: React.FC<{ quiet?: boolean }> = ({ quiet }) => (
+  <div className={quiet ? "metro quiet" : "metro"} aria-hidden="true">
     <div className="metro-grid" />
     <svg className="metro-avenues" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice">
       <path id="ave1" d="M-50 700 C 400 660, 1200 740, 1650 680" fill="none" />

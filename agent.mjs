@@ -8,6 +8,11 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
+import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
+import { tune, tuningFlat } from "./tuning.mjs";
+import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
+export { recordSpend, getSpend, spendSummary };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,9 +30,22 @@ const CYCLE_EVERY_H = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_H || 0));
 // watchman tick below already reacts within a minute for free when something happens.
 const CYCLE_EVERY_MIN = Math.max(0, Number(process.env.AGENT_CYCLE_EVERY_MIN || 0));
 const CYCLE_MS = CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN * 60000 : CYCLE_EVERY_H > 0 ? CYCLE_EVERY_H * 3600000 : 0;
+// the live cadence: the owner's tuner wins; with no override and no .env
+// cadence Corvid keeps its once-a-day cycle at the set hour
+function cycleMs() {
+  try {
+    if (tuningFlat()["corvid.cycleEveryMin"].overridden || CYCLE_MS > 0) return tune.corvidCycleMs();
+  } catch {}
+  return CYCLE_MS;
+}
 const POLL_SECONDS = Math.max(30, Number(process.env.AGENT_POLL_SECONDS || 60));
-const MODEL = process.env.AGENT_MODEL || "claude-fable-5";
-export const MINION_MODEL = process.env.MINION_MODEL || "claude-haiku-5-5";
+// Corvid thinks on the head model (strategy cycles, replies to the owner) and
+// works on the hands model (task steps, scheduled reports). Regent reviews every
+// proposal on the head model before it reaches the owner, so the cheaper hands
+// never ship unchecked. Set AGENT_WORK_MODEL to the head model to undo the split.
+const MODEL = (process.env.AGENT_MODEL || MODELS.head).trim();
+const WORK_MODEL = (process.env.AGENT_WORK_MODEL || MODELS.hands).trim();
+export const MINION_MODEL = MODELS.minion;
 
 const BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || "").trim();
 const CHANNEL_ID = (process.env.DISCORD_SEO_CHANNEL_ID || "").trim();
@@ -42,9 +60,11 @@ const BLOOM_BRANDS = {
 };
 // hard daily ceiling on NEW paid video generations; resumes and reuses are free
 const BLOOM_DAILY_VIDEOS = Math.max(1, Number(process.env.BLOOM_DAILY_VIDEOS || 2));
-// clip length in seconds; Seedance accepts 4-30 and defaults to 5, which is
-// why every early clip came out 5s. Owner wants scroll-stopping length.
-const BLOOM_VIDEO_SECONDS = Math.min(40, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 32)));
+// clip length in seconds. Seedance accepts 4 to 30 and silently falls back
+// to 5 when a request is refused. The old default of 32 was over that limit,
+// so every request was refused, retried without a length, and came back 5s.
+// The forge adds a 2.5 second branded end card on top of this.
+const BLOOM_VIDEO_SECONDS = Math.min(30, Math.max(4, Number(process.env.BLOOM_VIDEO_SECONDS || 15)));
 // keep this many credits in reserve; renders pause below it so the month
 // never ends at zero. Owner tunes with BLOOM_MIN_RESERVE in .env.
 const BLOOM_MIN_RESERVE = Math.max(0, Number(process.env.BLOOM_MIN_RESERVE || 10));
@@ -83,9 +103,17 @@ function freshState() {
   };
 }
 let state = loadState();
+// video links once pointed at /renders/, which the web server never forwarded
+// to this process; they now live under /api/renders/
+function fixRenderLinks(s) {
+  for (const p of Array.isArray(s.proposals) ? s.proposals : []) {
+    if (Array.isArray(p.rendered)) p.rendered = p.rendered.map((u) => String(u).replace(/(admin\.blackcrownvxj\.com)\/renders\//i, "$1/api/renders/"));
+  }
+  return s;
+}
 function loadState() {
   try {
-    const s = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+    const s = fixRenderLinks(JSON.parse(fs.readFileSync(STATE_PATH, "utf8")));
     return { ...freshState(), ...s };
   } catch {
     // immune system: a corrupted state file restores from the last snapshot
@@ -414,9 +442,17 @@ let feeds = {
   engine: null, // async () => live TikTok Engine config text or null
   trends: null, // async () => trending hashtags text or null
   ledger: null, // () => Regent's recent executions
+  board: null, // async (desk) => THE BOARD, the shared facts every desk reads
 };
 export function wireFeeds(f) {
   feeds = { ...feeds, ...f };
+}
+async function boardText() {
+  try {
+    return feeds.board ? String((await feeds.board("corvid")) || "") : "";
+  } catch {
+    return "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +499,11 @@ export function heal() {
         report.push(`expired stale ask #${pr.number}`);
       }
     }
+    // 3b. queue hygiene: duplicates merge, 72h dead tasks close, 15 open max
+    const tidied = tidyCorvidQueue();
+    if (tidied) report.push(`tidied the queue, closed ${tidied}`);
     // 4. kickstart: enabled but silent for 3x the cadence means the clock died
-    if (state.enabled && CYCLE_MS > 0 && state.lastCycleAt && now - state.lastCycleAt > CYCLE_MS * 3 + 10 * 60000) {
+    if (state.enabled && cycleMs() > 0 && state.lastCycleAt && now - state.lastCycleAt > cycleMs() * 3 + 10 * 60000) {
       pokeCycle("healer kickstart, the cycle clock went silent");
       report.push("kickstarted a silent cycle clock");
     }
@@ -549,6 +588,12 @@ export async function librarian() {
   }
 }
 
+// A full cycle is the most expensive thing Corvid does. A minion report or a
+// new task does not need one: the task engine picks both up on its next step,
+// so these wake the engine instead of ordering a cycle.
+function nudgeWork() {
+  state.lastWorkAt = 0;
+}
 export function pokeCycle(reason) {
   cycleAsap = String(reason || "something changed").slice(0, 140);
 }
@@ -605,9 +650,12 @@ function aggregates() {
   })();
   const visits7 = tot(w7.visit);
   const visitsPrev7 = tot(w7prev.visit);
+  let signups7 = 0;
+  for (const day of days) if (day >= etDayKey(6)) signups7 += tot((s[day] && s[day].signup) || {});
   return {
     visits7,
     visitsPrev7,
+    signups7,
     deltaPct: visitsPrev7 ? Math.round(((visits7 - visitsPrev7) / visitsPrev7) * 100) : null,
     clicks7: w7.click,
     pages7: w7.visit,
@@ -704,42 +752,10 @@ export function parseModelJson(text) {
 // ---------------------------------------------------------------------------
 // token spend meter and night throttle
 // ---------------------------------------------------------------------------
-const SPEND_PATH = path.join(__dirname, "studio-spend.json");
-function loadSpend() {
-  try { return JSON.parse(fs.readFileSync(SPEND_PATH, "utf8")); } catch { return {}; }
-}
-export function recordSpend(who, model, usage) {
-  try {
-    if (!usage) return;
-    const all = loadSpend();
-    const d = etDayKey();
-    all[d] = all[d] || {};
-    const e = (all[d][who] = all[d][who] || { calls: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
-    e.calls += 1;
-    e.in += usage.input_tokens || 0;
-    e.out += usage.output_tokens || 0;
-    e.cacheRead += usage.cache_read_input_tokens || 0;
-    e.cacheWrite += usage.cache_creation_input_tokens || 0;
-    const keep = Object.keys(all).sort().slice(-14);
-    const trimmed = {};
-    for (const k of keep) trimmed[k] = all[k];
-    fs.writeFileSync(SPEND_PATH, JSON.stringify(trimmed));
-  } catch {}
-}
-export function getSpend() { return loadSpend(); }
-export function spendSummary() {
-  try {
-    const d = loadSpend()[etDayKey()] || {};
-    const k = (n) => (n >= 1000 ? Math.round(n / 1000) + "k" : String(n));
-    const parts = Object.entries(d).map(
-      ([w, e]) => `${w} ${k(e.in + e.cacheRead)} in (${k(e.cacheRead)} cached) ${k(e.out)} out over ${e.calls} calls`
-    );
-    return parts.length ? `TOKEN SPEND today: ${parts.join("; ")}` : "TOKEN SPEND today: nothing yet";
-  } catch { return "TOKEN SPEND: unavailable"; }
-}
+// slows the task engine overnight, and again when the day's budget runs low
 export function nightFactor() {
   const h = etHour();
-  return h >= 1 && h < 7 ? 2 : 1;
+  return (tune.nightThrottle() && h >= 1 && h < 7 ? 2 : 1) * thrift();
 }
 
 let instCache = { at: 0, text: "" };
@@ -750,7 +766,7 @@ export function institutionBlock() {
       instCache = {
         at: Date.now(),
         text: body.trim()
-          ? "\n\nINSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 12000)
+          ? "INSTITUTIONAL MEMORY, ground truth about this business, never contradict it:\n" + body.slice(0, 12000).trim()
           : "",
       };
     } catch {
@@ -760,84 +776,30 @@ export function institutionBlock() {
   return instCache.text;
 }
 
+setInstitution(institutionBlock);
+
+// opts: { model, tier: "hands", who, hot, priority }
+function pickModel(opts) {
+  return opts.model || (opts.tier === "hands" ? tune.corvidWorkModel() || WORK_MODEL : tune.corvidModel() || MODEL);
+}
 async function think(system, user, maxTokens = 4000, opts = {}) {
-  const mdl = opts.model || MODEL;
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: mdl,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`Anthropic (${r.status}): ${t.slice(0, 180)}`);
-  }
-  const data = await r.json();
-  recordSpend(opts.who || "corvid", mdl, data.usage);
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/^```(json)?/i, "")
-    .replace(/```$/i, "")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
-  try {
-    return parseModelJson(text);
-  } catch (e) {
-    if (!opts.retried) {
-      return think(
-        system,
-        `${user}\n\nREMINDER: your whole reply must be ONLY the JSON object, starting with { and ending with }. Keep every string tight so the full object fits.`,
-        maxTokens,
-        { ...opts, retried: true }
-      );
-    }
-    const head = text.slice(0, 140).replace(/\n/g, " ");
-    throw new Error(`${e.message}. Output head: ${head}`);
-  }
+  return callJSON(
+    { who: opts.who || "corvid", model: pickModel(opts), system, user, maxTokens, hot: opts.hot, priority: opts.priority },
+    parseModelJson
+  );
 }
 
 export async function thinkText(system, user, maxTokens = 1400, opts = {}) {
-  const mdl = opts.model || MODEL;
-  system = system + institutionBlock();
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing in .env");
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: mdl,
-      max_tokens: maxTokens,
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }),
+  const r = await callLLM({
+    who: opts.who || "corvid",
+    model: pickModel(opts),
+    system,
+    user,
+    maxTokens,
+    hot: opts.hot,
+    priority: opts.priority,
   });
-  if (!r.ok) throw new Error(`Anthropic (${r.status})`);
-  const data = await r.json();
-  recordSpend(opts.who || "corvid", mdl, data.usage);
-  return (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim()
-    .replace(/\u2014|\u2013/g, ", ");
+  return r.text.replace(/\u2014|\u2013/g, ", ");
 }
 
 // The minions: small single-purpose workers Corvid can delegate to. Each is
@@ -868,7 +830,14 @@ export function noteTitle(task, maxWords = 6) {
 async function runMinion(name, task, context) {
   const sys = MINIONS[name];
   if (!sys) return null;
-  const report = await thinkText(sys, `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}`, 9000, { model: MINION_MODEL, who: "minions" });
+  // minions are never blind: any page the brief names rides along, read live
+  const eyes = minionEyes(`${task}\n${context || ""}`, hooks.readPage);
+  const report = await thinkText(
+    sys,
+    `Task from Corvid: ${task}\n\nContext:\n${String(context || "").slice(0, 3000)}${eyes ? `\n\n${eyes}` : ""}`,
+    9000,
+    { model: MINION_MODEL, who: "minions" }
+  );
   state.minionSeq = (state.minionSeq || 0) + 1;
   const minionDir = name.charAt(0).toUpperCase() + name.slice(1);
   const file = path.join("Minions", minionDir, `${String(state.minionSeq).padStart(3, "0")} ${noteTitle(task)}.md`);
@@ -878,10 +847,8 @@ async function runMinion(name, task, context) {
   state.minionReports.push({ t: Date.now(), minion: name, task: String(task).slice(0, 100), file, gist: String(report).slice(0, 700) });
   log("minion", `${name} finished: ${String(task).slice(0, 80)}`);
   saveState();
-  // a report that lands long after the cycle that ordered it deserves prompt attention
-  if (!state.lastCycleAt || Date.now() - state.lastCycleAt > 10 * 60000) {
-    pokeCycle(`minion ${name} delivered a report: ${String(task).slice(0, 80)}`);
-  }
+  // the report rides into the next task step and the next cycle as a gist; it
+  // no longer orders a full cycle of its own
   return report;
 }
 
@@ -921,10 +888,11 @@ GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
 
 PAGE ADDRESSING: a bare file name like korvus.html means the brand site. Prefix with a repo to reach a product codebase: "korvus:relative/path/file.ext" is the Korvus engine, "crown:relative/path/file.ext" is Crown. Use ONLY file paths the audit actually lists, never guess conventional names; the korvus.industries homepage is korvus:korvus_landing.html (there is no index.html in that repo). KORVUS LIVE PAGES, the only ones crawlers and visitors ever see: korvus_landing.html (/), korvus_lodestone.html (/lodestone), korvus_signup.html, korvus_login.html, korvus_legal.html. Every other html in that repo is either login gated or not routed at all (trading_news_terminal.html and korvus_promo_studio.html are NOT served on the web), so SEO work on them is wasted; do not file head tag, noindex, or score asks for them. korvus.industries already serves robots.txt and sitemap.xml that block the gated pages and the bar fragment. The shared bar component blackcrown-bar.html is a body fragment with no head on every site and is already blocked by robots.txt, never file noindex asks for it. PRICING BLOCKS: Korvus pricing is a SECTION inside korvus:korvus_landing.html (anchor id pricing); Crown pricing lives on intelligence.html and crown:chat.html. There is no pricing file anywhere; a page like korvus:pricing does not exist and will be vetoed. Only propose repo edits when you know the exact file and exact CURRENT text.
 POSTING TO THE WEB, kind "post": detail MUST carry: PLATFORM: <platform> on its own line. WIRED PLATFORMS: youtube and x (TikTok still ships by the owner's hand from the render package). youtube REQUIRES MEDIA: <url>, the full https link to the rendered file copied from the render delivery; a word like "Bloom" or a file name is rejected. x is the brand X account posted direct from the server: NEW is the exact final post text, 280 characters max with every link counting as 23, MEDIA optional (a rendered video link attaches it to the post). Write X posts like a trader talking, one sharp claim with a number, destination link last; never hashtag soup, two hashtags max. GREEN LIGHT MEANS the server publishes it with the owner's own account connections. Every post is one ask; never batch platforms in one proposal.
-TIKTOK ENGINE EDITS: to change the Make automation itself (writer prompts, captions, slide specs, variable values), file with page "make", CURRENT an exact passage copied from the TIKTOK ENGINE feed, NEW the replacement. Content strings only, never urls, keys, tokens, or module wiring. GREEN LIGHT MEANS Regent applies it to the live scenario, raw backup saved first.
+${ENGINE_LAW_TEXT} GREEN LIGHT MEANS Regent applies it to the live scenario, raw backup saved first.
 RECURRING REPORTS, kind "job": for any recurring digest, report, or monitoring post, file kind "job" instead of an automation paste. The server itself runs these, no Make involved. detail MUST carry, each on its own line: SCHEDULE: daily HH:MM ET, or weekly <monday..sunday> HH:MM ET. CHANNEL: corvid or boardroom. NEW: the exact content spec, what the report covers, in what order, pulled from live analytics, revenue, uptime, and SEO data. GREEN LIGHT MEANS the server registers the job and posts the report on schedule from then on.
 ADDING HEAD TAGS: to add canonical, og, twitter, or other meta and link tags to an html page, set CURRENT: none and make NEW only the tags themselves, nothing else. Regent merges them into the head, updating any tag that already exists and inserting the rest. Never guess head text as a CURRENT anchor. Sitemap entries work the same way: NEW is just the url blocks, Regent appends what is missing.
-kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (page "make" edits to the TikTok Engine; green light means Regent applies it to the live scenario, backup first), "campaign" (a plan), "job" (a recurring server-run report, see RECURRING REPORTS), "creative" (a new TikTok post, VIDEO or slides; set "format":"video" with "video" carrying the full clip direction, or "format":"slides" with "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"]; always "caption": "keyword first line, 2-3 short lines, Link in bio plus destination", "target": the destination it sells, "brand": "korvus" or "default"; green light means Regent renders it through Bloom, video or stills, Herald finalizes the caption and hashtags for the target, and the finished package posts in this channel for the owner to post manually).`;
+kinds: "title" and "meta" (site tag rewrites; green light means Regent edits the live file on the server), "content" (page copy; include the exact CURRENT block so Regent can replace it precisely), "automation" (page "make" edits to the TikTok Engine; green light means Regent applies it to the live scenario, backup first), "campaign" (a plan), "job" (a recurring server-run report, see RECURRING REPORTS), "creative" (a new TikTok post, VIDEO or slides; set "format":"video" with "video" carrying the full clip direction, or "format":"slides" with "slides": ["one image prompt per slide, single line, under 300 characters, dark premium near black, royal accents, one focal point, text centered, right edge and bottom 15 percent empty, destination small above the bottom fifth"]; always "caption": "keyword first line, 2-3 short lines, Link in bio plus destination", "target": the destination it sells, "brand": "korvus" or "default"; green light means Regent renders it through Bloom, video or stills, Herald finalizes the caption and hashtags for the target, and the finished package posts in this channel for the owner to post manually).
+${BRAND_LAW_TEXT}`;
 
 const CYCLE_SYSTEM = `${IDENTITY}
 
@@ -938,7 +906,7 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
 {
  "thought": "max 2 sentences",
  "focus": "max 8 words",
- "patterns_md": "full new Patterns.md: keep what holds, update confidence, add what the data shows, drop what died. Bullets and [[wikilinks]], under 30 lines",
+ "patterns_md": "ONLY when this cycle's data changes a pattern: the full new Patterns.md (keep what holds, update confidence, add what the data shows, drop what died; bullets and [[wikilinks]], under 30 lines). Otherwise an empty string, the file stays as it is",
  "tasks": [{"title":"max 7 words","status":"open|doing|done"}],
  "proposals": [{"page":"...","kind":"...","summary":"...","detail":"...","target":"brand|korvus|crown|eclipse|lodestone","format":"video|slides","video":"one flowing video direction when format is video: shots, motion, pacing, 10 to 15 seconds vertical, NEVER any words or typography in the footage","slides":["..."],"caption":"...","brand":"korvus"}],
  "brain_notes": [{"name":"Keywords.md","body":"full markdown content"}],
@@ -946,6 +914,7 @@ Respond with ONLY one JSON object, no fences. It must pass JSON.parse: inside ev
  "discord": "the daily update, exactly in the template"
 }
 BRAIN ECOSYSTEM: grow the vault into a real knowledge base. Use brain_notes (max 2 per cycle) to create or fully update topic notes: Keywords.md, Competitors.md, Funnel.md, Korvus-Site.md, Crown-Site.md, whatever the work needs. Wikilink them from each other and keep each note current rather than ever-growing.
+SITES FIRST: your purpose is traffic and paid signups on the three websites. Social posts belong to Herald and Bard; most of your proposals each day must be site changes that rank or convert. You can read any site file: queue a task that names the page and the task engine opens the real source with "read", so never ask anyone to paste html and never file a site task as blocked on source.
 GROWTH MANDATE: you run SEO for all three properties: blackcrownvxj.com (bare file names), korvus.industries (repo prefix korvus:), and blackcrown-intelligence.com (repo prefix crown:). The audit now covers every page it can reach, including product repo pages when their clones live on this box. STANDING ORDER: drive every audited page to a score of 100. Any page sitting below 100 is always a valid target, file the exact fix that closes the gap, highest impact first. Beyond scores, hunt at least one concrete growth lever in the data every cycle (a page leaking visitors, a source worth doubling, a product with clicks but no signups, a keyword gap) and either act on it, delegate it to a minion, or file it. Curiosity is free; use it constantly.
 EXCEED THE STANDARD: 100 is the floor, not the ceiling. Once scores are green, the work becomes conversion: sharper titles that earn the click, pages that sell, internal links that move visitors toward signup. You run all three properties as one portfolio and every property gets real work every day.
 NEW PAGES: you can create pages, not only edit them, on all three properties. On korvus.industries the file MUST live in the pages folder: page "korvus:pages/<name>.html" with <name> lowercase letters, digits and hyphens only, and it serves at korvus.industries/p/<name>; anywhere else in that repo a new file serves nothing. Brand and Crown pages are plain file names at the root. Kind "content", page the new file name, CURRENT exactly (new file). A complete page NEVER fits in your cycle reply, so build it in two steps: delegate scribe to write the ENTIRE html document (doctype through closing html tag, house style, real copy, no placeholders) as its report, then next cycle file the proposal with NEW exactly one line: FROM NOTE: Minions/Scribe/<exact note file name>.md and the executor reads the page from the vault. Use this for SEO landing pages, comparison pages ("Crown vs the big names"), and use-case pages that can rank and convert. PAGE VISUAL STANDARD, set by the owner: every new page carries the inline SVG crown logo in the header, exactly <svg viewBox="0 0 36 33" fill="none" stroke="#ff2d8f" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"><path d="M4 24 L4 9 L12 16 L18 5 L24 16 L32 9 L32 24 Z"/><path d="M8 28 L28 28"/></svg> beside the site name, and at least one real visual element (a styled data panel or mock, an inline svg chart or figure, or feature chips), never a wall of plain text. Mark illustrative data as Illustration. DESKTOP AND MOBILE LAW, set by the owner: every page must look right on a wide monitor AND a phone. Page container max-width about 1060px centered with side padding; headings sized with clamp() so they grow on desktop; prose stays readable (never wider than about 75 characters a line) while tables, figures and data panels span the full container; any multi-column grid collapses under 700px. A page that renders as one narrow phone column in the middle of a desktop screen is wrong and will be rejected. ATMOSPHERE: the body background is never flat black; layer a fixed pure-css backdrop of two or three soft radial accent glows, a faint 56px grid at about 1.5 percent white, and an edge vignette. No background images, nothing animated. THE PAGE FRAME, owner law: before writing any page, read corvid/Page-Frame.md in the vault and build INSIDE that skeleton verbatim; its head, fonts, atmosphere, container, panels and tablewrap are fixed, your content fills the marked slots only. Every table lives inside <div class="tablewrap">. Preflight mechanically rejects pages missing the viewport meta, the atmosphere, or a bare table, and a page that invents its own scaffolding is a bounce. File the sitemap entry as a second ask with CURRENT none.
@@ -956,7 +925,8 @@ MINIONS: delegate instead of piling work on yourself. Use delegations (max 2 per
 Max 6 tasks. Max 2 new proposals per cycle, only ones worth his time; zero is fine. Never re-propose anything pending or decided. Number new proposals starting at the number given.
 When this cycle shows nothing materially new since the last one (flat traffic, no findings, nothing to file), set "discord" to "" and send nothing. You run around the clock; speak only when you have something. Silence beats noise.
 CREATIVE IS BARD'S DESK: Bard the studio agent owns all video creatives (two a day) and slide stills are retired. Never file kind "creative" proposals yourself. When the data shows a creative opportunity (a trend, an angle, a page worth a clip), hand it to Bard with a "request". Your job is the angle and the destination page; the studio does the rest.
-CREATIVE BUDGET: the company has 200 Bloom credits a month and a video costs several times a still. Watch BLOOM CREDITS in your feed and pace the month deliberately: video for the strongest concept, slides for routine posts, and when the balance runs ahead of the calendar, file slides or skip a day. Running dry mid-month is a failure; ending the month with credits unspent on weak posts is not. The daily creative counts as something worth sending, so the discord update goes out with it.`;
+CREATIVE BUDGET: the company has 200 Bloom credits a month and a video costs several times a still. Watch BLOOM CREDITS in your feed and pace the month deliberately: video for the strongest concept, slides for routine posts, and when the balance runs ahead of the calendar, file slides or skip a day. Running dry mid-month is a failure; ending the month with credits unspent on weak posts is not. The daily creative counts as something worth sending, so the discord update goes out with it.
+${CREW_RULES}`;
 
 const REACT_SYSTEM = `${IDENTITY}
 
@@ -999,6 +969,7 @@ export async function runCycle(trigger = "schedule") {
     let rev = null;
     try {
       rev = feeds.revenue ? await feeds.revenue() : null;
+      lastRev = rev || lastRev;
     } catch {
       rev = null;
     }
@@ -1064,27 +1035,31 @@ export async function runCycle(trigger = "schedule") {
       `BRAIN Strategy.md:\n${brainRead("Strategy.md").slice(0, 2500)}`,
       `BRAIN Patterns.md:\n${brainRead("Patterns.md").slice(0, 2500)}`,
       `BRAIN Decisions.md (recent):\n${brainRead("Decisions.md").slice(0, 1500)}`,
-      `OPEN TASKS: ${JSON.stringify(state.tasks.filter((t) => t.status !== "done"))}`,
+      await boardText(),
+      `OPEN TASKS: ${JSON.stringify(state.tasks.filter((t) => t.status !== "done").map((t) => ({ title: t.title, status: t.status })))}`,
       `PENDING PROPOSALS (do not repeat): ${JSON.stringify(
         pending.map((p) => ({ number: p.number, page: p.page, summary: p.summary }))
       )}`,
       `Number NEW proposals starting at: ${nextNumber}`,
     ].join("\n\n");
 
-    const out = await think(CYCLE_SYSTEM, user, 8000);
+    // A scheduled cycle runs on the hands model: it happens every cadence tick
+    // and Regent reviews every proposal on the head model before it reaches the
+    // owner. A cycle the owner asked for keeps the head model.
+    const scheduled = trigger === "schedule";
+    const out = await think(CYCLE_SYSTEM, user, 6000, { priority: scheduled ? "background" : "owner", tier: scheduled ? "hands" : undefined, who: "corvid" });
 
     state.lastThought = String(out.thought || "").slice(0, 800);
     state.currentFocus = String(out.focus || state.currentFocus).slice(0, 200);
     if (out.patterns_md) brainWrite("Patterns.md", out.patterns_md);
     if (Array.isArray(out.tasks)) {
-      state.tasks = out.tasks
-        .slice(0, 20)
-        .map((t) => ({
-          id: crypto.randomBytes(4).toString("hex"),
-          title: String(t.title || "").slice(0, 120),
-          status: ["open", "doing", "done"].includes(t.status) ? t.status : "open",
-        }))
-        .filter((t) => t.title);
+      // merge, never replace: a restated task keeps its page source, park,
+      // wait and measurement; an ask from another desk stays until it is
+      // answered or closed as can't see
+      const merged = mergeCycleTasks(state.tasks, out.tasks, { max: 20, protect: (t) => corvidProtect(t) || Boolean(t.reqId) });
+      state.tasks = merged.tasks;
+      for (const t of state.tasks) if (t.status === "done" && t.reqId) closeRequest(t.reqId, "answered");
+      tidyCorvidQueue();
       brainWrite(
         "Tasks.md",
         `# Tasks\n\n${state.tasks.map((t) => `- [${t.status === "done" ? "x" : " "}] ${t.title} (${t.status})`).join("\n")}\n`
@@ -1161,7 +1136,7 @@ export async function runCycle(trigger = "schedule") {
     return { ok: true };
   } catch (e) {
     state.status = "error";
-    if (CYCLE_MS) state.lastCycleAt = Date.now() - CYCLE_MS + 15 * 60000;
+    if (cycleMs()) state.lastCycleAt = Date.now() - cycleMs() + 15 * 60000;
     log("error", `Cycle failed, retrying in 15 min: ${e.message || e}`);
     if (!state.lastErrorPingAt || Date.now() - state.lastErrorPingAt > 6 * 3600 * 1000) {
       state.lastErrorPingAt = Date.now();
@@ -1321,14 +1296,35 @@ async function executeVideo(p) {
     p.renderingSince = Date.now();
     saveState();
     let url = Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null;
+    // footage made before the length fix is 5 seconds; reusing it would only
+    // re-edit the short clip, so a retry buys one new generation at full length
+    if (url && (Number(p.footageSeconds) || 0) < BLOOM_VIDEO_SECONDS - 1) {
+      log("render", `#${p.number} saved footage is shorter than ${BLOOM_VIDEO_SECONDS}s, generating a new full-length clip`);
+      url = null;
+      p.rendered = [];
+      p.bloomGenId = null;
+    }
     if (url) {
       log("render", `#${p.number} reusing already-paid footage, no new charge`);
     } else if ((process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws" && hooks.awsRender) {
-      log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
-      url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
-      p.rendered = [url];
-      saveState();
-    } else {
+      try {
+        log("render", `#${p.number} rendering on the company furnace (AWS spot GPU), 15 to 25 minutes`);
+        url = await hooks.awsRender({ prompt, number: p.number, seconds: BLOOM_VIDEO_SECONDS });
+        p.rendered = [url];
+        p.footageSeconds = BLOOM_VIDEO_SECONDS;
+        saveState();
+      } catch (e) {
+        // the furnace cannot even start (spot quota still 0, missing role):
+        // fall back to Bloom, which keeps its own daily cap and balance reserve.
+        // VIDEO_FALLBACK_BLOOM=0 turns this off.
+        const m = String(e?.message || e);
+        const off = /^(0|false|no|off)$/i.test(String(process.env.VIDEO_FALLBACK_BLOOM || "1").trim());
+        if (off || !BLOOM_KEY || !/quota|max spot|spot instance|could not launch a GPU|service-linked/i.test(m)) throw e;
+        log("render", `#${p.number} furnace unavailable (${m.slice(0, 120)}), rendering via Bloom instead`);
+        url = null;
+      }
+    }
+    if (!url) {
       let genId = p.bloomGenId || null;
       if (genId) {
         log("render", `#${p.number} resuming paid generation ${genId}, no new charge`);
@@ -1355,7 +1351,8 @@ async function executeVideo(p) {
           j = await r.json();
         }
         if (r.status === 400) {
-          r = await start({ prompt });
+          // last resort keeps the length: a bare prompt would come back 5 seconds
+          r = await start({ prompt, duration: Math.min(10, BLOOM_VIDEO_SECONDS) });
           j = await r.json();
         }
         genId = j?.data?.id;
@@ -1388,14 +1385,15 @@ async function executeVideo(p) {
         );
       p.bloomGenId = null;
       p.rendered = [url];
+      p.footageSeconds = BLOOM_VIDEO_SECONDS;
       saveState();
     }
     let finalUrl = url;
     let forgedNote = "";
-    if (Array.isArray(p.overlay) && p.overlay.length && hooks.forge) {
+    if (hooks.forge) {
       try {
         log("render", `#${p.number} baking brand text onto the footage`);
-        const forged = await hooks.forge({ src: url, lines: p.overlay, name: `clip-${p.number}-${Date.now() % 100000}` });
+        const forged = await hooks.forge({ src: url, lines: p.overlay, name: `clip-${p.number}-${Date.now() % 100000}`, target: p.target });
         if (forged) {
           finalUrl = forged;
           p.rendered = [forged, url];
@@ -1424,6 +1422,13 @@ async function executeVideo(p) {
     }
     await discordSend(lines.join("\n"), { link: finalUrl });
     log("render", `#${p.number} video delivered`);
+    // the owner's TikTok channel gets the same file and caption, ready to
+    // download and post by hand
+    if (hooks.tiktokDrop) {
+      hooks
+        .tiktokDrop({ url: finalUrl, caption: p.caption || "", title: `#${p.number} ${p.summary || p.page}`, note: p.target ? `Selling ${p.target}.` : "" })
+        .catch((e) => log("error", `TikTok channel drop failed: ${String(e.message || e).slice(0, 160)}`));
+    }
   } catch (e) {
     p.renderingSince = 0;
     saveState();
@@ -1469,6 +1474,26 @@ async function reactToMessages(msgs) {
   const text = msgs.map((m) => `${m.author?.username || "owner"}: ${m.content}`).join("\n");
   state.discord.lastInboundAt = Date.now();
   log("inbound", text.slice(0, 300));
+  // "retry 414" is a plain command, handled in code: render failures tell the
+  // owner to send exactly this, and the model never sees approved proposals,
+  // so it cannot be trusted to find the number. No model call, no guessing.
+  const asked = [...text.matchAll(/\bretry\s*#?(\d{1,6})\b/gi)].map((m) => m[1]);
+  if (asked.length) {
+    const done = [];
+    for (const n of [...new Set(asked)]) {
+      const p = state.proposals.find((x) => String(x.number) === n);
+      if (!p) done.push(`#${n}: not on my ledger.`);
+      else if (p.kind !== "creative") done.push(`#${n}: not a video, nothing to re-render.`);
+      else if (p.status !== "approved") done.push(`#${n}: it is ${p.status}, only approved videos can be retried.`);
+      else {
+        retryCreative(p.id);
+        log("decision", `#${n} render retried from Discord`);
+        done.push(`#${n}: render restarted. I will post here when it lands or fails.`);
+      }
+    }
+    await discordSend(`**CORVID //** ${done.join(" ")}`);
+    if (!text.replace(/\bretry\s*#?\d{1,6}\b/gi, "").replace(/[\s.,!]+/g, "")) return;
+  }
   try {
     const pending = state.proposals.filter((p) => p.status === "pending");
     const user = [
@@ -1480,7 +1505,7 @@ async function reactToMessages(msgs) {
       `Open tasks: ${JSON.stringify(state.tasks.filter((t) => t.status !== "done").map((t) => t.title))}`,
       `Recent log: ${JSON.stringify(state.log.slice(-6).map((l) => l.text))}`,
     ].join("\n\n");
-    const out = await think(REACT_SYSTEM, user, 2400);
+    const out = await think(REACT_SYSTEM, user, 2400, { priority: "owner" });
     for (const d of Array.isArray(out.decisions) ? out.decisions : []) {
       if (hooks.ownerDecision) await hooks.ownerDecision(d.id, d.action, d.note, "discord");
       else decideProposal(d.id, d.action, d.note, "discord");
@@ -1513,8 +1538,9 @@ async function reactToMessages(msgs) {
 // step budget, and tasks blocked on an owner decision are skipped until the
 // decision lands, so a self-feeding queue can never become runaway spend.
 // ---------------------------------------------------------------------------
-const WORK_GAP_MIN = Math.max(2, Number(process.env.AGENT_WORK_GAP_MIN || 5));
-const WORK_DAILY_CAP = Math.max(0, Number(process.env.AGENT_WORK_DAILY_CAP || 48));
+// live from the owner's tuner, .env values as defaults
+const workGapMin = () => Math.max(2, Number(tune.corvidWorkGapMin()) || 5);
+const workDailyCap = () => Math.max(0, Number(tune.corvidDailySteps()) || 0);
 
 const WORK_SYSTEM = `${IDENTITY}
 ${PROPOSAL_RULES}
@@ -1528,25 +1554,81 @@ Output STRICT JSON only:
  "note": {"name":"X.md","body":"full markdown"} optional vault write,
  "blocked_on": optional proposal number this task now waits on,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, new data tomorrow), park it that long instead of burning steps on it,
- "request": {"to":"herald|steward|bard","ask":"what you need from that desk, max 14 words"} optional,
+ "request": {"to":"herald|steward|bard","ask":"WORK you need from that desk, max 14 words, never data"} optional,
+ "read": {"page":"korvus.html or korvus:path/file","find":"optional words that appear near the part you need"} optional: the server hands you that file's real source on your next step,
+ "cant_see": "optional, max 12 words: what this task needs that no read and no BOARD line shows you; the task closes and it goes on the owner's tool-gap list",
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
+${CREW_RULES}
+YOU CAN READ THE SITES. Any page or file on the three properties is yours to open with "read": the brand site by bare file name, the products as korvus:path and crown:path. When a fix needs the exact CURRENT block (a hero, a title, a call to action, a tracker snippet), read the file first, keep status doing, and file the proposal on the next step with CURRENT copied exactly from the PAGE SOURCE you were given. NEVER ask the owner or another desk to paste html, source, or a snippet, and never park a site task for lack of source: reading it is one step away.
+THE JOB IS THE WEBSITES. Your purpose is traffic and paid signups on blackcrownvxj.com, korvus.industries and blackcrown-intelligence.com. Social posts are Herald and Bard's desk; you file one only when a site task directly needs it. Every day most of your proposals must be site changes: pages that rank (titles, meta, new landing pages for searches people make), pages that convert (hero copy, calls to action, pricing clarity, internal links toward signup), and fixes to anything leaking visitors.
 Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
 
+// a task holding a page source it asked for goes first, so a read is used on
+// the very next step instead of waiting behind the whole queue
 function pickOpenTask() {
   const nowMs = Date.now();
-  return state.tasks
-    .filter(
-      (t) =>
-        t.status !== "done" &&
-        !(t.parkUntil && t.parkUntil > nowMs) &&
-        !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
-    )
-    .sort((a, b) => (a.lastStepAt || 0) - (b.lastStepAt || 0))[0];
+  return pickNext(
+    state.tasks,
+    (t) => !(t.parkUntil && t.parkUntil > nowMs) && !(t.wait && state.proposals.some((p) => p.number === t.wait && p.status === "pending"))
+  );
+}
+// measurements and tasks waiting on a pending ask are never closed by hygiene
+function corvidProtect(t) {
+  return Boolean(t.measure || (t.wait && (state.proposals || []).some((p) => p.number === t.wait && p.status === "pending")));
+}
+function settleRequests(list, how) {
+  for (const t of list || []) if (t && t.reqId) closeRequest(t.reqId, how, t.closed || "");
+}
+// returns how many tasks it closed
+function tidyCorvidQueue() {
+  const r = tidyQueue(state.tasks, { protect: corvidProtect });
+  state.tasks = r.tasks;
+  saveState();
+  if (!r.closed.length) return 0;
+  settleRequests(r.closed, "closed");
+  log("task", `queue tidied: closed ${r.closed.length} (duplicates, stale or over the cap)`);
+  return r.closed.length;
+}
+// a desk said CAN'T SEE: the task closes, the gap goes to the owner's list,
+// and the asking desk is told once instead of asking again
+function cantSee(t, what) {
+  const gap = recordGap("corvid", what, t.title);
+  t.status = "done";
+  t.closed = `can't see: ${String(what).slice(0, 80)}`;
+  if (t.reqId) closeRequest(t.reqId, "cant_see", String(what));
+  log("work", `can't see "${String(what).slice(0, 80)}", on the owner's tool-gap list${gap ? ` (${gap.count}x)` : ""}`);
+  return gap;
 }
 
+// the money line every task step sees: where visitors go and whether they pay
+let lastRev = null;
+function funnelLine(agg) {
+  const top = (o, n) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
+  const clicks = Object.values(agg.clicks7 || {}).reduce((a, b) => a + b, 0);
+  const paid = lastRev ? `${lastRev.subscribers ?? 0} paying, MRR $${lastRev.mrr ?? 0}` : "paying subscribers unknown until the next cycle reads Stripe";
+  return `FUNNEL, last 7 days: ${agg.visits7} visits (was ${agg.visitsPrev7}) > ${clicks} product clicks > ${agg.signups7} Korvus signups > ${paid}. Pages: ${top(agg.pages7, 6)}. Clicks: ${top(agg.clicks7, 5)}. Sources: ${top(agg.sources7, 5)}. The weakest step of that chain is where the next site change belongs.`;
+}
+// When a site change ships, book its own follow-up: the same numbers a week
+// later, so the desks learn what worked instead of guessing.
+export function bookMeasurement(number, page, summary) {
+  try {
+    const agg = aggregates();
+    const clicks = Object.values(agg.clicks7 || {}).reduce((a, b) => a + b, 0);
+    const t = {
+      id: crypto.randomBytes(4).toString("hex"),
+      title: `Measure #${number} ${String(page).slice(0, 34)}: before it was ${agg.visits7} visits, ${clicks} clicks, ${agg.signups7} signups a week`.slice(0, 120),
+      status: "open",
+      parkUntil: Date.now() + 7 * 86400000,
+      measure: { number, page, summary: String(summary || "").slice(0, 80), at: Date.now(), visits7: agg.visits7, clicks7: clicks, signups7: agg.signups7 },
+    };
+    state.tasks.push(t);
+    saveState();
+    log("task", `booked for 7 days out: ${t.title}`);
+  } catch {}
+}
 async function workTick() {
-  if (busy || !state.enabled) return;
+  if (busy || !state.enabled || !canSpend("corvid")) return;
   const t = pickOpenTask();
   if (!t) return;
   const day = etDayKey();
@@ -1554,8 +1636,8 @@ async function workTick() {
     state.workDay = day;
     state.workSteps = 0;
   }
-  if (WORK_DAILY_CAP && (state.workSteps || 0) >= Math.floor(WORK_DAILY_CAP / nightFactor())) return;
-  if (state.lastWorkAt && Date.now() - state.lastWorkAt < WORK_GAP_MIN * nightFactor() * 60000) return;
+  if (workDailyCap() && (state.workSteps || 0) >= Math.floor(workDailyCap() / nightFactor())) return;
+  if (state.lastWorkAt && Date.now() - state.lastWorkAt < workGapMin() * nightFactor() * 60000) return;
   if (state.lastCycleAt && Date.now() - state.lastCycleAt < 2 * 60000) return;
   busy = true;
   state.lastWorkAt = Date.now();
@@ -1573,15 +1655,37 @@ async function workTick() {
       `Other open tasks (context only, work THE TASK): ${JSON.stringify(
         state.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title)
       )}`,
-      `ANALYTICS 7d: visits ${agg.visits7} (prev ${agg.visitsPrev7})`,
+      funnelLine(agg),
+      ...(feeds.board ? [await boardText()] : []),
+      ...(t.reqId ? [`THIS TASK IS AN ASK FROM ANOTHER DESK. Do the work and mark it done, or answer cant_see once if no read and no BOARD line can give it. Never answer with an ask of your own about the same thing.`] : []),
+      ...(t.measure
+        ? [`THIS IS A MEASUREMENT. #${t.measure.number} (${t.measure.summary}) shipped on ${new Date(t.measure.at).toISOString().slice(0, 10)} to ${t.measure.page}. The week before it: ${t.measure.visits7} visits, ${t.measure.clicks7} product clicks, ${t.measure.signups7} signups. Compare with the FUNNEL line above, say plainly whether it helped, hurt or made no difference (small numbers mean "too early to tell", say so), write the verdict into Patterns.md with a note, then either file the next change on that page or, if it hurt, file the revert.`]
+        : []),
       `PENDING PROPOSALS (never re-file): ${JSON.stringify(pending)}`,
       `BRAIN Strategy.md (excerpt):\n${brainRead("Strategy.md").slice(0, 1200)}`,
       `BRAIN Playbook.md (excerpt):\n${brainRead("Playbook.md").slice(0, 800)}`,
+      `MINION REPORTS (latest, the gist IS the answer, use it directly): ${JSON.stringify(
+        (state.minionReports || []).slice(-3).map((m) => ({ minion: m.minion, task: m.task, file: m.file, gist: m.gist || "" }))
+      )}`,
+      ...(t.source ? [`PAGE SOURCE you asked to read, ${t.source.note}:\n${t.source.text}`] : []),
     ].join("\n\n");
-    const out = await think(WORK_SYSTEM, user, 5000);
+    t.source = null;
+    const out = await think(WORK_SYSTEM, user, 5000, { tier: "hands", hot: true });
+    if (out.read && out.read.page && hooks.readPage) {
+      const r = hooks.readPage(String(out.read.page).trim(), String(out.read.find || ""));
+      t.source = r.err
+        ? { note: `could not be read: ${r.err}`, text: "" }
+        : { note: `${r.page}, characters ${r.from} to ${r.from + r.text.length} of ${r.size}${r.more ? ", more follows (read again with find to move)" : ""}`, text: r.text };
+      log("work", `read ${out.read.page}${r.err ? `: ${r.err}` : ` (${r.text.length} chars)`}`);
+      out.status = "doing";
+      t.reads = (t.reads || 0) + 1;
+      if (t.reads <= 4) state.lastWorkAt = 0; // the source is in hand, use it on the very next tick (a task that keeps reading waits its turn)
+    }
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
+    if (out.cant_see && String(out.cant_see).trim() && !t.source) cantSee(t, String(out.cant_see).trim());
+    if (t.status === "done" && t.reqId) closeRequest(t.reqId, "answered");
     if (out.park_hours && t.status !== "done") {
       const h = Math.min(24, Math.max(1, Number(out.park_hours) || 1));
       t.parkUntil = Date.now() + h * 3600000;
@@ -1605,8 +1709,9 @@ async function workTick() {
     }
     if (out.request && out.request.ask && hooks.requestStaff) {
       try {
-        hooks.requestStaff(String(out.request.to || "").toLowerCase(), `From Corvid: ${String(out.request.ask).slice(0, 120)}`);
-        log("work", `request -> ${out.request.to}: ${String(out.request.ask).slice(0, 80)}`);
+        const r = hooks.requestStaff(String(out.request.to || "").toLowerCase(), `From Corvid: ${String(out.request.ask).slice(0, 120)}`);
+        if (r && r.ok === false) log("work", `ask to ${out.request.to} not sent: ${String(r.reason || "").slice(0, 120)}`);
+        else log("work", `request -> ${out.request.to}: ${String(out.request.ask).slice(0, 80)}`);
       } catch {}
     }
     if (out.say && String(out.say).trim()) {
@@ -1628,6 +1733,12 @@ async function workTick() {
 export function startAgent() {
   ensureBrain();
   if (state.status === "thinking") state.status = "watching";
+  // one-time reset of the request storm: duplicates merge and the queue caps
+  if (state.queueReset !== "crew-v1") {
+    const n = tidyCorvidQueue();
+    state.queueReset = "crew-v1";
+    log("task", `crew reset: ${n} duplicate or overflow tasks closed, queue capped at 15 open`);
+  }
   saveState();
   // minute tick: around the clock every N hours, or once daily at the set hour
   setInterval(async () => {
@@ -1649,8 +1760,9 @@ export function startAgent() {
     } catch {
       // watchman is best effort, the schedule below still runs
     }
-    if (CYCLE_MS > 0) {
-      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= CYCLE_MS) {
+    if (!canSpend("corvid")) return;
+    if (cycleMs() > 0) {
+      if (!state.lastCycleAt || Date.now() - state.lastCycleAt >= cycleMs()) {
         runCycle("schedule").catch(() => {});
         return;
       }
@@ -1672,8 +1784,8 @@ export function startAgent() {
   log(
     "boot",
     `${AGENT_NAME} online. Discord: ${discordMode()}. Cadence: ${
-      CYCLE_MS > 0
-        ? `every ${CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN + "min" : CYCLE_EVERY_H + "h"}, around the clock`
+      cycleMs() > 0
+        ? `every ${Math.round(cycleMs() / 60000)}min, around the clock`
         : `daily ${CYCLE_HOUR_ET}:00 ET`
     } Watchman: checking signals every minute, cycles fire instantly on events.`
   );
@@ -1702,7 +1814,8 @@ export function agentState() {
     discordMode: discordMode(),
     cycleHourEt: CYCLE_HOUR_ET,
     cycleEveryH: CYCLE_EVERY_H,
-    cycleEveryMin: CYCLE_EVERY_MIN >= 1 ? CYCLE_EVERY_MIN : 0,
+    cycleEveryMin: cycleMs() > 0 ? Math.round(cycleMs() / 60000) : 0,
+    workSteps: state.workDay === etDayKey() ? state.workSteps || 0 : 0,
     lastCycleAt: state.lastCycleAt,
     currentFocus: state.currentFocus,
     minionReports: (state.minionReports || []).slice(-6).reverse(),
@@ -1713,23 +1826,37 @@ export function agentState() {
     discord: state.discord,
   };
 }
+// the whole ask book, for the tuner's per-desk scorecard
+export function proposalBook() {
+  return (state.proposals || []).map((p) => ({ number: p.number, author: p.author || AGENT_NAME, status: p.status, kind: p.kind, createdAt: p.createdAt }));
+}
 export function setEnabled(on) {
   state.enabled = Boolean(on);
   state.status = state.enabled ? "watching" : "paused";
   log("control", state.enabled ? "Resumed by owner" : "Paused by owner");
   saveState();
 }
-export function addTask(title) {
-  const t = {
-    id: crypto.randomBytes(4).toString("hex"),
-    title: String(title || "").slice(0, 120),
-    status: "open",
-  };
-  if (!t.title) return null;
+// opts.from: the desk that asked (its asks nudge the engine at most once every
+// 15 minutes); opts.reqId: the request ledger entry this task answers.
+// A task that repeats one already open merges into it instead of queueing.
+export function addTask(title, opts = {}) {
+  const text = String(title || "").slice(0, 120);
+  if (!text) return null;
+  const twin = findTwin(state.tasks, text);
+  if (twin) {
+    twin.merged = (twin.merged || 0) + 1;
+    if (opts.reqId && !twin.reqId) twin.reqId = opts.reqId;
+    else if (opts.reqId) closeRequest(opts.reqId, "merged", `same as the open task "${twin.title.slice(0, 60)}"`);
+    saveState();
+    log("task", `merged into an open task: ${text}`);
+    return twin;
+  }
+  const t = newTask(text, { ...(opts.from ? { from: String(opts.from) } : {}), ...(opts.reqId ? { reqId: opts.reqId } : {}) });
   state.tasks.push(t);
+  tidyCorvidQueue();
   saveState();
   log("task", `queued: ${t.title}`);
-  pokeCycle(`a new task just landed in my queue: ${t.title}`);
+  if (!opts.from || shouldWake("corvid")) nudgeWork();
   return t;
 }
 // staff agents (Herald, Steward) file through the same book so Regent reviews

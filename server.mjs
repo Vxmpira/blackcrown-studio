@@ -1,6 +1,7 @@
 // Small render + generation service. The admin page calls this; this calls
 // your AWS for rendering and the Anthropic API for writing new ads.
 // All keys are read from .env and never leave your machine.
+import { engineDigest } from "./brandlaw.mjs";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -36,8 +37,14 @@ import {
   spendSummary,
   heal as corvidHeal,
   librarian as corvidLibrarian,
+  fileProposals,
+  parseModelJson,
+  proposalBook,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
+import { usageReport, callJSON, MODELS } from "./llm.mjs";
+import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
+import { wirePremarket, runPremarket, premarketDue, premarketState } from "./premarket.mjs";
 import {
   startCeo,
   wireCeo,
@@ -50,8 +57,10 @@ import {
   ceoBrainSave,
   ceoVaultPath,
   REPO_ROOTS,
+  readPageSource,
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
+import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines } from "./crew.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -212,6 +221,10 @@ app.use("/api", (req, res, next) => {
   }
   // the Eclipse-X games are public; players identify through Discord
   if (req.path.startsWith("/activity/")) return next();
+  // finished marketing videos are public: Discord, X and the owner's phone
+  // open them by link. They live under /api because the web server only
+  // forwards /api to this process; anything else gets the admin page.
+  if (req.path.startsWith("/renders/")) return next();
   if (isAuthed(req)) return next();
   res.status(401).json({ error: "Not signed in." });
 });
@@ -1413,7 +1426,9 @@ function scrubSecrets(s) {
   return String(s)
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[key]")
     .replace(/bloom_sk_[A-Za-z0-9]+/g, "[key]")
-    .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]");
+    .replace(/Bot\s+[A-Za-z0-9._-]{30,}/g, "Bot [token]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]{12,}/g, "Bearer [token]")
+    .replace(/[A-Za-z0-9_-]{40,}/g, "[long-token]");
 }
 
 // write access to Make, used ONLY by Regent executing an owner-approved ask.
@@ -1428,16 +1443,34 @@ function walkReplace(node, current, next, stats) {
       if (v.includes(current)) {
         stats.hits += v.split(current).length - 1;
         stats.fields++;
-        node[k] = v.split(current).join(next);
+        const out = v.split(current).join(next);
+        // a field that was valid JSON before the edit must be valid after it
+        const t = v.trim();
+        if (t.startsWith("{") || t.startsWith("[")) {
+          let was = false;
+          try { JSON.parse(v); was = true; } catch {}
+          if (was) {
+            try { JSON.parse(out); } catch { stats.broken = (stats.broken || 0) + 1; }
+          }
+        }
+        node[k] = out;
       }
     } else if (v && typeof v === "object") {
       walkReplace(v, current, next, stats);
     }
   }
 }
+// the desks may edit the TikTok engine and nothing else in Make, unless the
+// owner lists more scenario ids in MAKE_EDITABLE
+const MAKE_EDITABLE = [TIKTOK_SCENARIO_ID, ...(process.env.MAKE_EDITABLE || "").split(",").map((x) => x.replace(/[^0-9]/g, "")).filter(Boolean)];
+function makeAllowed(page) {
+  const sid = (String(page || "").match(/^make:(\d+)/i) || [])[1];
+  return !sid || MAKE_EDITABLE.includes(sid);
+}
 async function applyMakeEdit({ scenarioId, current, next }) {
   if (!MAKE_TOKEN) return { ok: false, msg: "MAKE_API_TOKEN is not set in .env" };
   const id = String(scenarioId || TIKTOK_SCENARIO_ID).replace(/[^0-9]/g, "") || TIKTOK_SCENARIO_ID;
+  if (!MAKE_EDITABLE.includes(id)) return { ok: false, msg: `scenario ${id} is not open to the desks; only the TikTok engine is` };
   if (!current || current.toLowerCase() === "none") {
     return { ok: false, msg: "Make edits need CURRENT copied exactly from the engine feed, none given" };
   }
@@ -1461,6 +1494,9 @@ async function applyMakeEdit({ scenarioId, current, next }) {
     if (stats.hits > 3) {
       return { ok: false, msg: `CURRENT appears ${stats.hits} times in the blueprint, refusing an ambiguous edit` };
     }
+    if (stats.broken) {
+      return { ok: false, msg: "the edit would break the request body the engine sends (a quote or line break that is not escaped the way the passage around it is). Nothing was written. Copy the escaping style of CURRENT exactly" };
+    }
     const w = await fetch(`https://${MAKE_ZONE}/api/v2/scenarios/${id}`, {
       method: "PATCH",
       headers: { Authorization: `Token ${MAKE_TOKEN}`, "content-type": "application/json" },
@@ -1483,6 +1519,80 @@ async function applyMakeEdit({ scenarioId, current, next }) {
   }
 }
 
+// "read" page make: the desks open the engine the same way they open a page
+function readAnySource(page, find, max) {
+  if (/^make(:\d+)?$/i.test(String(page || "").trim())) {
+    if (!MAKE_TOKEN) return { err: "MAKE_API_TOKEN is not set on the server, the engine cannot be read" };
+    const text = engineCache.text;
+    if (!text) {
+      readEngine().catch(() => {});
+      return { err: "the engine is loading, read it again on your next step" };
+    }
+    let from = 0;
+    if (find) {
+      const at = text.toLowerCase().indexOf(String(find).toLowerCase());
+      if (at >= 0) from = Math.max(0, at - 500);
+    }
+    const out = text.slice(from, from + 7000);
+    return { page: "make (the TikTok engine)", from, text: out, size: text.length, more: from + out.length < text.length };
+  }
+  return max ? readPageSource(page, find, max) : readPageSource(page, find);
+}
+
+// ---------------------------------------------------------------------------
+// THE BOARD: the facts every desk kept asking each other to paste, kept by
+// the server in one place. Every desk reads it every cycle and every task
+// step, so "send me the hero anchor" and "send me the Bloom balance" never
+// cross the wire again.
+// ---------------------------------------------------------------------------
+const BOARD_PAGES = [
+  ["BRAND HOME index.html", "index.html"],
+  ["KORVUS HOME korvus:korvus_landing.html", "korvus:korvus_landing.html"],
+  ["KORVUS SIGNUP korvus:korvus_signup.html", "korvus:korvus_signup.html"],
+  ["CROWN HOME crown:index.html", "crown:index.html"],
+];
+let boardPageCache = { at: 0, text: "" };
+function boardPages() {
+  if (boardPageCache.text && Date.now() - boardPageCache.at < 10 * 60000) return boardPageCache.text;
+  const lines = [];
+  for (const [label, page] of BOARD_PAGES) {
+    try {
+      const r = readPageSource(page, "", 8000000);
+      if (r && !r.err && r.text) lines.push(`${label}: ${keyLines(r.text)}`);
+    } catch {
+      // a page that will not open is left off the board, never guessed
+    }
+  }
+  boardPageCache = { at: Date.now(), text: lines.join("\n") };
+  return boardPageCache.text;
+}
+async function boardFeed() {
+  const lines = ["THE BOARD, live facts the server keeps (read this before you ask any desk for anything):"];
+  try {
+    const p = boardPages();
+    lines.push(p ? `LIVE PAGES (exact text and href, refreshed every 10 minutes):\n${p}` : "LIVE PAGES: unavailable right now");
+  } catch {}
+  try {
+    const c = await bloomCredits();
+    lines.push(`BLOOM CREDITS: ${c ? (c.unlimited ? "unlimited" : `${c.balance} left`) : "unknown, the Bloom key did not answer"}`);
+  } catch {}
+  try {
+    const props = agentState().proposals || [];
+    const link = (p) => (Array.isArray(p.rendered) ? p.rendered.filter((u) => /^https?:\/\//i.test(String(u))).pop() : null);
+    const done = props.filter((p) => link(p)).slice(0, 5).map((p) => `#${p.number} ${String(p.summary).slice(0, 50)}: ${link(p)}`);
+    const rolling = props.filter((p) => p.renderingSince && !link(p)).slice(0, 3).map((p) => `#${p.number} ${String(p.summary).slice(0, 50)}`);
+    lines.push(`LATEST RENDERS (the link is the finished file): ${done.join("; ") || "none in the last 25 asks"}${rolling.length ? `. Rendering now: ${rolling.join("; ")}` : ""}`);
+  } catch {}
+  try {
+    const body = ceoBrainFile("Ledger.md").body || "";
+    const tail = body.trim().split("\n").filter((l) => l.startsWith("- ")).slice(-5).join("\n");
+    if (tail) lines.push(`REGENT LEDGER, latest executions:\n${tail}`);
+  } catch {}
+  try {
+    lines.push(crewBoardLines());
+  } catch {}
+  return lines.join("\n");
+}
 async function readEngine() {
   if (!MAKE_TOKEN) return null;
   if (engineCache.text && Date.now() - engineCache.at < 6 * 3600 * 1000) {
@@ -1497,25 +1607,8 @@ async function readEngine() {
     const j = await r.json();
     const bp = j?.response?.blueprint || j?.blueprint || j;
     const flow = Array.isArray(bp?.flow) ? bp.flow : [];
-    const parts = [`TikTok Engine live config (scenario ${TIKTOK_SCENARIO_ID}, read ${new Date().toISOString().slice(0, 10)})`];
-    for (const m of flow) {
-      if (m.module === "util:SetVariables" && m.mapper?.variables) {
-        for (const v of m.mapper.variables) {
-          if (["product", "brief", "why", "cta", "slides"].includes(v.name)) {
-            parts.push(`${v.name}: ${scrubSecrets(v.value)}`);
-          }
-        }
-      }
-      if (
-        m.module === "http:ActionSendData" &&
-        typeof m.mapper?.url === "string" &&
-        m.mapper.url.includes("api.anthropic.com") &&
-        typeof m.mapper?.data === "string"
-      ) {
-        parts.push(`writer prompt payload: ${scrubSecrets(m.mapper.data)}`);
-      }
-    }
-    engineCache = { at: Date.now(), text: parts.join("\n\n").slice(0, 12000) };
+    const digest = engineDigest(flow, scrubSecrets, TIKTOK_SCENARIO_ID);
+    engineCache = { at: Date.now(), text: digest.slice(0, 40000) };
     try {
       fs.writeFileSync(
         path.join(brainDirPath(), "TikTok-Engine-Live.md"),
@@ -1638,6 +1731,7 @@ wireFeeds({
     const lines = body.trim().split("\n").filter((l) => l.startsWith("- "));
     return lines.slice(-8).join("\n");
   },
+  board: () => boardFeed(),
 });
 // ----- brain sync: push the vaults to a git repo so Obsidian stays live ----
 // Set BRAIN_SYNC=1 and point AGENT_BRAIN_DIR / CEO_BRAIN_DIR inside a cloned
@@ -1734,23 +1828,47 @@ app.get("/api/intel", (_req, res) => {
   const filings = readJsonl(path.join(dataDir, "filings.jsonl"), 400);
   const today = etDay(new Date().toISOString());
   const scored = filings.filter((f) => f.summary);
+  // The scoreboard only counts the current rule version (a rule change starts
+  // a fresh one), so the curve does too. Trades taken under retired rules stay
+  // on the record: they are summarised here so the tab can show them plainly.
+  const current = board?.scoreboard?.strategy || board?.rules?.strategy || null;
+  const retiredMap = {};
+  for (const t of trades) {
+    if (t.status !== "closed" || !current || t.strategy === current) continue;
+    const r = (retiredMap[t.strategy] ||= { strategy: t.strategy, trades: 0, wins: 0, losses: 0, pnl: 0, last_utc: null });
+    r.trades++;
+    if ((Number(t.pnl) || 0) > 0) r.wins++;
+    else r.losses++;
+    r.pnl = Math.round((r.pnl + (Number(t.pnl) || 0)) * 100) / 100;
+    if (!r.last_utc || String(t.exit_utc) > r.last_utc) r.last_utc = t.exit_utc;
+  }
   // cumulative paper P&L after each closed trade, for the equity curve
   let cum = 0;
   const equity = trades
-    .filter((t) => t.status === "closed")
+    .filter((t) => t.status === "closed" && (!current || t.strategy === current))
     .sort((a, b) => String(a.exit_utc).localeCompare(String(b.exit_utc)))
     .map((t) => ({ t: t.exit_utc, v: Math.round((cum += Number(t.pnl) || 0) * 100) / 100, sym: t.symbol }));
   let dataMtime = null;
   try {
     dataMtime = fs.statSync(path.join(dataDir, "filings.jsonl")).mtime.toISOString();
   } catch {}
+  // every trade carries the filing that triggered it, so the ledger can show why
+  const byAcc = new Map(filings.map((f) => [f.accession, f]));
+  const withFiling = (t) => {
+    const f = byAcc.get(t.accession);
+    return f
+      ? { ...t, filing: { headline: f.headline, url: f.url, form: f.form, catalyst: f.catalyst, impact: f.impact, direction: f.direction,
+          confidence: f.confidence, summary: f.summary, read: f.read, seen_utc: f.seen_utc, ref_price: f.ref_price } }
+      : t;
+  };
   res.json({
     configured: true,
     dataMtime,
     equity,
     board,
-    open: trades.filter((t) => t.status === "open").reverse(),
-    recent: trades.filter((t) => t.status === "closed").slice(-25).reverse(),
+    retired: Object.values(retiredMap),
+    open: trades.filter((t) => t.status === "open").reverse().map(withFiling),
+    recent: trades.filter((t) => t.status === "closed").slice(-80).reverse().map(withFiling),
     filingsToday: filings.filter((f) => etDay(f.seen_utc) === today).length,
     filings: scored.slice(-15).reverse().map((f) => ({
       symbol: f.symbol, headline: f.headline, seen_utc: f.seen_utc, url: f.url,
@@ -1804,6 +1922,28 @@ app.get("/api/compass/live", async (_req, res) => {
       ? { configured: true, reachable: true, ...j }
       : { configured: true, reachable: false, error: r.status === 403 ? "key rejected by Korvus" : `HTTP ${r.status}` };
     compassLive = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.json({ configured: true, reachable: false, error: String(e?.message || e) });
+  }
+});
+
+// The futures strategy lab on the Korvus box: every strategy the bot has
+// created per market, why, and how each one is doing. Same key as the status.
+let labCache = { at: 0, data: null };
+app.get("/api/intel/lab", async (_req, res) => {
+  if (!INTEL_KEY) return res.json({ configured: false });
+  if (labCache.data && Date.now() - labCache.at < 15000) return res.json(labCache.data);
+  try {
+    const r = await fetch(INTEL_STATUS_URL.replace(/intel-status\/?$/, "lab"), {
+      headers: { "X-Intel-Key": INTEL_KEY },
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json().catch(() => ({}));
+    const data = r.ok
+      ? { configured: true, reachable: true, ...j }
+      : { configured: true, reachable: false, error: r.status === 404 ? "the lab is not deployed on Korvus yet" : r.status === 403 ? "key rejected by Korvus" : `HTTP ${r.status}` };
+    labCache = { at: Date.now(), data };
     res.json(data);
   } catch (e) {
     res.json({ configured: true, reachable: false, error: String(e?.message || e) });
@@ -1881,6 +2021,9 @@ function submitIndexNow(rootKey, file) {
 
 const companyFeed = async (key) => {
     const lines = [];
+    if (key !== "jobs") {
+      try { lines.push(await boardFeed()); } catch {}
+    }
     try { lines.push(spendSummary()); } catch {}
     try {
       const js = loadJobs();
@@ -1935,6 +2078,9 @@ const companyFeed = async (key) => {
     } catch {
       // optional
     }
+    if (key === "bard") {
+      lines.push('TIKTOK ENGINE: yours to art direct. "read" page "make" (find: style or image) shows the live picture prompts.');
+    }
     if (key === "herald") {
       try {
         const t = await readTrends();
@@ -1944,7 +2090,7 @@ const companyFeed = async (key) => {
       }
       try {
         const e = await readEngine();
-        if (e) lines.push(`TIKTOK ENGINE: ${String(e).slice(0, 1200)}`);
+        if (e) lines.push(`TIKTOK ENGINE (start only, "read" page "make" for the rest): ${String(e).slice(0, 900)}`);
       } catch {
         // optional
       }
@@ -1966,7 +2112,7 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed, wire: recordWire });
+wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource, board: boardFeed });
 
 // ---------------------------------------------------------------------------
 // the immune system: every 10 minutes the healer makes the floor whole again.
@@ -1990,10 +2136,28 @@ function diskHygiene() {
     }
   } catch {}
 }
+// once a day, after 9 ET, the new tool gaps reach the boardroom as ONE card:
+// the walls the desks hit, so the owner decides what to wire
+async function sendGapDigest() {
+  try {
+    const hr = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date()), 10) % 24;
+    if (hr < 9 || !(JOBS_BOT && JOBS_CH.boardroom)) return;
+    const text = gapDigest(dayKey());
+    if (!text) return;
+    await fetch(`https://discord.com/api/v10/channels/${JOBS_CH.boardroom}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bot ${JOBS_BOT}` },
+      body: JSON.stringify({ content: text.slice(0, 1900) }),
+    });
+  } catch (e) {
+    console.log("gap digest:", e?.message || e);
+  }
+}
 function runHealer() {
   try { corvidHeal(); } catch (e) { console.log("healer corvid:", e?.message || e); }
   try { staffHeal(); } catch (e) { console.log("healer staff:", e?.message || e); }
   try { diskHygiene(); } catch {}
+  sendGapDigest().catch(() => {});
 }
 setTimeout(runHealer, 90 * 1000);
 setInterval(runHealer, 10 * 60 * 1000);
@@ -2080,7 +2244,7 @@ const JOB_SYSTEM = `You are The Desk, BlackCrownVxJ LLC's automated reporting se
 async function runJob(job) {
   try {
     const data = await companyFeed("jobs");
-    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200);
+    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200, { tier: "hands", who: "jobs", priority: "owner" });
     const content = `**THE DESK // ${job.name.toUpperCase().slice(0, 60)}** · ${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}\n${text}`;
     const channelId = JOBS_CH[job.channel] || JOBS_CH.corvid;
     if (JOBS_BOT && channelId) {
@@ -2123,7 +2287,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 app.get("/api/jobs", (_req, res) => res.json({ jobs: loadJobs() }));
-app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary() }));
+app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary(), ...usageReport() }));
 app.post("/api/jobs/:id/run", async (req, res) => {
   const job = loadJobs().find((x) => x.id === req.params.id);
   if (!job) return res.status(404).json({ error: "no such job" });
@@ -2138,13 +2302,40 @@ app.post("/api/jobs/:id/toggle", (req, res) => {
   saveJobs(jobs);
   res.json({ ok: true, enabled: job.enabled });
 });
+// a deleted job is archived, never lost: the archive can put it back as it was
+const JOBS_ARCHIVE_PATH = path.join(__dirname, "studio-jobs-archive.json");
+function loadJobArchive() {
+  try {
+    return JSON.parse(fs.readFileSync(JOBS_ARCHIVE_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+}
 app.delete("/api/jobs/:id", (req, res) => {
   const jobs = loadJobs();
   const idx = jobs.findIndex((x) => x.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: "no such job" });
-  jobs.splice(idx, 1);
+  const [gone] = jobs.splice(idx, 1);
+  try {
+    const arc = loadJobArchive();
+    arc.push({ ...gone, deletedAt: Date.now() });
+    fs.writeFileSync(JOBS_ARCHIVE_PATH, JSON.stringify(arc.slice(-200), null, 2));
+  } catch {}
   saveJobs(jobs);
-  res.json({ ok: true });
+  res.json({ ok: true, archived: true });
+});
+app.get("/api/jobs/archive", (_req, res) => res.json({ jobs: loadJobArchive().slice().reverse() }));
+app.post("/api/jobs/archive/:id/restore", (req, res) => {
+  const arc = loadJobArchive();
+  const idx = arc.findIndex((x) => x.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "not in the archive" });
+  const [job] = arc.splice(idx, 1);
+  delete job.deletedAt;
+  const jobs = loadJobs();
+  if (!jobs.some((x) => x.id === job.id)) jobs.push(job);
+  saveJobs(jobs);
+  fs.writeFileSync(JOBS_ARCHIVE_PATH, JSON.stringify(arc, null, 2));
+  res.json({ ok: true, job });
 });
 
 // ----- the bot, alive: gateway presence + owner slash commands --------------
@@ -2280,29 +2471,103 @@ const STICKER_META = {
   blkc_onit: { description: "Corvid is on it", tags: "bird" },
   blkc_filed: { description: "Filed with Regent", tags: "file_folder" },
 };
+// how full the server's emoji and sticker shelves are: Discord's slot count
+// grows with the boost tier, static and animated emojis count separately
+const EMOJI_SLOTS = [50, 100, 150, 250];
+const STICKER_SLOTS = [5, 15, 30, 60];
+async function expressionShelf() {
+  const h = { authorization: `Bot ${BOT}` };
+  const [g, e, st] = await Promise.all([
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}`, { headers: h }).then((r) => r.json()),
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/emojis`, { headers: h }).then((r) => r.json()),
+    fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/stickers`, { headers: h }).then((r) => r.json()),
+  ]);
+  const tier = Math.max(0, Math.min(3, Number(g?.premium_tier) || 0));
+  const emojis = Array.isArray(e) ? e : [];
+  const stickers = Array.isArray(st) ? st : [];
+  return {
+    tier,
+    boosts: g?.premium_subscription_count ?? null,
+    emojiLimit: EMOJI_SLOTS[tier],
+    staticUsed: emojis.filter((x) => !x.animated).length,
+    animatedUsed: emojis.filter((x) => x.animated).length,
+    stickerLimit: STICKER_SLOTS[tier],
+    stickersUsed: stickers.length,
+    emojiNames: emojis.map((x) => x.name),
+    stickerNames: stickers.map((x) => x.name),
+  };
+}
+app.get("/api/discord/expressions", async (_req, res) => {
+  if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
+  try {
+    const shelf = await expressionShelf();
+    const edir = path.join(__dirname, "assets/discord/emoji");
+    const sdir = path.join(__dirname, "assets/discord/stickers");
+    const list = (d, ext) => (fs.existsSync(d) ? fs.readdirSync(d).filter((x) => ext.test(x)) : []);
+    const packEmoji = list(edir, /\.(png|gif)$/i).map((f) => f.replace(/\.(png|gif)$/i, ""));
+    const packStickers = list(sdir, /\.png$/i).map((f) => f.replace(/\.png$/i, ""));
+    res.json({
+      ...shelf,
+      pack: { emojis: packEmoji.length, stickers: packStickers.length },
+      waiting: {
+        emojis: packEmoji.filter((n) => !shelf.emojiNames.includes(n)).length,
+        stickers: packStickers.filter((n) => !shelf.stickerNames.includes(n)).length,
+      },
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+// stock the shelves: uploads every pack file the server does not have yet,
+// never a duplicate name, and stops at the tier's slot limit
 app.post("/api/discord/expressions", async (_req, res) => {
   if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
   const out = { emojis: [], stickers: [] };
+  let shelf;
+  try {
+    shelf = await expressionShelf();
+  } catch (e) {
+    return res.status(502).json({ error: `could not read the server's shelves: ${String(e.message || e).slice(0, 160)}` });
+  }
+  let staticFree = shelf.emojiLimit - shelf.staticUsed;
+  let animatedFree = shelf.emojiLimit - shelf.animatedUsed;
+  let stickerFree = shelf.stickerLimit - shelf.stickersUsed;
   const edir = path.join(__dirname, "assets/discord/emoji");
-  for (const f of fs.existsSync(edir) ? fs.readdirSync(edir).filter((x) => x.endsWith(".png")) : []) {
-    const name = f.replace(/\.png$/, "");
+  for (const f of fs.existsSync(edir) ? fs.readdirSync(edir).filter((x) => /\.(png|gif)$/i.test(x)).sort() : []) {
+    const name = f.replace(/\.(png|gif)$/i, "").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32);
+    const animated = /\.gif$/i.test(f);
+    if (shelf.emojiNames.includes(name)) continue;
+    if (animated ? animatedFree <= 0 : staticFree <= 0) {
+      out.emojis.push(`${name}: skipped, no ${animated ? "animated" : "static"} slots left`);
+      continue;
+    }
     try {
       const b64 = fs.readFileSync(path.join(edir, f)).toString("base64");
       const r = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/emojis`, {
         method: "POST",
         headers: { authorization: `Bot ${BOT}`, "content-type": "application/json" },
-        body: JSON.stringify({ name, image: `data:image/png;base64,${b64}` }),
+        body: JSON.stringify({ name, image: `data:image/${animated ? "gif" : "png"};base64,${b64}` }),
       });
       const j = await r.json().catch(() => ({}));
       out.emojis.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+      if (r.ok) {
+        if (animated) animatedFree--;
+        else staticFree--;
+      }
+      if (r.status === 429) await new Promise((ok) => setTimeout(ok, (Number(j?.retry_after) || 2) * 1000));
     } catch (e) {
       out.emojis.push(`${name}: ${e.message || e}`);
     }
   }
   const sdir = path.join(__dirname, "assets/discord/stickers");
-  for (const f of fs.existsSync(sdir) ? fs.readdirSync(sdir).filter((x) => x.endsWith(".png")) : []) {
+  for (const f of fs.existsSync(sdir) ? fs.readdirSync(sdir).filter((x) => x.endsWith(".png")).sort() : []) {
     const name = f.replace(/\.png$/, "");
-    const meta = STICKER_META[name] || { description: "BlackCrown sticker", tags: "crown" };
+    if (shelf.stickerNames.includes(name)) continue;
+    if (stickerFree <= 0) {
+      out.stickers.push(`${name}: skipped, no sticker slots left`);
+      continue;
+    }
+    const meta = STICKER_META[name] || { description: "Eclipse-X sticker", tags: "crown" };
     try {
       const fd = new FormData();
       fd.append("name", name);
@@ -2316,6 +2581,7 @@ app.post("/api/discord/expressions", async (_req, res) => {
       });
       const j = await r.json().catch(() => ({}));
       out.stickers.push(`${name}: ${r.ok ? "added" : j?.message || r.status}`);
+      if (r.ok) stickerFree--;
     } catch (e) {
       out.stickers.push(`${name}: ${e.message || e}`);
     }
@@ -2379,16 +2645,42 @@ function oauth1Header(method, url) {
 }
 const X_UPLOAD = "https://upload.twitter.com/1.1/media/upload.json";
 async function xUploadVideo(mediaUrl) {
-  const dl = await fetch(mediaUrl);
-  if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
-  const buf = Buffer.from(await dl.arrayBuffer());
+  // our own renders are read straight from disk
+  const own = String(mediaUrl).match(/\/(?:api\/)?renders\/([A-Za-z0-9-]+\.mp4)(?:\?|$)/);
+  let buf;
+  if (own && fs.existsSync(path.join(RENDERS_DIR, own[1]))) buf = fs.readFileSync(path.join(RENDERS_DIR, own[1]));
+  else {
+    const dl = await fetch(fixRenderUrl(mediaUrl));
+    if (!dl.ok) throw new Error(`media download failed (${dl.status})`);
+    buf = Buffer.from(await dl.arrayBuffer());
+    if (/^text\/html/i.test(dl.headers.get("content-type") || "")) throw new Error("media link returned a web page, not a video");
+  }
   if (buf.length > 512 * 1024 * 1024) throw new Error("video exceeds the 512MB X limit");
+  return xUploadBuffer(buf, "video/mp4", "tweet_video");
+}
+// Every X post carries a picture. A post with no video gets the branded card
+// for the product it is about, so it never shows as a bare link preview (X
+// often fails to load other sites' preview images, Discord's included).
+const X_CARDS = path.join(__dirname, "assets", "x-cards");
+function cardFor(text) {
+  const t = String(text || "");
+  if (/lodestone/i.test(t)) return "lodestone";
+  if (/discord\.(gg|com)|eclipse[- ]?x/i.test(t)) return "eclipse";
+  if (/korvus/i.test(t)) return "korvus";
+  if (/blackcrown-intelligence|\bcrown\b/i.test(t)) return "crown";
+  return "blackcrown";
+}
+async function xUploadCard(text) {
+  const file = path.join(X_CARDS, `${cardFor(text)}.jpg`);
+  return xUploadBuffer(fs.readFileSync(file), "image/jpeg", "tweet_image");
+}
+async function xUploadBuffer(buf, mediaType, category) {
   const q = (o) => X_UPLOAD + "?" + new URLSearchParams(o).toString();
   let url = q({
     command: "INIT",
     total_bytes: String(buf.length),
-    media_type: "video/mp4",
-    media_category: "tweet_video",
+    media_type: mediaType,
+    media_category: category,
   });
   let r = await fetch(url, { method: "POST", headers: { authorization: oauth1Header("POST", url) } });
   let j = await r.json().catch(() => ({}));
@@ -2426,6 +2718,13 @@ async function postToX({ content, media }) {
   while (weight() > 280 && /\s/.test(text)) text = text.replace(/\s+\S+$/, "");
   const payload = { text };
   if (media) payload.media = { media_ids: [await xUploadVideo(media)] };
+  else {
+    try {
+      payload.media = { media_ids: [await xUploadCard(text)] };
+    } catch (e) {
+      agentLog("error", `X card image skipped, posting text only: ${String(e?.message || e).slice(0, 140)}`);
+    }
+  }
   const url = "https://api.twitter.com/2/tweets";
   const r = await fetch(url, {
     method: "POST",
@@ -2501,16 +2800,20 @@ wireCeo({
   audit: async () => (await doAudit()).pages,
   createJob: createJobFromProposal,
   makeEdit: applyMakeEdit,
+  makeAllowed,
+  engineText: () => engineCache.text,
   publish: publishPost,
   staffChannels: {
     Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
     Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
   },
   jobNames: () => loadJobs().map((j) => j.name).filter(Boolean),
+  // Regent's "fix and refile" orders nudge the desk's task engine; they no
+  // longer order a full paid cycle on every bounce
   assignFix: (author, text) => {
     const key = String(author || "").toLowerCase();
-    if (key === "herald" || key === "steward") return staffAddTask(key, text);
-    return addTask(text);
+    if (key === "herald" || key === "steward" || key === "bard") return staffAddTask(key, text, { from: "regent" });
+    return addTask(text, { from: "regent" });
   },
 });
 // ---------------------------------------------------------------------------
@@ -2520,7 +2823,13 @@ wireCeo({
 // ---------------------------------------------------------------------------
 const RENDERS_DIR = path.join(__dirname, "renders");
 try { fs.mkdirSync(RENDERS_DIR, { recursive: true }); } catch {}
+app.use("/api/renders", express.static(RENDERS_DIR, { maxAge: "7d" }));
 app.use("/renders", express.static(RENDERS_DIR, { maxAge: "7d" }));
+// links handed out before the move pointed at /renders/, which the web server
+// never forwarded here; this turns any such link into the one that works
+function fixRenderUrl(u) {
+  return String(u || "").replace(/(admin\.blackcrownvxj\.com)\/renders\//i, "$1/api/renders/");
+}
 const ADMIN_PUBLIC_URL = (process.env.ADMIN_PUBLIC_URL || "https://admin.blackcrownvxj.com").replace(/\/$/, "");
 const FORGE_FONT = path.join(__dirname, "assets", "fonts", "DejaVuSans-Bold.ttf");
 function forgeEscape(s) {
@@ -2532,7 +2841,14 @@ function forgeEscape(s) {
     .slice(0, 48)
     .trim();
 }
-async function forgeOverlay({ src, lines, name }) {
+const ENDCARDS = path.join(__dirname, "assets", "endcards");
+function endCardFor(target) {
+  const t = String(target || "").toLowerCase();
+  const k = ["korvus", "lodestone", "crown", "eclipse"].find((x) => t.includes(x)) || "brand";
+  const f = path.join(ENDCARDS, `${k}.png`);
+  return fs.existsSync(f) ? f : null;
+}
+async function forgeOverlay({ src, lines, name, target }) {
   // Text is typeset with libass (the bundled ffmpeg has no drawtext filter,
   // which is why early clips shipped raw). Two looks: "caption", the bold
   // lower-third line, and "word", the MONOLITH format: one letter-spaced
@@ -2557,7 +2873,8 @@ async function forgeOverlay({ src, lines, name }) {
     }))
     .filter((l) => l.text)
     .slice(0, monolith ? 14 : 3);
-  if (!safe.length) return null;
+  const card = endCardFor(target);
+  if (!safe.length && !card) return null;
   const clean = String(name).replace(/[^a-z0-9-]/gi, "").slice(0, 40) || `clip-${Date.now()}`;
   const srcFile = path.join(RENDERS_DIR, `${clean}-src.mp4`);
   const assFile = path.join(RENDERS_DIR, `${clean}.ass`);
@@ -2597,15 +2914,33 @@ async function forgeOverlay({ src, lines, name }) {
   const fontsDir = path.dirname(FORGE_FONT);
   const esc = (s) => s.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "");
   const grade = monolith ? ["eq=saturation=0.22:contrast=1.1:brightness=-0.03", "colorbalance=bs=0.10:bm=0.05", "vignette=PI/4.5"] : [];
-  const filters = [...grade, `ass='${esc(assFile)}':fontsdir='${esc(fontsDir)}'`].join(",");
+  const textFx = safe.length ? [`ass='${esc(assFile)}':fontsdir='${esc(fontsDir)}'`] : [];
   const { default: ffmpegPath } = await import("ffmpeg-static");
-  const { execFileSync } = await import("child_process");
+  const { execFileSync, spawnSync } = await import("child_process");
+  // the edit: footage at 720x1280, graded and captioned, then a crossfade into
+  // the product's branded end card, with the sound faded out under it
+  const probe = String(spawnSync(ffmpegPath, ["-hide_banner", "-i", srcFile], { encoding: "utf8" }).stderr || "");
+  const dm = probe.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+  const dur = dm ? +dm[1] * 3600 + +dm[2] * 60 + +dm[3] : 0;
+  const hasAudio = /Stream #\S+.*Audio:/.test(probe);
+  const fit = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,format=yuv420p";
+  let args;
+  if (card && dur > 2) {
+    const CARD = 2.5, XF = 0.5, off = Math.max(0.5, dur - XF).toFixed(2);
+    const fc = [
+      `[0:v]${[fit, ...grade, ...textFx].join(",")}[main]`,
+      `[1:v]scale=720:1280,setsar=1,fps=24,format=yuv420p[card]`,
+      `[main][card]xfade=transition=fade:duration=${XF}:offset=${off}[v]`,
+    ];
+    if (hasAudio) fc.push(`[0:a]afade=t=out:st=${Math.max(0, dur - 1.2).toFixed(2)}:d=1.2,apad=pad_dur=${CARD}[a]`);
+    args = ["-y", "-i", srcFile, "-loop", "1", "-t", String(CARD + XF), "-i", card, "-filter_complex", fc.join(";"), "-map", "[v]",
+      ...(hasAudio ? ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"] : []),
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", outFile];
+  } else {
+    args = ["-y", "-i", srcFile, "-vf", [...grade, ...textFx].join(",") || "null", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", outFile];
+  }
   try {
-    execFileSync(
-      ffmpegPath,
-      ["-y", "-i", srcFile, "-vf", filters, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", outFile],
-      { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] }
-    );
+    execFileSync(ffmpegPath, args, { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] });
   } catch (e) {
     const tail = String(e.stderr || e.message || e).split("\n").filter(Boolean).slice(-3).join(" | ");
     throw new Error(`forge ffmpeg failed: ${tail.slice(0, 300)}`);
@@ -2621,8 +2956,100 @@ async function forgeOverlay({ src, lines, name }) {
       if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp);
     }
   } catch {}
-  return `${ADMIN_PUBLIC_URL}/renders/${clean}.mp4`;
+  return `${ADMIN_PUBLIC_URL}/api/renders/${clean}.mp4`;
 }
+
+// ---------------------------------------------------------------------------
+// THE TIKTOK DROP: every finished video lands in the owner's #tiktok-automation
+// channel as a file to download, with its caption ready to paste. TikTok
+// posting stays by his hand; nothing here posts to TikTok.
+// ---------------------------------------------------------------------------
+const TIKTOK_CHANNEL = (process.env.TIKTOK_CHANNEL_ID || "1532802248042610738").trim();
+const DROP_BOT = (process.env.DISCORD_BOT_TOKEN || "").trim();
+const DROP_MAX_BYTES = Math.max(1, Number(process.env.TIKTOK_DROP_MAX_MB || 9.5)) * 1048576;
+let lastDrop = null;
+function renderFileFor(url) {
+  const m = String(url || "").match(/\/(?:api\/)?renders\/([A-Za-z0-9._-]+\.mp4)(?:\?|$)/);
+  if (!m) return null;
+  const f = path.join(RENDERS_DIR, m[1]);
+  return fs.existsSync(f) ? f : null;
+}
+async function postToChannel(channel, content, file) {
+  if (!(DROP_BOT && channel)) return { ok: false, status: "no bot token or channel" };
+  if (file) {
+    const fd = new FormData();
+    fd.append("payload_json", JSON.stringify({ content }));
+    fd.append("files[0]", new Blob([fs.readFileSync(file)], { type: "video/mp4" }), path.basename(file));
+    const r = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, { method: "POST", headers: { authorization: `Bot ${DROP_BOT}` }, body: fd });
+    if (r.ok) return { ok: true, attached: true };
+  }
+  const r = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bot ${DROP_BOT}` },
+    body: JSON.stringify({ content }),
+  });
+  return { ok: r.ok, attached: false, status: r.status };
+}
+async function tiktokDrop({ file, url, caption, title, note }) {
+  const f = file || renderFileFor(url);
+  let size = 0;
+  try {
+    size = f ? fs.statSync(f).size : 0;
+  } catch {}
+  const cap = String(caption || "").trim();
+  const content = [
+    `**${String(title || "New video").slice(0, 120)}** · ready for TikTok`,
+    note ? String(note).slice(0, 600) : "",
+    cap ? "Caption, ready to paste:\n```\n" + cap.slice(0, 1100).replace(/```/g, "'''") + "\n```" : "",
+    `Download: ${fixRenderUrl(url)}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1990);
+  const attach = f && size && size <= DROP_MAX_BYTES ? f : null;
+  let r = await postToChannel(TIKTOK_CHANNEL, content, attach);
+  // the bot cannot reach the TikTok channel: Corvid's channel gets it instead
+  if (!r.ok && JOBS_CH.corvid) r = { ...(await postToChannel(JOBS_CH.corvid, `${content}\n(TikTok channel unreachable for the bot, delivered here instead)`.slice(0, 1990), attach)), fallback: true };
+  lastDrop = { at: Date.now(), title: String(title || "").slice(0, 120), ok: r.ok, attached: Boolean(r.attached), fallback: Boolean(r.fallback), status: r.status || null };
+  return r.ok;
+}
+app.get("/api/tiktok-drop", (_req, res) => res.json({ channel: TIKTOK_CHANNEL, last: lastDrop }));
+
+// ---------------------------------------------------------------------------
+// THE PRE-MARKET BRIEF: Korvus's overnight read as a daily 35 second video,
+// rendered here for free, dropped in the TikTok channel, X and YouTube filed
+// as asks through Regent. premarket.mjs holds the whole pipeline.
+// ---------------------------------------------------------------------------
+wirePremarket({
+  feedUrl: INTEL_STATUS_URL.replace(/intel-status\/?$/, "brief"),
+  feedKey: INTEL_KEY,
+  rendersDir: RENDERS_DIR,
+  publicUrl: ADMIN_PUBLIC_URL,
+  callJSON,
+  parseJson: parseModelJson,
+  model: MODELS.hands,
+  drop: (x) => tiktokDrop(x),
+  fileAsks: (list, author) => fileProposals(list, author),
+  community: async (text) => {
+    const ch = (process.env.STEWARD_COMMUNITY_CHANNEL_ID || "").trim();
+    return (await postToChannel(ch, String(text).slice(0, 1990))).ok;
+  },
+  settings: () => tune.brief(),
+  log: (m) => console.log("[premarket]", m),
+});
+setInterval(() => {
+  try {
+    if (premarketDue()) runPremarket({ reason: "schedule" }).catch(() => {});
+  } catch {}
+}, 60 * 1000);
+app.get("/api/premarket", (_req, res) => res.json({ ...premarketState(), settings: tune.brief() }));
+// rendering takes most of a minute, so the button starts it and the page polls
+app.post("/api/premarket/run", (_req, res) => {
+  const st = premarketState();
+  if (st.running) return res.json({ ok: false, error: "a brief is already rendering" });
+  runPremarket({ force: true, reason: "owner pressed run" }).catch(() => {});
+  res.json({ ok: true, started: true });
+});
 
 // ---------------------------------------------------------------------------
 // THE FURNACE: video rendering on the company's own AWS. An approved creative
@@ -2785,8 +3212,11 @@ shutdown -h now
   if (!instanceId) {
     awsJobs.delete(job);
     const msg = String(lastErr?.message || lastErr || "no instance type available");
-    if (/MaxSpotInstanceCount|VcpuLimitExceeded/i.test(msg)) {
+    if (/MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded/i.test(msg)) {
       throw new Error("AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
+    }
+    if (/service-linked role/i.test(msg)) {
+      throw new Error("AWS has never run a spot instance on this account, and this server is not allowed to create the one-time spot role. Fix once, as the account owner, in AWS CloudShell: aws iam create-service-linked-role --aws-service-name spot.amazonaws.com  Then retry the render");
     }
     throw new Error(`could not launch a GPU worker: ${msg.slice(0, 180)}`);
   }
@@ -2809,7 +3239,7 @@ shutdown -h now
   const l = awsLedgerAdd((Date.now() - t0) / 60000);
   awsJobs.delete(job);
   agentLog("render", `furnace ${job}: delivered in ${Math.round((Date.now() - t0) / 60000)} min; ${Math.round(l.minutes)} of ${AWS_RENDER_CAP_MIN} GPU minutes used this month`);
-  return `${ADMIN_PUBLIC_URL}/renders/aws-${job}.mp4`;
+  return `${ADMIN_PUBLIC_URL}/api/renders/aws-${job}.mp4`;
 }
 
 // ---------------------------------------------------------------------------
@@ -3366,15 +3796,106 @@ function recordWire(from, to, text) {
   if (WIRE.length > 80) WIRE.length = 80;
 }
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
+// the crew ledger: every desk-to-desk ask and the owner's tool-gap list
+app.get("/api/crew", (_req, res) => res.json(crewState()));
+// ---------------------------------------------------------------------------
+// THE TUNER: the owner's live dials for every desk plus each desk's
+// scorecard, so he can see what an agent costs against what it ships and
+// turn the dial on the spot. Values persist in studio-tuning.json and apply
+// on the next tick, no restart.
+// ---------------------------------------------------------------------------
+const TUNER_DESKS = {
+  corvid: { name: "Corvid", spend: ["corvid", "minions"], author: "corvid" },
+  herald: { name: "Herald", spend: ["herald", "herald-minions"], author: "herald" },
+  steward: { name: "Steward", spend: ["steward", "steward-minions"], author: "steward" },
+  bard: { name: "Bard", spend: ["bard", "bard-minions"], author: "bard" },
+  regent: { name: "Regent", spend: ["regent"], author: null },
+  brief: { name: "Pre-market Brief", spend: ["brief"], author: "brief" },
+  jobs: { name: "Scheduled jobs", spend: ["jobs"], author: null },
+};
+function tunerStats() {
+  const spend = getSpend();
+  const days = Object.keys(spend).sort();
+  const today = dayKey();
+  const last7 = days.slice(-7);
+  const book = proposalBook();
+  const weekAgo = Date.now() - 7 * 864e5;
+  const dayAgo = Date.now() - 864e5;
+  const staff = Object.fromEntries(staffStates().map((x) => [x.key, x]));
+  const corvid = agentState();
+  const crew = crewState();
+  const out = {};
+  for (const [key, d] of Object.entries(TUNER_DESKS)) {
+    const sum = (list) =>
+      list.reduce(
+        (a, day) => {
+          for (const w of d.spend) {
+            const e = (spend[day] || {})[w];
+            if (!e) continue;
+            a.usd += e.usd || 0;
+            a.calls += e.calls || 0;
+            a.read += e.cacheRead || 0;
+            a.total += (e.in || 0) + (e.cacheRead || 0) + (e.cacheWrite || 0);
+          }
+          return a;
+        },
+        { usd: 0, calls: 0, read: 0, total: 0 }
+      );
+    const t = sum([today]);
+    const w = sum(last7);
+    const mine = d.author ? book.filter((p) => String(p.author || "").toLowerCase() === d.author && (p.createdAt || 0) >= weekAgo) : [];
+    const approved = mine.filter((p) => ["approved", "executed", "done"].includes(String(p.status))).length;
+    const rejected = mine.filter((p) => String(p.status) === "rejected").length;
+    const tasks = key === "corvid" ? corvid.tasks || [] : staff[key] ? staff[key].tasks || [] : [];
+    out[key] = {
+      name: d.name,
+      enabled: key === "corvid" ? corvid.enabled : staff[key] ? staff[key].enabled : null,
+      status: key === "corvid" ? corvid.status : staff[key] ? staff[key].status : null,
+      model: key === "corvid" ? tune.corvidModel() || null : staff[key] ? staff[key].model : null,
+      today: { usd: Math.round(t.usd * 100) / 100, calls: t.calls, cachePct: t.total ? Math.round((t.read / t.total) * 100) : 0 },
+      week: { usd: Math.round(w.usd * 100) / 100, calls: w.calls, cachePct: w.total ? Math.round((w.read / w.total) * 100) : 0 },
+      steps: key === "corvid" ? corvid.workSteps || 0 : staff[key] ? staff[key].workSteps || 0 : null,
+      openTasks: tasks.filter((x) => x.status !== "done").length,
+      doneToday: tasks.filter((x) => x.status === "done" && (x.closedAt || x.lastStepAt || 0) >= dayAgo && !x.closed).length,
+      asks: d.author ? { filed: mine.length, approved, rejected, pending: mine.filter((p) => p.status === "pending").length, approvalPct: mine.length ? Math.round((approved / mine.length) * 100) : null } : null,
+      costPerApproved: d.author && approved ? Math.round((w.usd / approved) * 100) / 100 : null,
+      asksOut: d.author ? crew.requests.filter((r) => r.from === key && r.status === "open").length : null,
+      asksIn: crew.requests.filter((r) => r.to === key && r.status === "open").length,
+    };
+  }
+  return { desks: out, budget: usageReport().budget, gaps: crew.gaps.filter((g) => g.status === "open").length };
+}
+const TUNER_MODELS = ["", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];
+app.get("/api/tuning", (_req, res) => {
+  res.json({ schema: TUNING_SCHEMA, values: tuningFlat(), models: TUNER_MODELS, defaults: MODELS, stats: tunerStats() });
+});
+app.post("/api/tuning", (req, res) => {
+  const changed = setTuning(req.body?.patch || {});
+  if (changed.length) console.log("tuner changed:", changed.join(", "));
+  res.json({ ok: true, changed, values: tuningFlat(), stats: tunerStats() });
+});
+app.post("/api/crew/gaps/:id/close", (req, res) => {
+  const g = closeGap(String(req.params.id));
+  if (!g) return res.status(404).json({ error: "No such gap." });
+  res.json({ ok: true, gap: g });
+});
 
 wireHooks({
+  readPage: readAnySource,
+  // every finished video also lands in the TikTok channel, unless the tuner says no
+  tiktokDrop: (x) => (tune.videoDrop() ? tiktokDrop(x) : Promise.resolve(false)),
   forge: forgeOverlay,
   awsRender: awsRenderVideo,
+  // Corvid's asks go through the crew ledger like every other desk's: a
+  // repeat merges, two open asks per desk pair at most, tool gaps refused
   requestStaff: (to, title) => {
-    if (["herald", "steward", "bard"].includes(to)) {
-      staffAddTask(to, title);
-      recordWire("corvid", to, title);
-    }
+    if (!["herald", "steward", "bard"].includes(to)) return { ok: false, reason: "no such desk" };
+    const ask = String(title || "").replace(/^From Corvid:\s*/i, "");
+    const adm = admitRequest("corvid", to, ask);
+    if (!adm.ok) return adm;
+    staffAddTask(to, `From Corvid: ${ask}`, { from: "corvid", reqId: adm.id });
+    recordWire("corvid", to, ask);
+    return adm;
   },
   onFiled: receiveProposals,
   ownerDecision,
