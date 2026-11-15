@@ -61,6 +61,7 @@ import {
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
 import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines } from "./crew.mjs";
+import { wireShelf, shelfState, queueShelf, dedupeStickers, clearShelfQueue } from "./shelf.mjs";
 import { execFile as execFileCb } from "child_process";
 
 const region = process.env.REMOTION_AWS_REGION;
@@ -2484,6 +2485,7 @@ app.get("/api/discord/expressions", async (_req, res) => {
     const packStickers = list(sdir, /\.png$/i).map((f) => f.replace(/\.png$/i, ""));
     res.json({
       ...shelf,
+      import: shelfState(),
       pack: { emojis: packEmoji.length, stickers: packStickers.length },
       waiting: {
         emojis: packEmoji.filter((n) => !shelf.emojiNames.includes(n)).length,
@@ -2494,6 +2496,26 @@ app.get("/api/discord/expressions", async (_req, res) => {
     res.status(502).json({ error: String(e.message || e).slice(0, 200) });
   }
 });
+// the emoji.gg import queue (shelf.mjs): licensed files go up at Discord's pace
+wireShelf({ bot: BOT, guild: GUILD_ID, file: path.join(__dirname, "studio-shelf.json"), shelf: expressionShelf });
+app.post("/api/discord/expressions/import", async (req, res) => {
+  if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
+  try {
+    res.json(await queueShelf(req.body?.items));
+  } catch (e) {
+    res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
+  }
+});
+app.post("/api/discord/expressions/import/clear", (_req, res) => res.json({ cleared: clearShelfQueue() }));
+app.post("/api/discord/stickers/dedupe", async (_req, res) => {
+  if (!(BOT && GUILD_ID)) return res.status(400).json({ error: "Set DISCORD_GUILD_ID in .env first" });
+  try {
+    res.json(await dedupeStickers());
+  } catch (e) {
+    res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
+  }
+});
+
 // stock the shelves: uploads every pack file the server does not have yet,
 // never a duplicate name, and stops at the tier's slot limit
 app.post("/api/discord/expressions", async (_req, res) => {

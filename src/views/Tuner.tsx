@@ -46,10 +46,10 @@ export const Tuner: React.FC = () => {
   const load = useCallback(() => {
     getTuning().then((d) => setData(d));
     getPremarket().then((b) => setBrief(b));
+    getExpressionShelf().then((x) => setShelf(x));
   }, []);
   useEffect(() => {
     load();
-    getExpressionShelf().then((x) => setShelf(x));
     const id = window.setInterval(load, 20000);
     return () => window.clearInterval(id);
   }, [load]);
@@ -280,6 +280,22 @@ export const Tuner: React.FC = () => {
                 <span className="sk">In the pack, not on the server yet</span>
                 <span className="sv">{shelf.waiting.emojis} emojis, {shelf.waiting.stickers} stickers</span>
               </div>
+              {shelf.import && (shelf.import.left || shelf.import.added || shelf.import.skipped || shelf.import.failed) ? (
+                <div className="srow">
+                  <span className="sk">emoji.gg import</span>
+                  <span className="sv">
+                    {shelf.import.left
+                      ? `${shelf.import.left} to go (${shelf.import.leftEmojis} emojis, ${shelf.import.leftStickers} stickers)`
+                      : "done"}
+                    {` · ${shelf.import.added} added`}
+                    {shelf.import.skipped ? ` · ${shelf.import.skipped} skipped` : ""}
+                    {shelf.import.failed ? ` · ${shelf.import.failed} failed` : ""}
+                    {shelf.import.waitingUntil
+                      ? ` · Discord rate limit, next upload ${new Date(shelf.import.waitingUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                      : ""}
+                  </span>
+                </div>
+              ) : null}
               <div className="brief-actions">
                 <button className="btn" onClick={onStock} disabled={!shelf.waiting.emojis && !shelf.waiting.stickers}>
                   Stock the shelves

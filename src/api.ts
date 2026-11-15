@@ -954,6 +954,12 @@ export type ExpressionShelf = {
   stickersUsed: number;
   pack: { emojis: number; stickers: number };
   waiting: { emojis: number; stickers: number };
+  import?: {
+    left: number; leftEmojis: number; leftStickers: number;
+    added: number; skipped: number; failed: number;
+    running: boolean; waitingUntil: number; lastError: string;
+    log: { at: number; kind: string; name: string; result: string }[];
+  };
   error?: string;
 };
 export async function getExpressionShelf(): Promise<ExpressionShelf | null> {
