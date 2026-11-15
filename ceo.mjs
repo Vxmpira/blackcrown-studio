@@ -443,6 +443,16 @@ function preflightProposal(p) {
     // an edit to a live file: apply it in memory and hold the result to the law
     {
       const before = fs.readFileSync(loc.full, "utf8");
+      // a CURRENT the desk guessed instead of reading: when even its visible
+      // words are nowhere on the page, bounce it so the desk reads and refiles
+      // (markup-only drift still goes through; the executor self repairs that)
+      if (cur && !isNew && cur.toLowerCase() !== "none" && !before.includes(cur)) {
+        const flat = (x) => String(x).replace(/\s+/g, " ").trim().toLowerCase();
+        const words = flat(cur.replace(/<[^>]*>/g, " ").replace(/&[a-z]+;/gi, " "));
+        if (!flat(before).includes(flat(cur)) && words.length >= 3 && !flat(before.replace(/<[^>]*>/g, " ")).includes(words)) {
+          return `CURRENT is not on ${loc.file}: "${words.slice(0, 80)}" appears nowhere in the live page. Read the page first ("read" with that file) and copy CURRENT exactly from its source`;
+        }
+      }
       const next = String(section(detail, "NEW") || "");
       const after = cur && before.includes(cur) ? before.replace(cur, next) : `${before}\n${next}`;
       const law = brandLaw({ repo: loc.rootKey, file: loc.file, before, after, reference: brandReference(loc.rootKey, loc.rootDir) });
@@ -453,6 +463,8 @@ function preflightProposal(p) {
     return null;
   }
 }
+
+export const preflightForTest = (p) => preflightProposal(p);
 
 export async function receiveProposals(filed) {
   if (!state.enabled) return;
