@@ -800,12 +800,15 @@ async function executeSiteEdit(p) {
     createBody = body;
   }
   const current = section(p.detail, "CURRENT");
-  const next = section(p.detail, "NEW");
+  // the no-dash law covers the words Regent writes, not the rest of the
+  // file: a stylesheet marker like content:"\2013" elsewhere stays as is
+  const next = String(section(p.detail, "NEW") || "").replace(/\s*[\u2014\u2013]\s*/g, ", ");
   if (!next) return { ok: false, msg: "proposal has no NEW block to apply" };
   let updated = null;
   let how = "";
   if (creating) {
-    updated = (createBody || next).trim() + "\n";
+    // a brand new page is all Regent's words, so the whole thing is scrubbed
+    updated = String(createBody || next).replace(/\s*[\u2014\u2013]\s*/g, ", ").trim() + "\n";
     how = "new page created";
   }
   if (/sitemap\.xml$/i.test(file) && /<\/urlset>/i.test(html) && /<url>/i.test(next)) {
@@ -922,9 +925,6 @@ async function executeSiteEdit(p) {
   }
   if (updated === null) {
     return { ok: false, msg: "no CURRENT anchor matched and the NEW block is not a title, meta, or link tag set I can place" };
-  }
-  if (updated.includes("\u2014") || updated.includes("\u2013")) {
-    updated = updated.replace(/\u2014|\u2013/g, ", ");
   }
   const invalid = await validateEdit(file, html, updated);
   if (invalid) {
