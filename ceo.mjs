@@ -465,6 +465,7 @@ function preflightProposal(p) {
 }
 
 export const preflightForTest = (p) => preflightProposal(p);
+export const repairWindowForTest = (b, p) => repairWindow(b, p);
 
 export async function receiveProposals(filed) {
   if (!state.enabled) return;
@@ -986,11 +987,39 @@ const REPAIR_SYSTEM = `You repair a failed website edit for BlackCrownVxJ. You r
 {"current":"...","new":"..."}  or  {"done":true}
 Rules:
 - "current" is copied byte for byte from the LIVE FILE below, unique within it, under 400 characters. Never invent or paraphrase it.
-- "new" is the exact final text that replaces "current" and fulfills the proposal's intent.
+- "new" is the exact final text that replaces "current" and fulfills the proposal's intent. The proposal's own CURRENT may be a guess at the markup: find the live element it means (same role on the page, for example the hero's primary or secondary button) and change only what the proposal changes (its words, its link target), keeping the live classes and attributes.
 - To ADD meta or link head tags, or sitemap url entries, set "current" to "none" and make "new" only those tags or entries; the executor merges them safely.
 - If the live file already satisfies the proposal, output {"done":true}.
 - Escape every line break inside strings as \\n. The whole output must pass JSON.parse.
 - Never use em dashes anywhere, write a comma or the word "to" instead.`;
+
+// the part of a big file the repair model should see: around the words the
+// ask quotes, else its link targets, else its summary words, searched in the
+// body so a stylesheet rule named "hero" never wins over the hero itself.
+// The old head-and-tail cut never showed a mid-page hero, so repairs of
+// long pages came back empty.
+const REPAIR_STOP = new Set(["text", "change", "button", "link", "page", "test", "with", "from", "that", "this", "copy", "home", "korvus", "update", "wording", "clicks", "free"]);
+function repairWindow(body, p, size = 7000) {
+  if (body.length <= size) return body;
+  const cur = String(section(p.detail, "CURRENT") || "");
+  const text = cur.replace(/<[^>]*>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
+  const attrs = [...cur.matchAll(/(?:href|id|src)\s*=\s*["']([^"']{2,})["']/gi)].map((m) => `"${m[1]}"`);
+  const words = String(p.summary || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !REPAIR_STOP.has(w));
+  const lower = body.toLowerCase();
+  const start = Math.max(0, lower.indexOf("<body"));
+  let at = -1;
+  for (const n of [text, ...attrs, ...words]) {
+    if (!n || n.length < 3) continue;
+    const i = lower.indexOf(n.toLowerCase(), start);
+    if (i >= 0) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return body.slice(0, 5200) + "\n...[middle of file omitted]...\n" + body.slice(-1800);
+  const from = Math.max(0, at - 2500);
+  return (from ? "...[earlier part of the file omitted]...\n" : "") + body.slice(from, from + size) + (from + size < body.length ? "\n...[rest of the file omitted]..." : "");
+}
 
 async function selfRepair(p, failMsg) {
   const loc = resolveSiteFile(p.page);
@@ -1001,10 +1030,7 @@ async function selfRepair(p, failMsg) {
   } catch {
     return null;
   }
-  const excerpt =
-    body.length <= 7000
-      ? body
-      : body.slice(0, 5200) + "\n...[middle of file omitted]...\n" + body.slice(-1800);
+  const excerpt = repairWindow(body, p);
   const user = `PROPOSAL #${p.number} (kind: ${p.kind}) targeting ${loc.file}:\n${String(p.detail || "").slice(0, 1500)}\n\nFIRST ATTEMPT FAILED WITH: ${failMsg}\n\nLIVE FILE (${loc.file}):\n${excerpt}`;
   const j = await think(REPAIR_SYSTEM, user, 1800);
   if (!j) return null;
@@ -1095,6 +1121,8 @@ async function execute(p) {
           r = { ok: true, msg: `${r2.msg} (self repaired)` };
         } else if (r2) {
           r = { ok: false, msg: `${r.msg}. Self repair also failed: ${r2.msg}` };
+        } else {
+          r = { ok: false, msg: `${r.msg}. Self repair could not place it either; the desk must read the page and refile with CURRENT copied exactly` };
         }
       } catch (e) {
         log("error", `self repair crashed: ${e.message || e}`);
