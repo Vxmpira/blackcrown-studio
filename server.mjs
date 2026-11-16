@@ -59,7 +59,8 @@ import {
   REPO_ROOTS,
   readPageSource,
 } from "./ceo.mjs";
-import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian } from "./staff.mjs";
+import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian, staffVaultDir } from "./staff.mjs";
+import { wireVault, readNote, isNote } from "./vault.mjs";
 import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines } from "./crew.mjs";
 import { wireShelf, shelfState, queueShelf, dedupeStickers, clearShelfQueue } from "./shelf.mjs";
 import { execFile as execFileCb } from "child_process";
@@ -445,6 +446,11 @@ function refBucket(r) {
   return "other";
 }
 
+// crawlers, link unfurlers, monitors and scripts; a real browser matches none.
+// Same list as korvus_traffic.py on the Korvus box.
+const BOT_UA =
+  /bot\b|bot\/|crawl|spider|slurp|preview|headless|lighthouse|pagespeed|python|curl|wget|httpclient|okhttp|go-http|java\/|node-fetch|undici|axios|monitor|uptime|pingdom|ahrefs|semrush|mj12|dotbot|petal|bytespider|gptbot|claudebot|claude-web|perplexity|amazonbot|applebot|facebookexternalhit|meta-externalagent|embedly|whatsapp|telegram|discord|twitterbot|linkedinbot|slackbot|scrapy|feedfetcher|validator|^node$|^$/i;
+
 // Public beacon. The sites call this on each visit and each product click.
 // It is the one endpoint that skips the login, by design.
 app.get("/api/track", (req, res) => {
@@ -457,6 +463,15 @@ app.get("/api/track", (req, res) => {
       const s = loadStats();
       const d = dayKey();
       s[d] = s[d] || {};
+      // the beacon comes from the visitor's own browser, so its UA is theirs;
+      // crawlers that run the page script land here apart from people.
+      // Signups are reported by the Korvus server itself, never split.
+      if (e !== "signup" && BOT_UA.test(String(req.get("user-agent") || ""))) {
+        s[d].bot = s[d].bot || {};
+        s[d].bot[k] = (s[d].bot[k] || 0) + 1;
+        saveStats(s);
+        throw new Error("crawler");
+      }
       s[d][e] = s[d][e] || {};
       s[d][e][k] = (s[d][e][k] || 0) + 1;
       if (e === "visit") {
@@ -1521,7 +1536,15 @@ async function applyMakeEdit({ scenarioId, current, next }) {
 }
 
 // "read" page make: the desks open the engine the same way they open a page
-function readAnySource(page, find, max) {
+wireVault({
+  corvid: brainDirPath(),
+  regent: process.env.CEO_BRAIN_DIR || path.join(__dirname, "brain-ceo"),
+  herald: staffVaultDir("herald"),
+  steward: staffVaultDir("steward"),
+  bard: staffVaultDir("bard"),
+});
+function readAnySource(page, find, max, who = "") {
+  if (isNote(page)) return readNote(page, find, who);
   if (/^make(:\d+)?$/i.test(String(page || "").trim())) {
     if (!MAKE_TOKEN) return { err: "MAKE_API_TOKEN is not set on the server, the engine cannot be read" };
     const text = engineCache.text;
@@ -1567,6 +1590,151 @@ function boardPages() {
   boardPageCache = { at: Date.now(), text: lines.join("\n") };
   return boardPageCache.text;
 }
+// ---------------------------------------------------------------------------
+// THE NUMBERS: what the desks kept filing tool gaps for. Brand site traffic
+// from the page beacon (people and crawlers apart), korvus.industries traffic,
+// clicks and signup funnel from the Korvus server's own counters, the brand's
+// X post stats, all in one place on the Board and in the report jobs' feed.
+// ---------------------------------------------------------------------------
+const tally = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+const listed = (o, prior) =>
+  Object.entries(o || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k} ${v}${prior ? ` (${(prior || {})[k] || 0})` : ""}`)
+    .join(", ") || "none";
+function brandTrafficLine() {
+  const s = loadStats();
+  const win = (from, e) => {
+    const out = {};
+    for (let i = from; i < from + 7; i++) for (const [k, v] of Object.entries((s[dayKey(i)] && s[dayKey(i)][e]) || {})) out[k] = (out[k] || 0) + v;
+    return out;
+  };
+  const v = win(0, "visit"), pv = win(7, "visit"), c = win(0, "click"), pc = win(7, "click");
+  const sg = win(0, "signup"), psg = win(7, "signup");
+  const botSince = Object.keys(s).sort().find((d) => s[d] && s[d].bot);
+  return (
+    `BLACKCROWNVXJ.COM TRAFFIC (page beacon, last 7 days, the 7 before in brackets${botSince ? `, crawlers counted apart since ${botSince}` : ", crawlers are counted apart from today on"}): ` +
+    `human visits ${tally(v)} (${tally(pv)}) by page ${listed(v, pv)}; product clicks ${tally(c)} (${tally(pc)}) ${listed(c, pc)}; ` +
+    `sources ${listed(win(0, "src"))}; crawler hits ${listed(win(0, "bot"))}. ` +
+    `KORVUS SIGNUPS by first source ${tally(sg)} (${tally(psg)}): ${listed(sg)}`
+  );
+}
+// resolved on use: INTEL_STATUS_URL is declared further down the file
+const trafficUrl = () => process.env.KORVUS_TRAFFIC_URL || INTEL_STATUS_URL.replace(/intel-status\/?$/, "traffic");
+let korvusTraffic = { at: 0, line: "" };
+async function korvusTrafficLine() {
+  if (!INTEL_KEY) return "KORVUS.INDUSTRIES TRAFFIC: not wired, KORVUS_INTEL_KEY is missing on the admin box";
+  if (korvusTraffic.line && Date.now() - korvusTraffic.at < 10 * 60000) return korvusTraffic.line;
+  let line;
+  try {
+    const r = await fetch(`${trafficUrl()}?days=14`, { headers: { "X-Intel-Key": INTEL_KEY }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const w = j.last7 || {}, p = j.prior7 || {}, st = w.step || {};
+    const g = (o, k) => (o && o[k]) || 0;
+    line =
+      `KORVUS.INDUSTRIES TRAFFIC (counted on the Korvus server since ${j.counting_since || "today"}, last 7 days, the 7 before in brackets): ` +
+      `human page views ${listed(w.view_h, p.view_h)}; crawler hits ${listed(w.view_b)}; human sources ${listed(w.src)}; ` +
+      `BUTTON CLICKS by data-k (hero_primary, hero_secondary, nav_signup, nav_login, pricing_observer, pricing_operator, lodestone_explore) ${listed(w.click, p.click)}; ` +
+      `SIGNUP FUNNEL: form views ${g(w.view_h, "signup")} > submits ${g(st, "signup_submit")} > accounts created ${g(st, "signup_created")} > emails verified ${g(st, "email_verified")} > logins ${g(st, "login_ok")}; ` +
+      `leaks: rejected ${g(st, "signup_rejected")}, blocked ${g(st, "signup_blocked")}, honeypot ${g(st, "signup_honeypot")}, login tried before verifying ${g(st, "login_unverified")}, failed logins ${g(st, "login_failed")}, scripted submits ${g(st, "signup_submit_bot")}`;
+  } catch (e) {
+    line = `KORVUS.INDUSTRIES TRAFFIC: the Korvus feed did not answer (${String(e?.message || e).slice(0, 80)}), counts show again when it does`;
+  }
+  korvusTraffic = { at: Date.now(), line };
+  return line;
+}
+// the brand's own X posts: ids from Regent's executions plus any a desk named
+let xStats = { at: 0, ids: "", line: "" };
+function xPostIds() {
+  const ids = [];
+  try {
+    for (const e of ceoState().executed || []) {
+      const m = String(e.result || "").match(/\bpost (\d{15,22})\b/);
+      if (m && !ids.includes(m[1])) ids.push(m[1]);
+      if (ids.length >= 3) break;
+    }
+  } catch {}
+  try {
+    for (const gap of crewState().gaps || []) {
+      if (gap.status !== "open") continue;
+      for (const m of String(gap.what).matchAll(/\b(\d{17,21})\b/g)) if (!ids.includes(m[1])) ids.push(m[1]);
+    }
+  } catch {}
+  return ids.slice(0, 5);
+}
+async function xStatsLine() {
+  if (!xConfigured()) return "";
+  const ids = xPostIds();
+  if (!ids.length) return "X BRAND POSTS: none posted by Regent yet";
+  const key = ids.join(",");
+  const fresh = Date.now() - xStats.at < (xStats.ids === key ? 12 * 3600000 : 30 * 60000);
+  if (xStats.line && fresh) return xStats.line;
+  let line;
+  try {
+    const ask = async (fields) => {
+      const url = `https://api.twitter.com/2/tweets?ids=${key}&tweet.fields=${fields}`;
+      const r = await fetch(url, { headers: { authorization: oauth1Header("GET", url) }, signal: AbortSignal.timeout(10000) });
+      const j = await r.json().catch(() => ({}));
+      return { r, j };
+    };
+    let { r, j } = await ask("created_at,public_metrics,non_public_metrics");
+    if (!r.ok || !Array.isArray(j.data)) ({ r, j } = await ask("created_at,public_metrics"));
+    if (!r.ok || !Array.isArray(j.data)) {
+      const why = j?.title || j?.detail || (j?.errors && j.errors[0]?.message) || `HTTP ${r.status}`;
+      throw new Error(r.status === 403 || r.status === 401 ? `X refused the read (${r.status}): ${String(why).slice(0, 90)}; this X API plan may not include reading posts` : String(why).slice(0, 120));
+    }
+    const rows = j.data.map((t) => {
+      const pm = t.public_metrics || {}, np = t.non_public_metrics || {};
+      return `${t.id} (${String(t.created_at || "").slice(0, 10)}): impressions ${np.impression_count ?? pm.impression_count ?? "?"}, link clicks ${np.url_link_clicks ?? "not available"}, profile clicks ${np.user_profile_clicks ?? "n/a"}, likes ${pm.like_count ?? 0}, reposts ${pm.retweet_count ?? 0}, replies ${pm.reply_count ?? 0}, bookmarks ${pm.bookmark_count ?? 0}`;
+    });
+    line = `X BRAND POSTS (read from X, refreshed twice a day): ${rows.join(" | ")}`;
+  } catch (e) {
+    line = `X BRAND POSTS: ${String(e?.message || e).slice(0, 200)}`;
+  }
+  xStats = { at: Date.now(), ids: key, line };
+  return line;
+}
+// Crown's own counters (accounts, signups, views, referrers) from the Crown box,
+// behind CROWN_FEED_KEY, the same value in both boxes' .env
+let crownNums = { at: 0, line: "" };
+async function crownNumbersLine() {
+  const key = (process.env.CROWN_FEED_KEY || "").trim();
+  if (!key) return "BLACKCROWN-INTELLIGENCE.COM (Crown) NUMBERS: not wired yet; the owner sets one shared CROWN_FEED_KEY in the admin box's and the Crown box's .env and restarts both";
+  if (crownNums.line && Date.now() - crownNums.at < 10 * 60000) return crownNums.line;
+  let line;
+  try {
+    const url = process.env.CROWN_FEED_URL || "https://blackcrown-intelligence.com/api/feed/overview";
+    const r = await fetch(url, { headers: { "x-feed-key": key }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 403 ? ", the two CROWN_FEED_KEY values differ" : ""}`);
+    const j = await r.json();
+    const a = j.accounts || {}, t = j.traffic || {};
+    const pairs = (list, k) => (list || []).map((x) => `${x[k] || "?"} ${x.c}`).join(", ") || "none";
+    line =
+      `BLACKCROWN-INTELLIGENCE.COM (Crown's own counters, last 7 days, the 7 before in brackets): views ${t.d7?.views ?? "?"} (${t.prior7?.views ?? "?"}), ` +
+      `unique visitors ${t.d7?.uniques ?? "?"} (${t.prior7?.uniques ?? "?"}); signups ${a.signups7d ?? "?"} (${a.signupsPrior7d ?? "?"}); ` +
+      `accounts ${a.total ?? "?"} of which ${a.pro ?? 0} paid, MRR $${j.revenue?.mrr ?? 0}; active users ${j.usage?.active7d ?? "?"}; ` +
+      `top pages ${pairs(t.topPaths7d, "path")}; top referrers ${pairs(t.topRefs7d, "ref")}`;
+  } catch (e) {
+    line = `BLACKCROWN-INTELLIGENCE.COM (Crown) NUMBERS: the Crown feed did not answer (${String(e?.message || e).slice(0, 90)})`;
+  }
+  crownNums = { at: Date.now(), line };
+  return line;
+}
+
+async function numbersFeed() {
+  const lines = [];
+  try { lines.push(brandTrafficLine()); } catch {}
+  try { lines.push(await korvusTrafficLine()); } catch {}
+  try { lines.push(await crownNumbersLine()); } catch {}
+  try {
+    const x = await xStatsLine();
+    if (x) lines.push(x);
+  } catch {}
+  return lines.join("\n");
+}
+
 async function boardFeed() {
   const lines = ["THE BOARD, live facts the server keeps (read this before you ask any desk for anything):"];
   try {
@@ -1588,6 +1756,10 @@ async function boardFeed() {
     const body = ceoBrainFile("Ledger.md").body || "";
     const tail = body.trim().split("\n").filter((l) => l.startsWith("- ")).slice(-5).join("\n");
     if (tail) lines.push(`REGENT LEDGER, latest executions:\n${tail}`);
+  } catch {}
+  try {
+    const n = await numbersFeed();
+    if (n) lines.push(`THE NUMBERS (read these before asking anyone for a count):\n${n}`);
   } catch {}
   try {
     lines.push(crewBoardLines());
@@ -1985,9 +2157,25 @@ async function eclipsePulse() {
     const texts = (Array.isArray(chans) ? chans : []).filter((c) => c.type === 0);
     const hot = texts.filter((c) => ageDays(c.last_message_id) < 1).map((c) => `#${c.name}`);
     const cold = texts.filter((c) => ageDays(c.last_message_id) > 3).map((c) => `#${c.name}`);
+    // one member count per day, so the reports can show joins week over week
+    let growth = "";
+    if (g.approximate_member_count) {
+      try {
+        const st = loadStats();
+        const d = dayKey();
+        st[d] = st[d] || {};
+        st[d].members = g.approximate_member_count;
+        saveStats(st);
+        const back = [7, 6, 5, 4, 3, 2, 1].map((i) => [i, st[dayKey(i)] && st[dayKey(i)].members]).find(([, m]) => m);
+        const first = Object.keys(st).sort().find((day) => st[day] && st[day].members);
+        growth = back
+          ? `; net change ${g.approximate_member_count - back[1] >= 0 ? "+" : ""}${g.approximate_member_count - back[1]} members over the last ${back[0]} day${back[0] === 1 ? "" : "s"} (daily member counts kept since ${first})`
+          : `; daily member counts start ${first}, week over week shows once a week of them exists`;
+      } catch {}
+    }
     eclipseCache = {
       at: Date.now(),
-      line: `ECLIPSE-X SERVER: ${g.approximate_member_count || "?"} members, ${g.approximate_presence_count || "?"} online now; ${texts.length} text channels; active in the last day: ${hot.slice(0, 10).join(" ") || "none"}; quiet 3d+: ${cold.slice(0, 8).join(" ") || "none"}`,
+      line: `ECLIPSE-X SERVER: ${g.approximate_member_count || "?"} members${growth}, ${g.approximate_presence_count || "?"} online now; ${texts.length} text channels; active in the last day: ${hot.slice(0, 10).join(" ") || "none"}; quiet 3d+: ${cold.slice(0, 8).join(" ") || "none"}`,
     };
   } catch {
     eclipseCache = { at: Date.now(), line: "" };
@@ -2024,6 +2212,8 @@ const companyFeed = async (key) => {
     const lines = [];
     if (key !== "jobs") {
       try { lines.push(await boardFeed()); } catch {}
+    } else {
+      try { lines.push(await numbersFeed()); } catch {}
     }
     try { lines.push(spendSummary()); } catch {}
     try {
@@ -3819,6 +4009,14 @@ function recordWire(from, to, text) {
 }
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 // the crew ledger: every desk-to-desk ask and the owner's tool-gap list
+// what every desk reads before it acts: the Board, as plain text
+app.get("/api/board", async (_req, res) => {
+  try {
+    res.type("text/plain").send(await boardFeed());
+  } catch (e) {
+    res.status(500).type("text/plain").send(String(e?.message || e));
+  }
+});
 app.get("/api/crew", (_req, res) => res.json(crewState()));
 // ---------------------------------------------------------------------------
 // THE TUNER: the owner's live dials for every desk plus each desk's

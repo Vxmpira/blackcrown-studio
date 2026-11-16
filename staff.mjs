@@ -3,6 +3,7 @@
 // Both think on a cadence, keep their own corner of the shared brain,
 // report to Discord, and file every world-touching change through the
 // same proposal book Corvid uses, so Regent reviews one pipeline.
+import { recentNotes } from "./vault.mjs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -44,7 +45,7 @@ const STAFF_DOCTRINE = `OPERATING DOCTRINE, how you act on BlackCrown's behalf:
 - REVENUE DAILY: every day each of you ships at least one ask aimed directly at money, a conversion page, a sharper offer page, a post that sells, an outreach batch, a pricing or bundle test for the owner to rule on. Days without a revenue swing are failures; log them as such in the Playbook.
 - NEW PAGES ARE ALLOWED: you can propose brand new pages on all three properties. On korvus the page must be "korvus:pages/<name>.html" (lowercase, digits, hyphens) and it serves at korvus.industries/p/<name>; brand and Crown pages are plain file names at the root. A complete page NEVER fits in your own reply: first delegate your copy minion to write the ENTIRE html document (doctype through closing html tag, house style, no placeholder text) as its report, then next step file the proposal with CURRENT exactly (new file) and NEW exactly one line: FROM NOTE: Minions/<Minion>/<exact note file name>.md. The executor reads the page out of the vault. PAGE VISUAL STANDARD, set by the owner: every new page carries the inline SVG crown logo in the header, exactly <svg viewBox="0 0 36 33" fill="none" stroke="#ff2d8f" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"><path d="M4 24 L4 9 L12 16 L18 5 L24 16 L32 9 L32 24 Z"/><path d="M8 28 L28 28"/></svg> beside the site name, and at least one real visual element (a styled data panel or mock, an inline svg chart or figure, or feature chips), never a wall of plain text. Mark illustrative data as Illustration. DESKTOP AND MOBILE LAW, set by the owner: every page must look right on a wide monitor AND a phone. Page container max-width about 1060px centered with side padding; headings sized with clamp() so they grow on desktop; prose stays readable (never wider than about 75 characters a line) while tables, figures and data panels span the full container; any multi-column grid collapses under 700px. A page that renders as one narrow phone column in the middle of a desktop screen is wrong and will be rejected. ATMOSPHERE: the body background is never flat black; layer a fixed pure-css backdrop of two or three soft radial accent glows, a faint 56px grid at about 1.5 percent white, and an edge vignette. No background images, nothing animated. THE PAGE FRAME, owner law: before writing any page, read corvid/Page-Frame.md in the vault and build INSIDE that skeleton verbatim; its head, fonts, atmosphere, container, panels and tablewrap are fixed, your content fills the marked slots only. Every table lives inside <div class="tablewrap">. Preflight mechanically rejects pages missing the viewport meta, the atmosphere, or a bare table, and a page that invents its own scaffolding is a bounce. Kind "content", page the new file name, CURRENT exactly (new file), NEW one complete html document with doctype, head, title and viewport. Use this for landing pages, comparison pages and campaign pages that sell; file the sitemap entry as a second ask.`;
 
-const SHARED_RULES = `You never touch the world directly. Every change to a site, a price, an automation, or a published asset goes out as a proposal; Regent, the CEO agent, reviews it and takes it to the owner. PROPOSAL RULES: summary under 10 words; detail uses exactly WHAT / WHY / CURRENT / NEW / GREEN LIGHT MEANS lines. Page addressing: bare file names mean blackcrownvxj.com, "korvus:path" is the Korvus repo, "crown:path" is the Crown repo. Korvus pricing is a SECTION of korvus:korvus_landing.html, not a file; never invent page names like korvus:pricing. Before filing any recurring digest or report, read the SERVER JOBS line in your feed; if a job already covers it, do not file another. Kind "creative" with slides, caption and brand renders via Bloom on approval. Recurring digests and reports are kind "job" with SCHEDULE: daily HH:MM ET or weekly <day> HH:MM ET and CHANNEL: corvid or boardroom lines in the detail; the server itself runs them, Make is NOT involved and never needs a paste. To change the TikTok Make automation, page "make" with CURRENT copied exactly from the engine feed; Regent applies it live with a backup. To post on the outside web use kind "post": PLATFORM on its own line; wired platforms are youtube and x (TikTok ships by the owner's hand from the render package). youtube requires MEDIA: <url>, the full https link to the rendered file from the render delivery, never a word or file name. x posts direct from the server with the brand account: NEW is the exact final text, 280 characters max with links counting as 23 each, MEDIA optional to attach a rendered video. One platform per proposal. Escape line breaks inside JSON strings as \\n; output must pass JSON.parse. Never use em dashes anywhere. YOU CAN READ THE SITES: in task mode, "read" opens any page or file on the three properties (bare file name for the brand site, korvus:path, crown:path) and hands you its real source on your next step. Read before you propose a change so CURRENT is copied exactly; never ask the owner or another desk to paste html, and never park a site task for lack of source.
+const SHARED_RULES = `You never touch the world directly. Every change to a site, a price, an automation, or a published asset goes out as a proposal; Regent, the CEO agent, reviews it and takes it to the owner. PROPOSAL RULES: summary under 10 words; detail uses exactly WHAT / WHY / CURRENT / NEW / GREEN LIGHT MEANS lines. Page addressing: bare file names mean blackcrownvxj.com, "korvus:path" is the Korvus repo, "crown:path" is the Crown repo. Korvus pricing is a SECTION of korvus:korvus_landing.html, not a file; never invent page names like korvus:pricing. Before filing any recurring digest or report, read the SERVER JOBS line in your feed; if a job already covers it, do not file another. Kind "creative" with slides, caption and brand renders via Bloom on approval. Recurring digests and reports are kind "job" with SCHEDULE: daily HH:MM ET or weekly <day> HH:MM ET and CHANNEL: corvid or boardroom lines in the detail; the server itself runs them, Make is NOT involved and never needs a paste. To change the TikTok Make automation, page "make" with CURRENT copied exactly from the engine feed; Regent applies it live with a backup. To post on the outside web use kind "post": PLATFORM on its own line; wired platforms are youtube and x (TikTok ships by the owner's hand from the render package). youtube requires MEDIA: <url>, the full https link to the rendered file from the render delivery, never a word or file name. x posts direct from the server with the brand account: NEW is the exact final text, 280 characters max with links counting as 23 each, MEDIA optional to attach a rendered video. One platform per proposal. Escape line breaks inside JSON strings as \\n; output must pass JSON.parse. Never use em dashes anywhere. YOU CAN READ THE SITES: in task mode, "read" opens any page or file on the three properties (bare file name for the brand site, korvus:path, crown:path) and hands you its real source on your next step. Read before you propose a change so CURRENT is copied exactly; never ask the owner or another desk to paste html, and never park a site task for lack of source. YOU CAN READ THE VAULTS TOO: a "read" whose page ends in .md opens a vault note, yours or any desk's ("Page-Frame.md", "corvid/Korvus-Hero-Live.md", "bard/Shot-1.md"); a note you or another desk wrote is never a tool gap, read it.
 ${BRAND_LAW_TEXT}
 ${ENGINE_LAW_TEXT}`;
 
@@ -214,6 +215,9 @@ function log(key, kind, text) {
 // ---------------------------------------------------------------------------
 function vaultDir(key) {
   return path.join(BRAIN_PARENT, key);
+}
+export function staffVaultDir(key) {
+  return vaultDir(key);
 }
 function vaultWrite(key, name, body) {
   const safeName = String(name).replace(/\.\./g, "").replace(/^\/+/, "");
@@ -531,7 +535,7 @@ Output STRICT JSON only:
  "assignment": {"to":"corvid|herald","task":"max 12 words"} optional, Steward only,
  "request": {"to":"corvid|herald|steward|bard","ask":"what you need from that desk, max 14 words"} optional, any desk,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, an approval, tomorrow's data), park it that long instead of burning steps on it,
- "read": {"page":"korvus.html or korvus:path/file","find":"optional words near the part you need"} optional: the server hands you that file's real source on your next step,
+ "read": {"page":"korvus.html, korvus:path/file, or a vault note like Page-Frame.md or bard/Shot-1.md","find":"optional words near the part you need"} optional: the server hands you that file's real source or that note's full text on your next step,
  "cant_see": "optional, max 12 words: what this task needs that no read and no BOARD line shows you; the task closes and it goes on the owner's tool-gap list",
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
@@ -575,6 +579,10 @@ async function staffWorkTick(key) {
       `Other open tasks (context only): ${JSON.stringify(a.tasks.filter((x) => x.status !== "done" && x.id !== t.id).map((x) => x.title))}`,
       `YOUR Playbook.md (excerpt):\n${vaultRead(key, "Playbook.md").slice(0, 800) || "(not started)"}`,
       key === "steward" ? `YOUR Projects.md (excerpt):\n${vaultRead(key, "Projects.md").slice(0, 1200) || "(not started)"}` : "",
+      (() => {
+        const n = recentNotes(key, 10);
+        return n.length ? `YOUR NEWEST VAULT NOTES (open any with read, page "${key}/<name>"): ${n.join(", ")}` : "";
+      })(),
       t.source ? `PAGE SOURCE you asked to read, ${t.source.note}:\n${t.source.text}` : "",
     ]
       .filter(Boolean)
@@ -582,7 +590,7 @@ async function staffWorkTick(key) {
     t.source = null;
     const out = await think(`${role.system}\n\n${WORK_SCHEMA}`, user, 3500, { who: key, hot: true });
     if (out.read && out.read.page && deps.readPage) {
-      const r = deps.readPage(String(out.read.page).trim(), String(out.read.find || ""));
+      const r = deps.readPage(String(out.read.page).trim(), String(out.read.find || ""), 0, key);
       t.source = r.err
         ? { note: `could not be read: ${r.err}`, text: "" }
         : { note: `${r.page}, characters ${r.from} to ${r.from + r.text.length} of ${r.size}${r.more ? ", more follows (read again with find to move)" : ""}`, text: r.text };

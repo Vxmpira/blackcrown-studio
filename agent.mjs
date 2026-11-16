@@ -1555,12 +1555,12 @@ Output STRICT JSON only:
  "blocked_on": optional proposal number this task now waits on,
  "park_hours": optional number 1 to 24: when this task cannot move until something outside you happens (a render finishing, new data tomorrow), park it that long instead of burning steps on it,
  "request": {"to":"herald|steward|bard","ask":"WORK you need from that desk, max 14 words, never data"} optional,
- "read": {"page":"korvus.html or korvus:path/file","find":"optional words that appear near the part you need"} optional: the server hands you that file's real source on your next step,
+ "read": {"page":"korvus.html, korvus:path/file, or a vault note like Page-Frame.md or steward/Projects.md","find":"optional words that appear near the part you need"} optional: the server hands you that file's real source or that note's full text on your next step,
  "cant_see": "optional, max 12 words: what this task needs that no read and no BOARD line shows you; the task closes and it goes on the owner's tool-gap list",
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 ${CREW_RULES}
-YOU CAN READ THE SITES. Any page or file on the three properties is yours to open with "read": the brand site by bare file name, the products as korvus:path and crown:path. When a fix needs the exact CURRENT block (a hero, a title, a call to action, a tracker snippet), read the file first, keep status doing, and file the proposal on the next step with CURRENT copied exactly from the PAGE SOURCE you were given. NEVER ask the owner or another desk to paste html, source, or a snippet, and never park a site task for lack of source: reading it is one step away.
+YOU CAN READ THE SITES. Any page or file on the three properties is yours to open with "read": the brand site by bare file name, the products as korvus:path and crown:path. When a fix needs the exact CURRENT block (a hero, a title, a call to action, a tracker snippet), read the file first, keep status doing, and file the proposal on the next step with CURRENT copied exactly from the PAGE SOURCE you were given. NEVER ask the owner or another desk to paste html, source, or a snippet, and never park a site task for lack of source: reading it is one step away. The vaults open the same way: a "read" whose page ends in .md opens a note from your vault or any desk's ("Page-Frame.md", "Korvus-Hero-Live.md", "bard/Shot-1.md"), so a note is never a tool gap.
 THE JOB IS THE WEBSITES. Your purpose is traffic and paid signups on blackcrownvxj.com, korvus.industries and blackcrown-intelligence.com. Social posts are Herald and Bard's desk; you file one only when a site task directly needs it. Every day most of your proposals must be site changes: pages that rank (titles, meta, new landing pages for searches people make), pages that convert (hero copy, calls to action, pricing clarity, internal links toward signup), and fixes to anything leaking visitors.
 Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
 
@@ -1672,7 +1672,7 @@ async function workTick() {
     t.source = null;
     const out = await think(WORK_SYSTEM, user, 5000, { tier: "hands", hot: true });
     if (out.read && out.read.page && hooks.readPage) {
-      const r = hooks.readPage(String(out.read.page).trim(), String(out.read.find || ""));
+      const r = hooks.readPage(String(out.read.page).trim(), String(out.read.find || ""), 0, "corvid");
       t.source = r.err
         ? { note: `could not be read: ${r.err}`, text: "" }
         : { note: `${r.page}, characters ${r.from} to ${r.from + r.text.length} of ${r.size}${r.more ? ", more follows (read again with find to move)" : ""}`, text: r.text };
