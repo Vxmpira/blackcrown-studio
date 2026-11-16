@@ -207,6 +207,23 @@ export function closeGap(gapId) {
   save();
   return g;
 }
+// a one-time sweep: when a release wires the tools behind the open gaps, their
+// cards close once so the desks stop routing around walls that are gone
+export function sweepGaps(flag, note) {
+  crew.flags = crew.flags || {};
+  if (crew.flags[flag]) return 0;
+  let n = 0;
+  for (const g of crew.gaps) {
+    if (g.status !== "open") continue;
+    g.status = "closed";
+    g.closedAt = Date.now();
+    g.note = note;
+    n++;
+  }
+  crew.flags[flag] = Date.now();
+  save();
+  return n;
+}
 export function openGaps() {
   return crew.gaps.filter((g) => g.status === "open");
 }

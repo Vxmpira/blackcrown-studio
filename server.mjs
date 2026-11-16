@@ -61,7 +61,7 @@ import {
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian, staffVaultDir } from "./staff.mjs";
 import { wireVault, readNote, isNote } from "./vault.mjs";
-import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines } from "./crew.mjs";
+import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines, sweepGaps } from "./crew.mjs";
 import { wireShelf, shelfState, queueShelf, dedupeStickers, clearShelfQueue } from "./shelf.mjs";
 import { execFile as execFileCb } from "child_process";
 
@@ -4009,6 +4009,13 @@ function recordWire(from, to, text) {
 }
 app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 // the crew ledger: every desk-to-desk ask and the owner's tool-gap list
+// 11-16 release: vault notes are readable and THE NUMBERS are on the Board,
+// which covers every gap open at the time; clear those cards once
+try {
+  const n = sweepGaps("tools-11-16", "wired 11-16: read opens vault notes (.md), THE NUMBERS on the Board carry visits, clicks, the signup funnel, Crown and X stats");
+  if (n) console.log(`crew: closed ${n} tool gaps wired by the 11-16 release`);
+} catch {}
+
 // what every desk reads before it acts: the Board, as plain text
 app.get("/api/board", async (_req, res) => {
   try {
