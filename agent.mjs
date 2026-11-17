@@ -1325,7 +1325,7 @@ async function executeVideo(p) {
         const off = /^(0|false|no|off)$/i.test(String(process.env.VIDEO_FALLBACK_BLOOM || "1").trim());
         if (off || !BLOOM_KEY || !/quota|max spot|spot instance|could not launch a GPU|service-linked/i.test(m)) throw e;
         // the owner hears about a furnace that cannot start once, as a ticket
-        recordTicket("bard", `The furnace (AWS GPU) could not start a render: ${m.slice(0, 110)}. Daily videos fall back to Bloom until it can`, `first seen on #${p.number}`);
+        recordTicket("bard", `The furnace could not start a render: ${m.replace(/\s+and retry\s*$/i, "").slice(0, 175)}`, `first seen on #${p.number}`);
         const bal = await bloomCredits(true).catch(() => null);
         if (bal && !bal.unlimited && bal.balance <= BLOOM_MIN_RESERVE) {
           throw new Error(`the furnace could not start (${m.slice(0, 90)}) and Bloom holds ${bal.balance} credits, at the ${BLOOM_MIN_RESERVE} credit reserve, so there is nowhere to render. It is with the owner as a ticket; retry ${p.number} once either is fixed`);
