@@ -949,8 +949,15 @@ export type TunerData = {
   values: Record<string, TuningValue>;
   models: string[];
   defaults: { head: string; hands: string; minion: string };
-  stats: { desks: Record<string, DeskCard>; budget: { cap: number; spent: number; left: number | null; level: string }; gaps: number };
+  stats: { desks: Record<string, DeskCard>; budget: { cap: number; spent: number; left: number | null; level: string }; gaps: number; tickets?: OwnerTicket[] };
 };
+export type OwnerTicket = { id: string; what: string; evidence: string; desks: string[]; count: number; firstAt: number };
+export async function closeTicket(id: string): Promise<TunerData["stats"] | null> {
+  const r = await fetch(`${BASE}/api/crew/tickets/${encodeURIComponent(id)}/close`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Close failed (${r.status})`);
+  return j.stats || null;
+}
 export async function getTuning(): Promise<TunerData | null> {
   try {
     const r = await fetch(`${BASE}/api/tuning`);

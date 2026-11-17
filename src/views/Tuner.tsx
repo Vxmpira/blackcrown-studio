@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getTuning,
+  closeTicket,
   saveTuning,
   getPremarket,
   runPremarketNow,
@@ -70,6 +71,15 @@ export const Tuner: React.FC = () => {
     } catch (e) {
       setState("error");
       setMsg(e instanceof Error ? e.message : "Could not save.");
+    }
+  };
+
+  const onCloseTicket = async (id: string) => {
+    try {
+      const stats = await closeTicket(id);
+      if (stats) setData((old) => (old ? { ...old, stats } : old));
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Could not close the ticket.");
     }
   };
 
@@ -161,6 +171,7 @@ export const Tuner: React.FC = () => {
 
   if (!data) return <div className="soon-panel">Loading the tuner...</div>;
   const b = data.stats.budget;
+  const tickets = data.stats.tickets || [];
 
   const card = (key: string, d: DeskCard) => (
     <div className="tn-card" key={key}>
@@ -222,6 +233,23 @@ export const Tuner: React.FC = () => {
       <div className="tn-grid">{desks.map(([k, d]) => card(k, d))}</div>
 
       <div className="settings tn-lower">
+        {tickets.length ? (
+          <div className="sgroup">
+            <div className="sgroup-h">Owner tickets: what the desks found and cannot fix</div>
+            {tickets.map((t) => (
+              <div className="srow tn-ticket" key={t.id}>
+                <span className="sk">
+                  {t.what}
+                  {t.evidence ? <em> {t.evidence}</em> : null}
+                  <small> raised by {t.desks.join(", ")}{t.count > 1 ? `, seen ${t.count} times` : ""}</small>
+                </span>
+                <span className="sv">
+                  <button className="btn" onClick={() => onCloseTicket(t.id)}>Fixed, close it</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="sgroup">
           <div className="sgroup-h">Herald, Steward and Bard</div>
           {["staff.model", "staff.cycleEveryH", "staff.workGapMin", "staff.dailySteps"].map(field)}

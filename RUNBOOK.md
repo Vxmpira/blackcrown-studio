@@ -188,3 +188,13 @@ format too, so it is safe to deploy before the Korvus box updates.
 
 House style, set by the owner: swing trades inside the day, no scalping,
 except on company stock when the crawler has just read a filing.
+
+## Owner tickets (11-17)
+
+A desk that finds something broken or blocked which no proposal can change (server behaviour, a setting, credits, a quota, an owner-only file) raises it once instead of refiling edits that bounce.
+
+- A desk sets `cant_fix` in task mode; the task closes and the problem lands in `studio-crew.json` under `tickets`. The same problem from another desk merges into the one ticket.
+- Regent's intake turns three kinds of ask into a ticket instead of a bounce: a ticket kind (bug, server, config, behaviour...), a CURRENT that describes behaviour rather than page text, and an edit to an owner-only file. An ask that bounces a third time, or bounces while matching an open ticket, becomes a ticket too.
+- New tickets reach #boardroom as one CREW // OWNER TICKETS card. Every desk sees open tickets on the Board with orders not to refile.
+- Close a ticket in the Tuner (Fixed, close it). The desks then see it under settled tickets for 3 days. An untouched ticket closes itself after 7 days.
+- Video renders: the furnace is the default. Bloom's key and balance only gate slides and the Bloom fallback. If the furnace cannot start, the server raises the ticket itself.

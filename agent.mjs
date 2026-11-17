@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
 import { tune, tuningFlat } from "./tuning.mjs";
-import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, shouldWake, tidyQueue } from "./crew.mjs";
+import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, recordTicket, shouldWake, tidyQueue } from "./crew.mjs";
 export { recordSpend, getSpend, spendSummary };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1158,7 +1158,11 @@ export async function runCycle(trigger = "schedule") {
 // channel. The ONLY write action the agent performs, and only after a green
 // light. Spends Bloom credits.
 async function executeCreative(p) {
-  if (!BLOOM_KEY) {
+  // a video goes to the furnace (the company's own AWS GPU) and never touches
+  // Bloom unless the furnace cannot start, so Bloom's key and balance must not
+  // hold it back. Slides, and the Bloom fallback, keep both guards.
+  const onFurnace = p.format === "video" && (process.env.VIDEO_PROVIDER || "aws").toLowerCase() === "aws" && Boolean(hooks.awsRender);
+  if (!BLOOM_KEY && !onFurnace) {
     log("error", `#${p.number} approved but BLOOM_API_KEY is not set, cannot render`);
     await discordSend(
       `**CORVID //** #${p.number} is approved but I cannot render: BLOOM_API_KEY is missing in .env. Add it and tell me to retry.`
@@ -1166,7 +1170,7 @@ async function executeCreative(p) {
     return;
   }
   // budget guard: pause renders when the balance sits at or below the reserve
-  const creditsBefore = await bloomCredits(true);
+  const creditsBefore = onFurnace ? null : await bloomCredits(true);
   if (creditsBefore && !creditsBefore.unlimited && creditsBefore.balance <= BLOOM_MIN_RESERVE) {
     log("error", `#${p.number} render paused: Bloom balance ${creditsBefore.balance} is at the ${BLOOM_MIN_RESERVE} credit reserve`);
     await discordSend(
@@ -1284,7 +1288,7 @@ async function executeVideo(p) {
     return;
   }
   const brandSessionId = BLOOM_BRANDS[(p.brand || "").toLowerCase()] || BLOOM_BRANDS.default;
-  log("render", `#${p.number} rendering a video via Bloom, this takes minutes`);
+  log("render", `#${p.number} rendering a video, this takes minutes`);
   try {
     // NEVER PAY TWICE. Footage already rendered for this proposal is reused;
     // a generation already started is resumed, not restarted; and a render
@@ -1320,6 +1324,12 @@ async function executeVideo(p) {
         const m = String(e?.message || e);
         const off = /^(0|false|no|off)$/i.test(String(process.env.VIDEO_FALLBACK_BLOOM || "1").trim());
         if (off || !BLOOM_KEY || !/quota|max spot|spot instance|could not launch a GPU|service-linked/i.test(m)) throw e;
+        // the owner hears about a furnace that cannot start once, as a ticket
+        recordTicket("bard", `The furnace (AWS GPU) could not start a render: ${m.slice(0, 110)}. Daily videos fall back to Bloom until it can`, `first seen on #${p.number}`);
+        const bal = await bloomCredits(true).catch(() => null);
+        if (bal && !bal.unlimited && bal.balance <= BLOOM_MIN_RESERVE) {
+          throw new Error(`the furnace could not start (${m.slice(0, 90)}) and Bloom holds ${bal.balance} credits, at the ${BLOOM_MIN_RESERVE} credit reserve, so there is nowhere to render. It is with the owner as a ticket; retry ${p.number} once either is fixed`);
+        }
         log("render", `#${p.number} furnace unavailable (${m.slice(0, 120)}), rendering via Bloom instead`);
         url = null;
       }
@@ -1557,6 +1567,7 @@ Output STRICT JSON only:
  "request": {"to":"herald|steward|bard","ask":"WORK you need from that desk, max 14 words, never data"} optional,
  "read": {"page":"korvus.html, korvus:path/file, or a vault note like Page-Frame.md or steward/Projects.md","find":"optional words that appear near the part you need"} optional: the server hands you that file's real source or that note's full text on your next step,
  "cant_see": "optional, max 12 words: what this task needs that no read and no BOARD line shows you; the task closes and it goes on the owner's tool-gap list",
+ "cant_fix": "optional, max 30 words: something broken or blocked that no proposal can change (server behaviour, a setting, credits, a quota, an owner-only file), with the number that proves it; the task closes and the owner gets it as a ticket",
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 ${CREW_RULES}
@@ -1599,6 +1610,16 @@ function cantSee(t, what) {
   if (t.reqId) closeRequest(t.reqId, "cant_see", String(what));
   log("work", `can't see "${String(what).slice(0, 80)}", on the owner's tool-gap list${gap ? ` (${gap.count}x)` : ""}`);
   return gap;
+}
+// a desk said CAN'T FIX: the task closes and the problem goes to the owner as
+// one ticket, instead of being refiled as an edit that can only bounce
+function cantFix(t, what) {
+  const tk = recordTicket("corvid", what, t.title);
+  t.status = "done";
+  t.closed = `ticket raised: ${String(what).slice(0, 80)}`;
+  if (t.reqId) closeRequest(t.reqId, "cant_fix", String(what));
+  log("work", `can't fix "${String(what).slice(0, 80)}", raised to the owner as a ticket${tk && tk.count > 1 ? ` (already open, seen ${tk.count}x)` : ""}`);
+  return tk;
 }
 
 // the money line every task step sees: where visitors go and whether they pay
@@ -1685,6 +1706,7 @@ async function workTick() {
     t.status = out.status === "done" ? "done" : "doing";
     t.lastStepAt = Date.now();
     if (out.cant_see && String(out.cant_see).trim() && !t.source) cantSee(t, String(out.cant_see).trim());
+    if (out.cant_fix && String(out.cant_fix).trim() && !t.source) cantFix(t, String(out.cant_fix).trim());
     if (t.status === "done" && t.reqId) closeRequest(t.reqId, "answered");
     if (out.park_hours && t.status !== "done") {
       const h = Math.min(24, Math.max(1, Number(out.park_hours) || 1));

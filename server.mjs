@@ -61,7 +61,7 @@ import {
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian, staffVaultDir } from "./staff.mjs";
 import { wireVault, readNote, isNote } from "./vault.mjs";
-import { admitRequest, closeGap, crewBoardLines, crewState, gapDigest, keyLines, sweepGaps } from "./crew.mjs";
+import { admitRequest, closeGap, closeTicket, crewBoardLines, crewState, gapDigest, keyLines, seedTickets, sweepGaps, ticketCard } from "./crew.mjs";
 import { wireShelf, shelfState, queueShelf, dedupeStickers, clearShelfQueue } from "./shelf.mjs";
 import { execFile as execFileCb } from "child_process";
 
@@ -2344,11 +2344,28 @@ async function sendGapDigest() {
     console.log("gap digest:", e?.message || e);
   }
 }
+// a ticket a desk raised reaches the boardroom on the next pass, all new ones
+// as ONE card (Regent sends its own when an ask turns out to be a ticket)
+async function sendTicketCard() {
+  try {
+    if (!(JOBS_BOT && JOBS_CH.boardroom)) return;
+    const text = ticketCard();
+    if (!text) return;
+    await fetch(`https://discord.com/api/v10/channels/${JOBS_CH.boardroom}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bot ${JOBS_BOT}` },
+      body: JSON.stringify({ content: text.slice(0, 1900) }),
+    });
+  } catch (e) {
+    console.log("ticket card:", e?.message || e);
+  }
+}
 function runHealer() {
   try { corvidHeal(); } catch (e) { console.log("healer corvid:", e?.message || e); }
   try { staffHeal(); } catch (e) { console.log("healer staff:", e?.message || e); }
   try { diskHygiene(); } catch {}
   sendGapDigest().catch(() => {});
+  sendTicketCard().catch(() => {});
 }
 setTimeout(runHealer, 90 * 1000);
 setInterval(runHealer, 10 * 60 * 1000);
@@ -4016,6 +4033,26 @@ try {
   if (n) console.log(`crew: closed ${n} tool gaps wired by the 11-16 release`);
 } catch {}
 
+// 11-17 release: the two walls the desks kept refiling around are on the
+// ticket list from the start, so nobody files a fourth version of either
+try {
+  const n = seedTickets("tickets-11-17", [
+    {
+      desk: "corvid",
+      what: "Korvus signup trap (honeypot) catches every signup submit, 0 accounts created",
+      evidence: "9 form views, 7 submits, 7 trap hits, 0 accounts",
+      fixed: "",
+    },
+    {
+      desk: "bard",
+      what: "Approved videos stalled reading rendering via Bloom while Bloom is out of credits; render routing to the furnace",
+      evidence: "#494 and #496",
+      fixed: "fixed 11-17: a low Bloom balance no longer holds back furnace videos; the furnace is the default and needs no routing. Retry the stalled renders",
+    },
+  ]);
+  if (n) console.log(`crew: ${n} tickets recorded by the 11-17 release`);
+} catch {}
+
 // what every desk reads before it acts: the Board, as plain text
 app.get("/api/board", async (_req, res) => {
   try {
@@ -4090,7 +4127,7 @@ function tunerStats() {
       asksIn: crew.requests.filter((r) => r.to === key && r.status === "open").length,
     };
   }
-  return { desks: out, budget: usageReport().budget, gaps: crew.gaps.filter((g) => g.status === "open").length };
+  return { desks: out, budget: usageReport().budget, gaps: crew.gaps.filter((g) => g.status === "open").length, tickets: (crew.tickets || []).filter((t) => t.status === "open").map((t) => ({ id: t.id, what: t.what, evidence: t.evidence || "", desks: t.desks || [], count: t.count || 1, firstAt: t.firstAt })) };
 }
 const TUNER_MODELS = ["", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];
 app.get("/api/tuning", (_req, res) => {
@@ -4100,6 +4137,11 @@ app.post("/api/tuning", (req, res) => {
   const changed = setTuning(req.body?.patch || {});
   if (changed.length) console.log("tuner changed:", changed.join(", "));
   res.json({ ok: true, changed, values: tuningFlat(), stats: tunerStats() });
+});
+app.post("/api/crew/tickets/:id/close", (req, res) => {
+  const t = closeTicket(String(req.params.id), String(req.body?.note || "closed by the owner"));
+  if (!t) return res.status(404).json({ error: "No such ticket." });
+  res.json({ ok: true, ticket: t, stats: tunerStats() });
 });
 app.post("/api/crew/gaps/:id/close", (req, res) => {
   const g = closeGap(String(req.params.id));

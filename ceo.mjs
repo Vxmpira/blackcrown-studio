@@ -23,6 +23,7 @@ import {
 import { MODELS, callJSON, canSpend } from "./llm.mjs";
 import { brandLaw, engineLaw, BRAND_LAW_TEXT } from "./brandlaw.mjs";
 import { staffStates } from "./staff.mjs";
+import { recordTicket, sameAsTicket, ticketCard, similarity } from "./crew.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -342,6 +343,12 @@ A proposal page like "korvus:path/file.js" or "crown:path/file" targets that pro
 // ---------------------------------------------------------------------------
 // preflight: a filing that would predictably fail never reaches the owner.
 // It bounces straight back to the desk that filed it, with the reason.
+// An ask that is really a problem report (how a server behaves, a setting, an
+// owner-only file) can never pass as a page edit. Preflight answers those with
+// a reason that starts TICKET: and intake turns them into one owner ticket
+// instead of ordering the desk to refile something that can only bounce again.
+const TICKET_KINDS = /^(ticket|bug|incident|server|backend|config|setting|behaviou?r|owner|engineering|infra|outage|blocker)$/;
+const NOT_PAGE_TEXT = /^\((behaviou?r|server|backend|logic|config|setting|flow|none on page|not on (the )?page|n\/?a)\b/i;
 function preflightProposal(p) {
   try {
     const kind = String(p.kind || "").toLowerCase();
@@ -349,6 +356,8 @@ function preflightProposal(p) {
     const page = String(p.page || "");
     const cur = String(section(detail, "CURRENT") || "").trim();
     const isNew = /^\(new file\)$/i.test(cur);
+    if (TICKET_KINDS.test(kind)) return "TICKET: filed as a problem report, not a change";
+    if (NOT_PAGE_TEXT.test(cur)) return "TICKET: this describes how something behaves, not text on a page, so no edit can make it";
     const plat = (detail.match(/PLATFORM:\s*(\S+)/i) || [])[1];
     if (kind === "post" || plat) {
       if (!plat) return "post asks need a PLATFORM line";
@@ -437,7 +446,7 @@ function preflightProposal(p) {
         }
       }
       const law = brandLaw({ repo: loc.rootKey, file: loc.file, before: "", after: body, reference: brandReference(loc.rootKey, loc.rootDir) });
-      if (law) return `brand law: ${law}`;
+      if (law) return /is owner-only/.test(law) ? `TICKET: ${law.split(". ")[0]}` : `brand law: ${law}`;
       return null;
     }
     // an edit to a live file: apply it in memory and hold the result to the law
@@ -456,7 +465,7 @@ function preflightProposal(p) {
       const next = String(section(detail, "NEW") || "");
       const after = cur && before.includes(cur) ? before.replace(cur, next) : `${before}\n${next}`;
       const law = brandLaw({ repo: loc.rootKey, file: loc.file, before, after, reference: brandReference(loc.rootKey, loc.rootDir) });
-      if (law) return `brand law: ${law}`;
+      if (law) return /is owner-only/.test(law) ? `TICKET: ${law.split(". ")[0]}` : `brand law: ${law}`;
     }
     return null;
   } catch (e) {
@@ -477,7 +486,35 @@ export async function receiveProposals(filed) {
     bounced.push({ p, why });
     return false;
   });
+  for (const b of bounced) {
+    // the third bounce of the same ask is a loop a person would have stopped
+    try {
+      // an ask that bounces AND matches an open ticket is that ticket again
+      if (!/^TICKET: /.test(b.why) && sameAsTicket(`${b.p.summary || ""} ${section(b.p.detail, "WHAT") || ""}`)) {
+        b.why = "TICKET: this is already with the owner as a ticket";
+      }
+      if (!/^TICKET: /.test(b.why)) {
+        const now = Date.now();
+        state.bounces = (state.bounces || []).filter((x) => now - x.at < 72 * 3600000).slice(-40);
+        const before = state.bounces.filter((x) => similarity(x.summary, b.p.summary || "") >= 0.5).length;
+        state.bounces.push({ summary: String(b.p.summary || "").slice(0, 120), at: now });
+        if (before >= 2) b.why = `TICKET: this ask has now bounced ${before + 1} times (last reason: ${b.why.slice(0, 120)})`;
+      }
+    } catch {}
+  }
   for (const { p, why } of bounced) {
+    if (/^TICKET: /.test(why)) {
+      try {
+        const reason = why.replace(/^TICKET: /, "");
+        decideProposal(p.id, "reject", `ticket: ${reason}`, "preflight");
+        const what = `${p.summary || ""}. ${String(section(p.detail, "WHAT") || "").replace(/\s+/g, " ").slice(0, 130)}`.trim();
+        const tk = recordTicket(p.author || "Corvid", what, String(section(p.detail, "WHY") || "").replace(/\s+/g, " "));
+        log("ruling", `#${p.number} is a problem report, not an edit (${reason}); ${tk && tk.count > 1 ? "added to the open ticket" : "raised to the owner as a ticket"}`);
+        const card = ticketCard();
+        if (card) await send(card);
+      } catch {}
+      continue;
+    }
     try {
       decideProposal(p.id, "reject", `preflight: ${why}`, "preflight");
       log("ruling", `#${p.number} bounced in preflight: ${why}`);
@@ -1065,7 +1102,7 @@ async function execute(p) {
   }
   if (p.kind === "creative") {
     renderCreative(p).catch((e) => log("error", `render crashed: ${e.message || e}`));
-    return { ok: true, msg: "rendering via Bloom, package lands in the channel" };
+    return { ok: true, msg: "rendering, package lands in the channel" };
   }
   // publishing to the outside web: a PLATFORM line (or kind post) hands the
   // approved content to the owner's Make publisher webhook, which posts with

@@ -35,12 +35,14 @@ const REQUEST_TTL_H = 24;
 const MAX_OPEN_PER_PAIR = 2;
 const DUP_AT = 0.55; // similarity at which two asks or two tasks are the same thing
 const GAP_AT = 0.5;
+const TICKET_AT = 0.45;
+const TICKET_QUIET_DAYS = 7; // an open ticket nobody has hit again for this long closes itself
 
 // ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
 function fresh() {
-  return { requests: [], gaps: [], wakes: {}, digestDay: "" };
+  return { requests: [], gaps: [], tickets: [], wakes: {}, digestDay: "" };
 }
 let crew = load();
 function load() {
@@ -110,6 +112,13 @@ function sweep() {
     if (r.status === "open" && now - r.at > REQUEST_TTL_H * 3600000) {
       r.status = "expired";
       r.closedAt = now;
+      changed = true;
+    }
+  }
+  for (const t of crew.tickets || []) {
+    if (t.status === "open" && now - (t.lastAt || t.firstAt) > TICKET_QUIET_DAYS * 864e5) {
+      t.status = "expired";
+      t.closedAt = now;
       changed = true;
     }
   }
@@ -242,6 +251,97 @@ export function gapDigest(day) {
     ...fresh.map((g) => `- ${g.what} (${g.desks.join(", ")}, hit ${g.count}x)`),
     "Close one in the admin once it is wired or no longer matters.",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// 2b: owner tickets. A gap is something a desk cannot SEE. A ticket is
+// something a desk can see is broken or blocked and cannot CHANGE with any
+// proposal: how a server behaves, a setting, a balance, a quota, an
+// owner-only file. A person in the role would raise it once with the
+// evidence and get on with other work; this is that. One ticket per problem
+// across all desks, one card to the owner, and every desk sees it is handled.
+// ---------------------------------------------------------------------------
+const clean = (x, n) => String(x || "").trim().replace(/\u2014|\u2013/g, ", ").replace(/\s+/g, " ").slice(0, n);
+export function sameAsTicket(text) {
+  sweep();
+  const t = clean(text, 220);
+  if (!t) return null;
+  return (crew.tickets || []).find((x) => x.status === "open" && similarity(x.what, t) >= TICKET_AT) || null;
+}
+export function recordTicket(desk, what, evidence = "") {
+  const text = clean(what, 220);
+  if (!text) return null;
+  crew.tickets = crew.tickets || [];
+  const t = sameAsTicket(text);
+  if (t) {
+    t.count = (t.count || 1) + 1;
+    t.desks = [...new Set([...(t.desks || []), deskKey(desk)])];
+    t.lastAt = Date.now();
+    if (evidence && !t.evidence) t.evidence = clean(evidence, 240);
+    save();
+    return t;
+  }
+  const n = {
+    id: id(),
+    what: text,
+    evidence: clean(evidence, 240),
+    desks: [deskKey(desk)],
+    count: 1,
+    firstAt: Date.now(),
+    lastAt: Date.now(),
+    status: "open",
+    reported: false,
+  };
+  crew.tickets.push(n);
+  crew.tickets = crew.tickets.slice(-40);
+  save();
+  return n;
+}
+export function closeTicket(ticketId, note = "") {
+  const t = (crew.tickets || []).find((x) => x.id === ticketId);
+  if (!t) return null;
+  t.status = "closed";
+  t.closedAt = Date.now();
+  if (note) t.note = clean(note, 200);
+  save();
+  return t;
+}
+export function openTickets() {
+  sweep();
+  return (crew.tickets || []).filter((t) => t.status === "open");
+}
+// tickets the owner has not been shown yet, as one card. "" when none.
+export function ticketCard() {
+  const fresh = openTickets().filter((t) => !t.reported);
+  if (!fresh.length) return "";
+  for (const t of fresh) t.reported = true;
+  save();
+  return [
+    "**CREW // OWNER TICKETS**",
+    "The desks found these and no proposal of theirs can change them. Each needs you or your engineer:",
+    ...fresh.map((t) => `- ${t.what}${t.evidence ? ` Evidence: ${t.evidence}` : ""} (raised by ${t.desks.join(", ")})`),
+    "The desks have stopped refiling these and are working on other things. Close one in the Tuner when it is fixed; an untouched ticket closes itself after a week.",
+  ].join("\n");
+}
+// tickets a release opens or settles on the desks' behalf, once per flag
+export function seedTickets(flag, list) {
+  crew.flags = crew.flags || {};
+  if (crew.flags[flag]) return 0;
+  let n = 0;
+  for (const it of list || []) {
+    const t = recordTicket(it.desk || "engineer", it.what, it.evidence || "");
+    if (!t) continue;
+    t.reported = true; // the owner already knows; no card
+    if (it.fixed) {
+      t.status = "closed";
+      t.closedAt = Date.now();
+      t.note = clean(it.fixed, 200);
+    }
+    n++;
+  }
+  crew.flags[flag] = Date.now();
+  save();
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +602,16 @@ export function crewBoardLines() {
       gaps.length ? gaps.slice(-10).map((g) => g.what).join("; ") : "none"
     }`
   );
+  const tix = openTickets();
+  lines.push(
+    `OWNER TICKETS (broken or blocked things no proposal can change; already raised, the owner has them. Never refile one, never file a page edit or a check for one, never spend a task on one, mention it in a log at most once; work on what you can ship): ${
+      tix.length ? tix.slice(-10).map((t) => `"${t.what.slice(0, 120)}" raised ${ago(t.firstAt)} ago by ${t.desks.join(", ")}`).join("; ") : "none"
+    }`
+  );
+  const fixed = (crew.tickets || []).filter((t) => t.status === "closed" && Date.now() - (t.closedAt || 0) < 3 * 864e5);
+  if (fixed.length) {
+    lines.push(`TICKETS SETTLED IN THE LAST 3 DAYS (done, stop routing around them): ${fixed.slice(-6).map((t) => `"${t.what.slice(0, 90)}"${t.note ? `: ${t.note}` : ""}`).join("; ")}`);
+  }
   return lines.join("\n");
 }
 export function crewState() {
@@ -509,6 +619,7 @@ export function crewState() {
   return {
     requests: crew.requests.slice(-60).reverse(),
     gaps: crew.gaps.slice().reverse(),
+    tickets: (crew.tickets || []).slice().reverse(),
     rules: { queueCap: queueCap(), staleHours: staleHours(), wakeGapMin: wakeGapMin(), requestTtlHours: REQUEST_TTL_H, maxOpenPerPair: MAX_OPEN_PER_PAIR },
   };
 }
@@ -518,5 +629,9 @@ export const CREW_RULES = `CREW RULES, how the desks work together:
 - THE BOARD in your data holds the facts every desk keeps needing (live page titles, headlines and calls to action, renders with links, the Bloom balance, the Regent ledger, open asks, tool gaps). Read it before you ask anyone for anything; never ask a desk for something the Board shows.
 - Asks to another desk are for WORK only that desk can do (a render, a caption, a page, a test). Never ask a desk to paste data, numbers, html or a balance: read the page yourself with "read", or it is a tool gap.
 - CAN'T SEE: when a task needs something no tool and no Board line gives you, set "cant_see" to what is missing (max 12 words) and the task closes. The server puts it on the owner's tool-gap list and answers the asking desk for you. Never re-ask for anything on the tool-gap list.
+- CAN'T FIX: when you find something broken or blocked that no proposal of yours can change (how a server behaves, a setting, credits or a balance, a quota, a sign-in or billing flow, an owner-only file), do what a good employee does: raise it ONCE, with the number that proves it. Set "cant_fix" to the problem and its evidence (max 30 words). The task closes, the owner gets one ticket card, and every desk sees it under OWNER TICKETS. Never dress it up as a page edit, never invent a CURRENT for it, and never withdraw quietly and hope.
+- One owner per problem: anything under OWNER TICKETS is handled. Do not refile it, do not ask another desk about it, do not make it your focus again. Pick the next thing in YOUR role that you can ship today.
+- A bounce is feedback, not a fight: read the reason and fix that exact thing once. If the same ask bounces twice, stop; raise it with cant_fix instead of a third try.
+- Stay in your lane: Corvid owns search and the pages, Herald owns sales copy and offers, Bard owns video, Steward owns the schedule and follow-through. When you spot a problem on another desk's ground, send that desk ONE ask or check it is already raised, then return to your own work.
 - One open ask per topic: an ask already listed under OPEN ASKS is still in flight; asking again does nothing.
 - Your queue holds a capped number of open tasks and duplicates merge, so queue the work that moves a number, not reminders.`;

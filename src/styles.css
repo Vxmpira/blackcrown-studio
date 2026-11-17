@@ -1797,3 +1797,9 @@ li.sev-med .sev-tag { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
 .pb-cmp-lede { color: var(--bone); font-size: 13px; line-height: 1.55; margin: 0 0 14px; max-width: 900px; }
 .pb-stats b.pos { color: var(--ok); } .pb-stats b.neg { color: var(--bad); }
 .pb-head-right { flex-wrap: wrap; justify-content: flex-end; }
+
+/* owner tickets in the Tuner */
+.tn-ticket { align-items: flex-start; gap: 14px; }
+.tn-ticket .sk { white-space: normal; line-height: 1.45; color: var(--bone); }
+.tn-ticket .sk em { font-style: normal; opacity: 0.75; }
+.tn-ticket .sk small { display: block; opacity: 0.6; font-size: 11.5px; margin-top: 2px; }
