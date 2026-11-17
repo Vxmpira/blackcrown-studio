@@ -1638,7 +1638,7 @@ async function korvusTrafficLine() {
       `human page views ${listed(w.view_h, p.view_h)}; crawler hits ${listed(w.view_b)}; human sources ${listed(w.src)}; ` +
       `BUTTON CLICKS by data-k (hero_primary, hero_secondary, nav_signup, nav_login, pricing_observer, pricing_operator, lodestone_explore) ${listed(w.click, p.click)}; ` +
       `SIGNUP FUNNEL: form views ${g(w.view_h, "signup")} > submits ${g(st, "signup_submit")} > accounts created ${g(st, "signup_created")} > emails verified ${g(st, "email_verified")} > logins ${g(st, "login_ok")}; ` +
-      `leaks: rejected ${g(st, "signup_rejected")}, blocked ${g(st, "signup_blocked")}, honeypot ${g(st, "signup_honeypot")}, login tried before verifying ${g(st, "login_unverified")}, failed logins ${g(st, "login_failed")}, scripted submits ${g(st, "signup_submit_bot")}`;
+      `leaks: rejected ${g(st, "signup_rejected")}, blocked ${g(st, "signup_blocked")}, honeypot ${g(st, "signup_honeypot")} (trap causes: no script ${g(st, "hp_no_script")}, sent in under 3 seconds ${g(st, "hp_instant")}, junk text at human pace ${g(st, "hp_junk")}; a visitor whose browser filled the trap with their own details is let through, ${g(st, "hp_autofill")} so far), login tried before verifying ${g(st, "login_unverified")}, failed logins ${g(st, "login_failed")}, scripted submits ${g(st, "signup_submit_bot")}`;
   } catch (e) {
     line = `KORVUS.INDUSTRIES TRAFFIC: the Korvus feed did not answer (${String(e?.message || e).slice(0, 80)}), counts show again when it does`;
   }
