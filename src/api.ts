@@ -867,18 +867,20 @@ export async function getUsage(): Promise<UsageData | null> {
 export type LabStats = {
   trades: number; wins: number; win_rate: number | null; pnl: number; expectancy: number | null; profit_factor: number | null;
   avg_win?: number | null; avg_loss?: number | null; avg_hold_min?: number | null; max_drawdown?: number;
+  exp_r?: number | null; total_r?: number; t_stat?: number | null;
 };
 export type LabOpen = {
   side: string; entry_px: number; target_px: number; stop_px: number; entry_utc: string; note: string;
   deadline_utc?: string; mfe?: number | null; mae?: number | null; unrealized?: number | null; hold_min?: number | null;
-  strat?: string; family?: string;
+  strat?: string; family?: string; qty?: number; risk_usd?: number | null;
 };
 export type LabStrategy = LabStats & {
   id: string; gen: number; parent: string | null; family: string; family_label?: string; era?: string;
   status: "champion" | "active" | "retired";
   created_utc: string; retired_utc: string | null; why: string; retired_why: string | null; rules: string;
   open: LabOpen | null;
-  promoted_utc?: string; since_crowned?: LabStats;
+  promoted_utc?: string; since_crowned?: LabStats; confirmed?: boolean;
+  backtest?: { days: number; trades: number; exp_r: number | null; win_rate?: number | null; of?: number } | null;
 };
 export type LabMarket = {
   sym: string; name: string; price: number | null; price_utc: string | null; champion: string | null;
@@ -886,18 +888,23 @@ export type LabMarket = {
   hour_move?: number | null; point_value?: number; today?: LabStats;
   previous?: LabStats & { era: string; strategies: number };
   by_family?: Record<string, LabStats>; equity?: { t: string; v: number }[]; open?: LabOpen[];
+  regime?: string | null; luck_bar?: number; champion_confirmed?: boolean;
 };
 export type LabTrade = {
   id?: number; strat: string; sym: string; side: string; entry_utc: string; entry_px: number; exit_utc: string | null;
   exit_px: number | null; reason: string | null; pnl: number | null; status: string; note: string;
   target_px?: number; stop_px?: number; init_stop_px?: number | null; mfe?: number | null; mae?: number | null;
   family?: string; era?: string; hold_min?: number | null;
+  qty?: number; risk_usd?: number | null; r?: number | null;
 };
 export type LabData = {
   configured: boolean; reachable?: boolean; error?: string; enabled?: boolean; started?: boolean; rules?: string;
   last_tick?: { t?: string; phase?: string; feed_ok?: boolean | null; feed?: string };
   min_eval?: number; min_champion?: number; population?: number; costs?: { commission_rt: number; slippage_ticks: number };
-  style?: { label: string; max_trades_day: number; cooldown_min: number; min_hold_cap_min: number; last_entry_et: string; flat_et: string; unit: string };
+  style?: {
+    label: string; max_trades_day: number; cooldown_min: number; min_hold_cap_min: number; last_entry_et: string; flat_et: string; unit: string;
+    risk_usd?: number; max_contracts?: number; crown_t?: number; tape_test_days?: number; tape_test_candidates?: number;
+  };
   markets?: LabMarket[]; log?: { t: string; sym: string; kind: string; text: string }[];
   trades?: LabTrade[];
 };

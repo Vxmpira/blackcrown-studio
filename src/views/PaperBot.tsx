@@ -475,7 +475,7 @@ export const PaperBot: React.FC = () => {
                     <span className="pb-tag bk-pb">{lab?.rules || "first-generation rules"}</span>
                   </div>
                   <h3>Strategy lab</h3>
-                  <p>MNQ and MES. The lab invents rule sets, keeps the ones that pay and retires the rest. Intraday swings only.</p>
+                  <p>MNQ and MES, run as a quant desk would. Rule sets are replayed on stored tape before they trade, every trade is sized by risk, and each one is kept or retired on its statistics. Intraday swings only.</p>
                   <div className="bk-book-main">
                     <div>
                       <strong className={tone(fut.pnl)}>{usd(fut.pnl)}</strong>

@@ -4,9 +4,14 @@ import { Curve, Empty, Spark, Tile, Track, et, mins, tone, usd } from "./botui";
 
 /* The index futures book: for each market, every strategy the lab has
    created, the rules in plain English, why it exists, how it is doing, and
-   every trade it took. Intraday swings only. */
+   every trade it took. Intraday swings only, run as a quant desk would: sized
+   by risk, tested on stored tape before a seat, judged by statistics. */
 
-const statusText = (s: LabStrategy) => (s.status === "champion" ? "champion" : s.status === "retired" ? "retired" : s.open ? `in a ${s.open.side}` : "running");
+// a result in R: profit divided by what the trade risked
+const rr = (v?: number | null) => (v == null ? "n/a" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}R`);
+const tsc = (v?: number | null) => (v == null ? "n/a" : v.toFixed(1));
+
+const statusText = (s: LabStrategy) => (s.status === "champion" ? (s.confirmed ? "champion, confirmed" : "champion") : s.status === "retired" ? "retired" : s.open ? `in a ${s.open.side}` : "running");
 
 const Bench: React.FC<{ rows: LabStrategy[]; minEval: number }> = ({ rows, minEval }) => {
   const [open, setOpen] = useState<string | null>(rows.find((s) => s.status === "champion")?.id || null);
@@ -17,7 +22,9 @@ const Bench: React.FC<{ rows: LabStrategy[]; minEval: number }> = ({ rows, minEv
         <thead>
           <tr>
             <th>Strategy</th><th>Status</th><th>Idea</th><th className="r">Trades</th><th className="r">Winners</th>
-            <th className="r">Per trade</th><th className="r">Total</th><th className="r">Avg hold</th>
+            <th className="r" title="Average result per trade, as a multiple of what each trade risked">Avg R</th>
+            <th className="r" title="The average R against its own noise. 2 or better is the bar for the crown">t-score</th>
+            <th className="r">Total</th><th className="r">Avg hold</th>
           </tr>
         </thead>
         <tbody>
@@ -32,21 +39,25 @@ const Bench: React.FC<{ rows: LabStrategy[]; minEval: number }> = ({ rows, minEv
                   <td>{s.family_label || s.family} <span className="dim">gen {s.gen}{s.parent ? `, from ${s.parent}` : ""}</span></td>
                   <td className="r mono">{s.trades}</td>
                   <td className="r mono">{s.win_rate == null ? "n/a" : `${s.win_rate}%`}</td>
-                  <td className={`r mono ${thin ? "dim" : tone(s.expectancy)}`}>{usd(s.expectancy)}</td>
+                  <td className={`r mono ${thin ? "dim" : tone(s.exp_r ?? s.expectancy)}`}>{s.exp_r != null ? rr(s.exp_r) : usd(s.expectancy)}</td>
+                  <td className={`r mono ${thin ? "dim" : tone(s.t_stat)}`}>{tsc(s.t_stat)}</td>
                   <td className={`r mono ${tone(s.pnl)}`}>{usd(s.pnl)}</td>
                   <td className="r mono">{mins(s.avg_hold_min)}</td>
                 </tr>
                 {isOpen ? (
                   <tr className="bk-detail">
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <p><b>The rules.</b> {s.rules}</p>
                       <p><b>Why it exists.</b> {s.why} <span className="bk-dim">Created {et(s.created_utc)} ET.</span></p>
+                      {s.backtest ? (
+                        <p className="bk-dim">Tape test: best of {s.backtest.of ?? 1} candidates on {s.backtest.days} days of stored tape, {s.backtest.trades} trades at {rr(s.backtest.exp_r)} a trade. That replay picked it, so it is not evidence; the live record above is.</p>
+                      ) : null}
                       {s.retired_why ? <p><b>Why it ended.</b> {s.retired_why} <span className="bk-dim">{et(s.retired_utc)} ET.</span></p> : null}
                       {s.since_crowned ? (
-                        <p><b>Since it was crowned</b> ({et(s.promoted_utc)} ET): {s.since_crowned.trades} trades, {usd(s.since_crowned.expectancy)} a trade, {usd(s.since_crowned.pnl)} total. This is the number that counts; the record above includes the trades that got it picked.</p>
+                        <p><b>Since it was crowned</b> ({et(s.promoted_utc)} ET): {s.since_crowned.trades} trades, {s.since_crowned.exp_r != null ? rr(s.since_crowned.exp_r) : usd(s.since_crowned.expectancy)} a trade, t-score {tsc(s.since_crowned.t_stat)}, {usd(s.since_crowned.pnl)} total. This is the number that counts; the record above includes the trades that got it picked. {s.confirmed ? "CONFIRMED: these trades clear the bar on their own." : "Not confirmed yet: it needs a full sample after the crown with a t-score of 2 or better."}</p>
                       ) : null}
-                      {s.open ? <p><b>Open now.</b> {s.open.side} from {s.open.entry_px.toFixed(2)}, target {s.open.target_px.toFixed(2)}, stop {s.open.stop_px.toFixed(2)}. Trigger: {s.open.note}.</p> : null}
-                      {s.trades ? <p className="bk-dim">Average win {usd(s.avg_win)}, average loss {usd(s.avg_loss)}, profit factor {s.profit_factor ?? "n/a"}, worst run {usd(s.max_drawdown != null ? -s.max_drawdown : null)}.</p> : null}
+                      {s.open ? <p><b>Open now.</b> {s.open.side} {s.open.qty ?? 1} from {s.open.entry_px.toFixed(2)}, target {s.open.target_px.toFixed(2)}, stop {s.open.stop_px.toFixed(2)}. Trigger: {s.open.note}.</p> : null}
+                      {s.trades ? <p className="bk-dim">{usd(s.expectancy)} a trade, average win {usd(s.avg_win)}, average loss {usd(s.avg_loss)}, profit factor {s.profit_factor ?? "n/a"}, worst run {usd(s.max_drawdown != null ? -s.max_drawdown : null)}{s.total_r != null ? `, ${rr(s.total_r)} in total` : ""}.</p> : null}
                       {thin && s.status !== "retired" ? <p className="bk-dim">Under {minEval} closed trades, so its average means little yet.</p> : null}
                     </td>
                   </tr>
@@ -60,7 +71,7 @@ const Bench: React.FC<{ rows: LabStrategy[]; minEval: number }> = ({ rows, minEv
   );
 };
 
-const Trades: React.FC<{ rows: LabTrade[] }> = ({ rows }) => {
+const Trades: React.FC<{ rows: LabTrade[]; rules?: string }> = ({ rows, rules }) => {
   const [open, setOpen] = useState<number | null>(null);
   const [all, setAll] = useState(false);
   if (!rows.length) return <Empty>No trades in this market yet.</Empty>;
@@ -71,8 +82,8 @@ const Trades: React.FC<{ rows: LabTrade[] }> = ({ rows }) => {
       <table className="bk-table">
         <thead>
           <tr>
-            <th>Entry (ET)</th><th>Strategy</th><th>Idea</th><th>Side</th><th className="r">Entry</th><th className="r">Exit</th><th>Out on</th>
-            <th className="r">Held</th><th className="r" title="The furthest the trade ran in our favour and against us, in points">Best / worst</th><th className="r">P&amp;L</th>
+            <th>Entry (ET)</th><th>Strategy</th><th>Idea</th><th>Side</th><th className="r" title="Micro contracts, sized so the stop risks about the same dollars on every trade">Qty</th><th className="r">Entry</th><th className="r">Exit</th><th>Out on</th>
+            <th className="r">Held</th><th className="r" title="The furthest the trade ran in our favour and against us, in points">Best / worst</th><th className="r">P&amp;L</th><th className="r" title="P&L divided by what the trade risked">R</th>
           </tr>
         </thead>
         <tbody>
@@ -81,26 +92,29 @@ const Trades: React.FC<{ rows: LabTrade[] }> = ({ rows }) => {
             const isOpen = open === key;
             return (
               <React.Fragment key={key}>
-                <tr className={`${isOpen ? "open" : ""}${t.era && t.era.startsWith("v1") ? " legacy" : ""}`} onClick={() => setOpen(isOpen ? null : key)}>
+                <tr className={`${isOpen ? "open" : ""}${t.era && rules && t.era !== rules ? " legacy" : ""}`} onClick={() => setOpen(isOpen ? null : key)}>
                   <td className="mono dim">{et(t.entry_utc)}</td>
                   <td className="mono sym">{t.strat}</td>
                   <td>{t.family || ""}</td>
                   <td><span className={`pb-tag side-${t.side}`}>{t.side}</span></td>
+                  <td className="r mono">{t.qty ?? 1}</td>
                   <td className="r mono">{t.entry_px.toFixed(2)}</td>
                   <td className="r mono">{t.exit_px != null ? t.exit_px.toFixed(2) : ""}</td>
                   <td>{t.status === "closed" ? <span className={`pb-tag ${String(t.reason || "").replace(/ /g, "-")}`}>{t.reason}</span> : <span className="pb-tag open">open</span>}</td>
                   <td className="r mono">{mins(t.hold_min)}</td>
                   <td className="r mono dim">{t.mfe != null ? `+${t.mfe.toFixed(2)} / ${(t.mae ?? 0).toFixed(2)}` : ""}</td>
                   <td className={`r mono ${tone(t.pnl)}`}>{t.status === "closed" ? usd(t.pnl) : ""}</td>
+                  <td className={`r mono ${tone(t.r)}`}>{t.status === "closed" && t.r != null ? rr(t.r) : ""}</td>
                 </tr>
                 {isOpen ? (
                   <tr className="bk-detail">
-                    <td colSpan={10}>
+                    <td colSpan={12}>
                       <p><b>Why it entered.</b> {t.note || "No note recorded."}</p>
                       <p className="bk-dim">
                         Target {t.target_px?.toFixed(2)}, stop {(t.init_stop_px ?? t.stop_px)?.toFixed(2)}
                         {t.init_stop_px != null && t.stop_px != null && Math.abs(t.stop_px - t.init_stop_px) > 1e-6 ? " (later moved to the entry price)" : ""}.
-                        {t.exit_utc ? ` Out ${et(t.exit_utc)} ET.` : ""}{t.era && t.era.startsWith("v1") ? " A first-generation scalp, from before the swing ruling." : ""}
+                        {t.risk_usd != null ? ` ${t.qty ?? 1} contract${(t.qty ?? 1) === 1 ? "" : "s"}, $${t.risk_usd.toFixed(0)} at risk.` : ""}
+                        {t.exit_utc ? ` Out ${et(t.exit_utc)} ET.` : ""}{t.era && t.era.startsWith("v1") ? " A first-generation scalp, from before the swing ruling." : t.era && t.era.startsWith("v2") ? " A one-contract swing trade, from before the quant rules." : ""}
                       </p>
                     </td>
                   </tr>
@@ -131,17 +145,17 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
         <Tile label="Paper P&L" value={usd(a.pnl)} tone={tone(a.pnl)} sub="every strategy, after costs" />
         <Tile label="Today" value={usd(m.today?.pnl ?? 0)} tone={tone(m.today?.pnl)} sub={`${m.today?.trades ?? 0} trade${m.today?.trades === 1 ? "" : "s"} closed`} />
         <Tile label="Trades" value={a.trades} sub={a.win_rate != null ? `${a.win_rate}% winners` : "none closed yet"} />
-        <Tile label="Per trade" value={usd(a.expectancy)} tone={tone(a.expectancy)} sub={`profit factor ${a.profit_factor ?? "n/a"}`} />
+        <Tile label="Per trade" value={a.exp_r != null ? rr(a.exp_r) : usd(a.expectancy)} tone={tone(a.exp_r ?? a.expectancy)} sub={`${usd(a.expectancy)} a trade, profit factor ${a.profit_factor ?? "n/a"}`} />
         <Tile label="Avg win / loss" value={usd(a.avg_win)} sub={usd(a.avg_loss)} />
         <Tile label="Average hold" value={mins(a.avg_hold_min)} sub="swings, not scalps" />
         <Tile label="Max drawdown" value={a.max_drawdown != null ? usd(-a.max_drawdown) : "n/a"} sub="worst run on the curve" />
-        <Tile label="Champion" value={m.champion || "none yet"} sub={`${m.running} running, ${m.retired} retired`} />
+        <Tile label="Champion" value={m.champion || "none yet"} sub={m.champion ? (m.champion_confirmed ? "confirmed after the crown" : "a lead, not yet confirmed") : `${m.running} running, ${m.retired} retired`} />
       </div>
 
       <div className="bk-grid wide-left">
         <section className="pb-panel">
-          <div className="pb-panel-h"><span>Equity curve · {m.sym} · all strategies</span><span className="pb-dim">one micro contract each, after costs</span></div>
-          <Curve pts={m.equity || []} empty="No closed swing trades in this market yet." />
+          <div className="pb-panel-h"><span>Equity curve · {m.sym} · all strategies</span><span className="pb-dim">{d.style?.risk_usd ? `each trade sized to risk about $${d.style.risk_usd}, after costs` : "after costs"}</span></div>
+          <Curve pts={m.equity || []} empty="No closed trades on the quant bench in this market yet." />
         </section>
         <section className="pb-panel">
           <div className="pb-panel-h"><span>Open positions</span><span className="pb-dim">{m.price != null ? `${m.sym} ${m.price.toFixed(2)}` : ""}</span></div>
@@ -151,8 +165,8 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
                 <div className="bk-pos" key={o.strat}>
                   <div className="bk-pos-top">
                     <span className="bk-sym">{o.strat}</span>
-                    <span className={`pb-tag side-${o.side}`}>{o.side}</span>
-                    <span className="bk-dim">in {et(o.entry_utc)} · held {mins(o.hold_min)}</span>
+                    <span className={`pb-tag side-${o.side}`}>{o.side}{o.qty ? ` ${o.qty}` : ""}</span>
+                    <span className="bk-dim">in {et(o.entry_utc)} · held {mins(o.hold_min)}{o.risk_usd != null ? ` · $${o.risk_usd.toFixed(0)} at risk` : ""}</span>
                     <b className={`bk-pos-pnl ${tone(o.unrealized)}`}>{usd(o.unrealized)}</b>
                   </div>
                   <Track side={o.side} entry={o.entry_px} stop={o.stop_px} target={o.target_px} price={m.price} />
@@ -169,7 +183,8 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
           <span>The bench · {running.length} strategies trading {m.sym}</span>
           <span className="pb-dim">click a row for its rules and why it exists</span>
         </div>
-        {!m.champion ? <p className="bk-note">No champion yet. A strategy needs {d.min_champion ?? 20} closed trades, a positive average and winners outweighing losers before it earns the crown.</p> : null}
+        {!m.champion ? <p className="bk-note">No champion yet. A strategy needs {d.min_champion ?? 20} closed trades, a positive average R, winners outweighing losers and a t-score of {d.style?.crown_t ?? 2} or better before it earns the crown.</p> : null}
+        {m.luck_bar ? <p className="bk-note">Luck check: the lab has tried {m.created} strategies in {m.sym}. If none had any edge, the luckiest would still be expected to show a t-score near {m.luck_bar.toFixed(1)}. That is why a champion only counts as proven once the trades it takes after the crown clear the bar on their own.</p> : null}
         <Bench rows={running} minEval={d.min_eval ?? 10} />
         {retired.length ? (
           <>
@@ -179,7 +194,7 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
         ) : null}
         {m.previous?.strategies ? (
           <p className="bk-note">
-            Before the swing ruling ({m.previous.era}): {m.previous.strategies} scalping strategies took {m.previous.trades} trades for {usd(m.previous.pnl)}. They were retired on the record and are not counted above.
+            Earlier eras ({m.previous.era}): {m.previous.strategies} strategies took {m.previous.trades} trades for {usd(m.previous.pnl)}. They were retired on the record and are not counted above.
           </p>
         ) : null}
       </section>
@@ -189,12 +204,12 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
           <div className="pb-panel-h"><span>Which ideas are working</span><span className="pb-dim">closed trades by family</span></div>
           {fam.length ? (
             <div className="bk-table-wrap"><table className="bk-table compact">
-              <thead><tr><th>Idea</th><th className="r">Trades</th><th className="r">Winners</th><th className="r">Per trade</th><th className="r">Avg hold</th><th className="r">P&amp;L</th></tr></thead>
+              <thead><tr><th>Idea</th><th className="r">Trades</th><th className="r">Winners</th><th className="r">Avg R</th><th className="r">t-score</th><th className="r">Avg hold</th><th className="r">P&amp;L</th></tr></thead>
               <tbody>
                 {fam.map(([k, v]) => (
                   <tr key={k}>
                     <td>{k}</td><td className="r mono">{v.trades}</td><td className="r mono">{v.win_rate != null ? `${v.win_rate}%` : "n/a"}</td>
-                    <td className={`r mono ${tone(v.expectancy)}`}>{usd(v.expectancy)}</td><td className="r mono">{mins(v.avg_hold_min)}</td>
+                    <td className={`r mono ${tone(v.exp_r ?? v.expectancy)}`}>{v.exp_r != null ? rr(v.exp_r) : usd(v.expectancy)}</td><td className={`r mono ${tone(v.t_stat)}`}>{tsc(v.t_stat)}</td><td className="r mono">{mins(v.avg_hold_min)}</td>
                     <td className={`r mono ${tone(v.pnl)}`}>{usd(v.pnl)}</td>
                   </tr>
                 ))}
@@ -203,6 +218,7 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
           ) : <Empty>Fills in as trades close.</Empty>}
           <p className="bk-note">
             Targets and stops are multiples of {m.sym}'s typical one hour move{m.hour_move ? `, ${m.hour_move.toFixed(2)} points right now ($${(m.hour_move * pv).toFixed(0)} a contract)` : ""}, so they widen when the market is fast and tighten when it is quiet.
+            {m.regime ? ` The tape is ${m.regime} right now (the last hour's volatility against the last eight hours').` : ""}
           </p>
         </section>
         <section className="pb-panel">
@@ -222,7 +238,7 @@ const MarketView: React.FC<{ m: LabMarket; d: LabData }> = ({ m, d }) => {
 
       <section className="pb-panel">
         <div className="pb-panel-h"><span>Trade ledger · {m.sym}</span><span className="pb-dim">click a row for why it entered</span></div>
-        <Trades rows={trades} />
+        <Trades rows={trades} rules={rules} />
       </section>
     </>
   );
@@ -258,6 +274,9 @@ export const FuturesBook: React.FC<{ d: LabData | null }> = ({ d }) => {
           {st ? (
             <>
               <span className="pb-tag bk-pb">no scalping</span>
+              {st.risk_usd ? <span className="pb-tag bk-pb">risks about ${st.risk_usd} a trade, 1 to {st.max_contracts ?? 5} contracts</span> : null}
+              {st.tape_test_days ? <span className="pb-tag">replayed on stored tape before a seat</span> : null}
+              {st.crown_t ? <span className="pb-tag">crown needs a t-score of {st.crown_t}+</span> : null}
               <span className="pb-tag">at most {st.max_trades_day} trades a day per strategy</span>
               <span className="pb-tag">shortest hold limit {mins(st.min_hold_cap_min)}</span>
               <span className="pb-tag">no new trade after {st.last_entry_et} ET</span>
@@ -267,8 +286,9 @@ export const FuturesBook: React.FC<{ d: LabData | null }> = ({ d }) => {
           <span className="pb-tag">${(d?.costs?.commission_rt ?? 1.4).toFixed(2)} commission + {d?.costs?.slippage_ticks ?? 1} tick a side</span>
         </div>
         <p className="bk-note">
-          For each market the lab runs {d?.population ?? 12} different rule sets side by side, one micro contract each. Once a day it retires the losers, breeds new ones
-          from the winners, and writes down why. With this many running, the best one looks good partly by luck, so a champion is judged on what it does after it is crowned.
+          For each market the lab runs {d?.population ?? 12} different rule sets side by side{st?.risk_usd ? `, each trade sized so its stop risks about $${st.risk_usd}` : ", one micro contract each"}. Once a day it retires the losers, breeds new ones
+          from the winners{st?.tape_test_days ? `, replays each newcomer and its rivals on up to ${st.tape_test_days} days of stored tape before giving one a seat,` : ""} and writes down why. Results are scored in R (profit divided by what the trade risked) and by t-score (the average against its own noise).
+          With this many running, the best one looks good partly by luck, so a champion is judged on what it does after it is crowned.
         </p>
       </section>
 
