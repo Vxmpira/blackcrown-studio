@@ -18,6 +18,16 @@
 // The default 5 minute cache was the old leak: the task engine waits at least
 // 5 minutes between steps, so the cache had always just expired and every
 // call paid the write premium without ever getting a read.
+//
+// THE KEEPER. A cached prompt dies an hour after its last read. The desks work
+// in bursts with long quiet stretches (a cycle every two hours, work steps
+// when there is a task), so prompts kept dying between uses: the next call
+// either paid double to write the cache again or, for a prompt used less than
+// hourly, was sent at full price every time. The keeper remembers every
+// prompt that is used a few times a day and, shortly before its hour is up,
+// sends a zero-output ping that reads it from the cache, which renews the
+// hour. A ping costs a cache read (a tenth of the input price or less); the
+// call it saves costs the full input price or a double-price rewrite.
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -208,6 +218,124 @@ function inRegularUse(key) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------------------
+// the keeper's book: one entry per prompt (model + constitution + role)
+// ---------------------------------------------------------------------------
+const WARM_PATH = path.join(__dirname, "studio-warm.json");
+const KEEP_USES = 3; // real uses in 24 hours before a prompt is worth keeping warm
+const KEEP_IDLE_H = 10; // stop pinging a prompt nobody has really used in this long
+const PING_AFTER_MIN = 50; // the cache lives 60 minutes from its last read
+const DAY = 24 * 3600000;
+let warm = null;
+let warmDirty = false;
+function warmBook() {
+  if (warm) return warm;
+  try {
+    warm = JSON.parse(fs.readFileSync(WARM_PATH, "utf8"));
+  } catch {
+    warm = {};
+  }
+  return warm;
+}
+function saveWarm() {
+  if (!warmDirty) return;
+  warmDirty = false;
+  try {
+    fs.writeFileSync(WARM_PATH, JSON.stringify(warm));
+  } catch {}
+}
+function usesIn24h(e, now = Date.now()) {
+  e.uses = (e.uses || []).filter((t) => now - t < DAY);
+  return e.uses.length;
+}
+// is this prompt in the keeper's care (so it is safe to cache it even though
+// its next use may be more than an hour away)
+function kept(key, now = Date.now()) {
+  if (!keeperOn()) return false;
+  const e = warmBook()[key];
+  return Boolean(e) && usesIn24h(e, now) >= KEEP_USES - 1;
+}
+function keeperOn() {
+  return (process.env.CACHE_KEEPER || "1").trim() !== "0" && tune.cacheKeeper() && Boolean(HOUR.ttl);
+}
+function noteUse(key, o, model, inst, role, cached, now = Date.now()) {
+  const book = warmBook();
+  const e = (book[key] = book[key] || { uses: [], pings: 0 });
+  usesIn24h(e, now);
+  e.uses.push(now);
+  e.uses = e.uses.slice(-40);
+  Object.assign(e, { model, who: o.who || "other", inst, role });
+  if (cached) e.touched = now;
+  warmDirty = true;
+}
+export function keeperState() {
+  const now = Date.now();
+  const rows = Object.values(warmBook()).map((e) => ({
+    who: e.who, model: e.model, uses24h: usesIn24h(e, now), chars: (e.inst || "").length + (e.role || "").length,
+    warm: Boolean(e.touched) && now - e.touched < 60 * 60000, pings: e.pings || 0,
+  }));
+  return { on: keeperOn(), prompts: rows.length, kept: rows.filter((r) => r.uses24h >= KEEP_USES).length, rows };
+}
+let zeroOut = 0; // max_tokens for a ping: 0 where the API allows a no-output request, else 1
+// one pass: ping every kept prompt whose hour is nearly up. fetchFn and now
+// are injectable for tests.
+export async function keeperTick(now = Date.now(), fetchFn = fetch) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  const out = { pinged: 0, dropped: 0 };
+  if (!key || !keeperOn()) return out;
+  const book = warmBook();
+  for (const [k, e] of Object.entries(book)) {
+    const n = usesIn24h(e, now);
+    if (!n) {
+      delete book[k]; // a day without a real use: forget it
+      out.dropped++;
+      warmDirty = true;
+      continue;
+    }
+    const lastUse = e.uses[e.uses.length - 1];
+    if (n < KEEP_USES || now - lastUse > KEEP_IDLE_H * 3600000) continue;
+    if (e.touched && now - e.touched < PING_AFTER_MIN * 60000) continue;
+    if (String(e.inst || "").length + String(e.role || "").length < MIN_CACHE_CHARS) continue;
+    const system = [];
+    if (String(e.inst || "").length >= MIN_CACHE_CHARS) system.push({ type: "text", text: e.inst, cache_control: HOUR });
+    if (e.role) system.push({ type: "text", text: e.role, cache_control: HOUR });
+    const send = () =>
+      fetchFn("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: swapped.get(e.model) || e.model, max_tokens: zeroOut, system, messages: [{ role: "user", content: "." }] }),
+      });
+    try {
+      let r = await send();
+      if (r.status === 400 && zeroOut === 0) {
+        const t = await r.text();
+        if (/max_tokens/i.test(t)) {
+          zeroOut = 1;
+          r = await send();
+        }
+      }
+      // touched either way, so a refused prompt is not retried every pass
+      e.touched = now;
+      warmDirty = true;
+      if (r.ok) {
+        const data = await r.json();
+        recordSpend("cache keeper", e.model, data.usage);
+        e.pings = (e.pings || 0) + 1;
+        out.pinged++;
+      }
+    } catch {
+      // the next pass tries again
+    }
+  }
+  saveWarm();
+  return out;
+}
+export function startKeeper() {
+  const t = setInterval(() => keeperTick().catch(() => {}), 4 * 60000);
+  if (t.unref) t.unref();
+  return t;
+}
+
 // o: { who, model, system, user, maxTokens, hot, priority, bare }
 //   hot       this prompt runs many times an hour, cache it from the first call
 //   priority  "owner" for anything the owner is waiting on; skips the budget pause
@@ -226,13 +354,20 @@ export async function callLLM(o) {
   const inst = o.bare ? "" : String(institution() || "").trim();
   let role = String(o.system || "");
   const system = [];
-  if (inst.length >= MIN_CACHE_CHARS) system.push({ type: "text", text: inst, cache_control: HOUR });
-  else if (inst) role = `${inst}\n\n${role}`;
-  const useKey = crypto.createHash("sha1").update(`${model}\n${role}`).digest("hex");
+  const instBlock = inst.length >= MIN_CACHE_CHARS ? inst : "";
+  if (!instBlock && inst) role = `${inst}\n\n${role}`;
+  const useKey = crypto.createHash("sha1").update(`${model}\n${instBlock}\n${role}`).digest("hex");
   const regular = inRegularUse(useKey);
+  const keep = kept(useKey);
+  // the constitution is worth a cache write when something will read it back
+  // within the hour: this prompt is in steady use, the keeper minds it, or
+  // another prompt on the same model was used in the last hour
+  const modelBusy = inRegularUse(`model:${model}`);
+  if (instBlock) system.push(o.hot || regular || keep || modelBusy ? { type: "text", text: instBlock, cache_control: HOUR } : { type: "text", text: instBlock });
+  let roleCached = false;
   if (role) {
-    const cache = (o.hot || regular) && inst.length + role.length >= MIN_CACHE_CHARS;
-    system.push(cache ? { type: "text", text: role, cache_control: HOUR } : { type: "text", text: role });
+    roleCached = (o.hot || regular || keep) && inst.length + role.length >= MIN_CACHE_CHARS;
+    system.push(roleCached ? { type: "text", text: role, cache_control: HOUR } : { type: "text", text: role });
   }
   const build = () =>
     JSON.stringify({
@@ -259,6 +394,10 @@ export async function callLLM(o) {
     if (r.ok) {
       const data = await r.json();
       recordSpend(o.who || "other", model, data.usage);
+      if (!o.bare && role) {
+        noteUse(useKey, o, model, instBlock, role, roleCached);
+        saveWarm();
+      }
       const text = (data.content || [])
         .filter((b) => b.type === "text")
         .map((b) => b.text)

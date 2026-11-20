@@ -19,6 +19,7 @@ const envStr = (k) => String(process.env[k] || "").trim();
 export const TUNING_SCHEMA = {
   "budget.dailyUsd": { label: "Daily model budget", unit: "USD", min: 0, max: 200, step: 0.5, def: env("AGENT_DAILY_BUDGET_USD", 5) },
   "budget.nightThrottle": { label: "Night throttle, 1 to 7 AM ET runs at half pace", type: "bool", def: true },
+  "budget.cacheKeeper": { label: "Keep prompts warm in the model cache (a tiny ping before each one expires)", type: "bool", def: true },
   "shares.corvid": { label: "Corvid share of the budget", unit: "%", min: 5, max: 100, step: 5, def: env("AGENT_SHARE_CORVID", 0.4) * 100 },
   "shares.herald": { label: "Herald share", unit: "%", min: 5, max: 100, step: 5, def: env("AGENT_SHARE_HERALD", 0.3) * 100 },
   "shares.steward": { label: "Steward share", unit: "%", min: 5, max: 100, step: 5, def: env("AGENT_SHARE_STEWARD", 0.3) * 100 },
@@ -125,6 +126,7 @@ export function setTuning(patch) {
 export const tune = {
   budgetUsd: () => Number(tv("budget.dailyUsd")),
   nightThrottle: () => tv("budget.nightThrottle") !== false,
+  cacheKeeper: () => tv("budget.cacheKeeper") !== false,
   share: (who) => {
     const v = TUNING_SCHEMA[`shares.${who}`] ? Number(tv(`shares.${who}`)) / 100 : null;
     return v && v > 0 ? Math.min(1, v) : null;

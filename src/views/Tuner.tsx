@@ -227,6 +227,7 @@ export const Tuner: React.FC = () => {
         <div className="tn-fields tn-inline">
           {field("budget.dailyUsd")}
           {field("budget.nightThrottle")}
+          {field("budget.cacheKeeper")}
         </div>
       </div>
 

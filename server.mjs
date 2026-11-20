@@ -42,7 +42,7 @@ import {
   proposalBook,
 } from "./agent.mjs";
 import { startGateway, wireGateway } from "./gateway.mjs";
-import { usageReport, callJSON, MODELS } from "./llm.mjs";
+import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
 import { wirePremarket, runPremarket, premarketDue, premarketState } from "./premarket.mjs";
 import {
@@ -2495,7 +2495,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 app.get("/api/jobs", (_req, res) => res.json({ jobs: loadJobs() }));
-app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary(), ...usageReport() }));
+app.get("/api/usage", (_req, res) => res.json({ spend: getSpend(), summary: spendSummary(), ...usageReport(), keeper: keeperState() }));
 app.post("/api/jobs/:id/run", async (req, res) => {
   const job = loadJobs().find((x) => x.id === req.params.id);
   if (!job) return res.status(404).json({ error: "no such job" });
@@ -4174,6 +4174,7 @@ wireHooks({
 startAgent();
 startCeo();
 startStaff();
+startKeeper(); // keeps the desks' prompts warm in the model cache between bursts
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
