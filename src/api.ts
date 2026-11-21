@@ -977,14 +977,23 @@ export async function saveTuning(patch: Record<string, unknown>): Promise<TunerD
   if (!r.ok) throw new Error(j.error || `Save failed (${r.status})`);
   return j;
 }
-export type BriefRun = { at: number; day: string; reason: string; ok?: boolean; url?: string; seconds?: number; mb?: number; hook?: string; stories?: string[]; asks?: number[]; dropped?: boolean; error?: string };
-export async function getPremarket(): Promise<{ lastDay: string; running: boolean; runs: BriefRun[] } | null> {
+export type BriefRun = { at: number; day: string; reason: string; ok?: boolean; url?: string; seconds?: number; mb?: number; hook?: string; stories?: string[]; asks?: number[]; dropped?: boolean; error?: string; music?: string };
+export type BriefTrack = { name: string; mb: number };
+export async function getPremarket(): Promise<{ lastDay: string; running: boolean; runs: BriefRun[]; tracks?: BriefTrack[] } | null> {
   try {
     const r = await fetch(`${BASE}/api/premarket`);
     return r.ok ? r.json() : null;
   } catch {
     return null;
   }
+}
+export async function uploadBriefTrack(file: File): Promise<{ ok: boolean; error?: string; tracks?: BriefTrack[] }> {
+  const r = await fetch(`${BASE}/api/premarket/music?name=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file });
+  return r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+}
+export async function removeBriefTrack(name: string): Promise<{ ok: boolean; tracks?: BriefTrack[] }> {
+  const r = await fetch(`${BASE}/api/premarket/music?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+  return r.json().catch(() => ({ ok: false }));
 }
 export async function runPremarketNow(): Promise<{ ok: boolean; error?: string }> {
   const r = await fetch(`${BASE}/api/premarket/run`, { method: "POST" });

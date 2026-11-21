@@ -44,7 +44,7 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
-import { wirePremarket, runPremarket, premarketDue, premarketState } from "./premarket.mjs";
+import { wirePremarket, runPremarket, premarketDue, premarketState, musicTracks, saveTrack, removeTrack } from "./premarket.mjs";
 import {
   startCeo,
   wireCeo,
@@ -3346,7 +3346,16 @@ setInterval(() => {
     if (premarketDue()) runPremarket({ reason: "schedule" }).catch(() => {});
   } catch {}
 }, 60 * 1000);
-app.get("/api/premarket", (_req, res) => res.json({ ...premarketState(), settings: tune.brief() }));
+app.get("/api/premarket", (_req, res) => res.json({ ...premarketState(), settings: tune.brief(), tracks: musicTracks() }));
+// the brief's music library: upload a licensed track, or remove one
+app.post("/api/premarket/music", express.raw({ type: () => true, limit: "40mb" }), (req, res) => {
+  try {
+    res.json({ ok: true, name: saveTrack(String(req.query.name || ""), req.body), tracks: musicTracks() });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+app.delete("/api/premarket/music", (req, res) => res.json({ ok: removeTrack(String(req.query.name || "")), tracks: musicTracks() }));
 // rendering takes most of a minute, so the button starts it and the page polls
 app.post("/api/premarket/run", (_req, res) => {
   const st = premarketState();

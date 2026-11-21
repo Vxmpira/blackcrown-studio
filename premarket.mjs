@@ -17,6 +17,42 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.join(__dirname, "studio-premarket.json");
 const BG = path.join(__dirname, "assets", "brief", "bg.png");
 const FONTS = path.join(__dirname, "assets", "fonts");
+// the owner's music library: tracks he uploaded in Settings (licensed ones,
+// such as YouTube Audio Library or Pixabay). The brief plays one per day in
+// rotation; with the folder empty it falls back to the built-in score.
+const MUSIC = path.join(__dirname, "brief-music");
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|flac)$/i;
+export function musicTracks() {
+  try {
+    return fs.readdirSync(MUSIC).filter((f) => AUDIO_EXT.test(f)).sort().map((name) => ({ name, mb: Math.round((fs.statSync(path.join(MUSIC, name)).size / 1048576) * 10) / 10 }));
+  } catch {
+    return [];
+  }
+}
+export function saveTrack(name, buf) {
+  const safe = String(name || "").replace(/[^A-Za-z0-9._ -]/g, "").replace(/^\.+/, "").trim().slice(0, 80);
+  if (!AUDIO_EXT.test(safe)) throw new Error("the file must be mp3, m4a, aac, wav, ogg or flac");
+  if (!buf || buf.length < 20000) throw new Error("that file is empty or too small to be a track");
+  if (musicTracks().length >= 40) throw new Error("the library holds 40 tracks; remove one first");
+  fs.mkdirSync(MUSIC, { recursive: true });
+  fs.writeFileSync(path.join(MUSIC, safe), buf);
+  return safe;
+}
+export function removeTrack(name) {
+  const safe = path.basename(String(name || ""));
+  const full = path.join(MUSIC, safe);
+  if (!AUDIO_EXT.test(safe) || !fs.existsSync(full)) return false;
+  fs.unlinkSync(full);
+  return true;
+}
+// today's track: rotate by the day of the year so no two days in a row match
+function pickTrack(day) {
+  const list = musicTracks();
+  if (!list.length) return null;
+  const d = new Date(`${day}T12:00:00Z`);
+  const n = Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86400000);
+  return list[n % list.length].name;
+}
 const W = 1080;
 const H = 1920;
 
@@ -333,8 +369,21 @@ export function buildAss(brief, board, calendar, dateLabel) {
 // licence, no cost, nothing a platform can mute or claim. A minor-key pad, an
 // eighth-note pluck line that walks four chords, a soft kick on the beat, and
 // a low hit on every scene change so the cuts land.
-export function scoreGraph(seconds, starts) {
+export function scoreGraph(seconds, starts, track = false) {
   const T = Number(seconds).toFixed(2);
+  if (track) {
+    // a real track (input 1, looped): levelled, with a softer hit on each
+    // scene change so the cuts still land on top of it
+    const hitT = "0.5*sin(2*PI*(38*t+7*(1-exp(-8*t))))*exp(-2.6*t)+0.12*(random(0)*2-1)*exp(-10*t)";
+    const k = Math.max(1, starts.length);
+    return [
+      `[1:a]aresample=44100,aformat=channel_layouts=stereo,atrim=0:${T},dynaudnorm=f=250:g=15:p=0.7,volume=0.9[mu]`,
+      `aevalsrc='${hitT}':s=44100:d=2.2,aformat=channel_layouts=stereo,asplit=${k}${starts.map((_, i) => `[h${i}]`).join("")}`,
+      ...starts.map((at, i) => `[h${i}]adelay=${Math.max(0, Math.round(at * 1000))}:all=1[d${i}]`),
+      `[mu]${starts.map((_, i) => `[d${i}]`).join("")}amix=inputs=${1 + k}:normalize=0:duration=first,` +
+        `alimiter=limit=0.75,afade=t=in:d=0.4,afade=t=out:st=${Math.max(0, seconds - 1.6).toFixed(2)}:d=1.6,asplit=2[aout][aviz]`,
+    ].join(";");
+  }
   const root = "st(1, floor(mod(t/8,4))); st(2, if(eq(ld(1),0),0, if(eq(ld(1),1),-4, if(eq(ld(1),2),3,-2))));";
   const step = "st(3, floor(mod(t/0.25,8))); st(4, if(eq(ld(3),0),0, if(eq(ld(3),1),7, if(eq(ld(3),2),12, if(eq(ld(3),3),15, if(eq(ld(3),4),12, if(eq(ld(3),5),7, if(eq(ld(3),6),3,7))))))));";
   const pluck = `${root} ${step} st(5, 220*pow(2,(ld(2)+ld(4))/12)); st(6, mod(t,0.25)); 0.16*(sin(2*PI*ld(5)*t)+0.35*sin(4*PI*ld(5)*t))*exp(-9*ld(6))*min(1,ld(6)*400)`;
@@ -355,7 +404,7 @@ export function scoreGraph(seconds, starts) {
   return parts.join(";");
 }
 
-async function render(ass, seconds, name, starts = [0], sound = true) {
+async function render(ass, seconds, name, starts = [0], sound = true, track = null) {
   const { default: ffmpegPath } = await import("ffmpeg-static");
   const { execFileSync } = await import("child_process");
   fs.mkdirSync(deps.rendersDir, { recursive: true });
@@ -374,7 +423,7 @@ async function render(ass, seconds, name, starts = [0], sound = true) {
   // the progress rail so the frame moves with the music
   const graph = sound
     ? [
-        scoreGraph(seconds, starts),
+        scoreGraph(seconds, starts, Boolean(track)),
         `[0:v]${vf}[bg]`,
         `[aviz]showwaves=s=900x110:mode=cline:rate=30:scale=sqrt:draw=full:colors=0xFF2D8F,format=rgba,colorkey=black:0.12:0.2,colorchannelmixer=aa=0.7[wv]`,
         `[bg][wv]overlay=90:1455:shortest=1,format=yuv420p[vout]`,
@@ -382,6 +431,7 @@ async function render(ass, seconds, name, starts = [0], sound = true) {
     : `[0:v]${vf}[vout];anullsrc=r=44100:cl=stereo[aout]`;
   const args = [
     "-y", "-loop", "1", "-framerate", "30", "-i", BG,
+    ...(sound && track ? ["-stream_loop", "-1", "-i", path.join(MUSIC, track)] : []),
     "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
     "-t", String(seconds),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30",
@@ -415,7 +465,20 @@ export async function runPremarket({ force = false, reason = "schedule" } = {}) 
     const brief = await writeBrief(feed, dateLabel);
     const { ass, seconds, starts } = buildAss(brief, feed.board, feed.calendar, `${dateLabel}  ·  ${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")} ET`);
     const name = `brief-${t.day}-${String(Date.now()).slice(-5)}`;
-    const vid = await render(ass, seconds, name, starts, (deps.settings() || {}).sound !== false);
+    const wantSound = (deps.settings() || {}).sound !== false;
+    let track = wantSound ? pickTrack(t.day) : null;
+    let vid;
+    try {
+      vid = await render(ass, seconds, name, starts, wantSound, track);
+    } catch (e) {
+      // a track ffmpeg cannot read must never cost the day's brief
+      if (!track) throw e;
+      deps.log(`track ${track} would not play (${String(e.message || e).slice(0, 120)}); using the built-in score`);
+      rec.trackError = track;
+      track = null;
+      vid = await render(ass, seconds, name, starts, wantSound, null);
+    }
+    rec.music = !wantSound ? "silent" : track || "built-in score";
     rec.url = vid.url;
     rec.seconds = seconds;
     rec.mb = Math.round((vid.bytes / 1048576) * 10) / 10;

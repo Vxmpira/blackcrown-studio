@@ -10,6 +10,9 @@ import {
   type TunerData,
   type DeskCard,
   type BriefRun,
+  type BriefTrack,
+  uploadBriefTrack,
+  removeBriefTrack,
   type ExpressionShelf,
 } from "../api";
 import { Switch } from "../components/Switch";
@@ -40,7 +43,7 @@ export const Tuner: React.FC = () => {
   const [draft, setDraft] = useState<Patch>({});
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [msg, setMsg] = useState<string | null>(null);
-  const [brief, setBrief] = useState<{ running: boolean; runs: BriefRun[] } | null>(null);
+  const [brief, setBrief] = useState<{ running: boolean; runs: BriefRun[]; tracks?: BriefTrack[] } | null>(null);
   const [shelf, setShelf] = useState<ExpressionShelf | null>(null);
   const [stocking, setStocking] = useState<string | null>(null);
 
@@ -81,6 +84,18 @@ export const Tuner: React.FC = () => {
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Could not close the ticket.");
     }
+  };
+
+  const onTracks = async (files: FileList | null) => {
+    for (const f of Array.from(files || [])) {
+      const r = await uploadBriefTrack(f);
+      if (!r.ok) setMsg(`${f.name}: ${r.error || "upload failed"}`);
+      else setBrief((b) => (b ? { ...b, tracks: r.tracks } : b));
+    }
+  };
+  const onDropTrack = async (name: string) => {
+    const r = await removeBriefTrack(name);
+    if (r.tracks) setBrief((b) => (b ? { ...b, tracks: r.tracks } : b));
   };
 
   const onRunBrief = async () => {
@@ -268,6 +283,29 @@ export const Tuner: React.FC = () => {
               {brief?.running ? "Rendering..." : "Make today's brief now"}
             </button>
           </div>
+          <div className="srow">
+            <span className="sk">Music library</span>
+            <span className="sv">
+              {(brief?.tracks || []).length
+                ? `${(brief?.tracks || []).length} tracks, one per day in rotation`
+                : "empty, so the built-in score plays"}
+            </span>
+          </div>
+          {(brief?.tracks || []).map((t) => (
+            <div className="srow" key={t.name}>
+              <span className="sk">{t.name}</span>
+              <span className="sv">
+                {t.mb} MB{" "}
+                <button className="btn" onClick={() => onDropTrack(t.name)}>Remove</button>
+              </span>
+            </div>
+          ))}
+          <div className="brief-actions">
+            <label className="btn">
+              Add tracks you have the rights to use
+              <input type="file" accept="audio/*" multiple style={{ display: "none" }} onChange={(e) => { onTracks(e.target.files); e.target.value = ""; }} />
+            </label>
+          </div>
           {(brief?.runs || []).slice(0, 4).map((r) => (
             <div className="srow" key={r.at}>
               <span className="sk">
@@ -276,7 +314,7 @@ export const Tuner: React.FC = () => {
               <span className={`sv${r.ok ? " good" : " bad"}`}>
                 {r.ok && r.url ? (
                   <a href={r.url} target="_blank" rel="noreferrer">
-                    {r.seconds}s video{r.asks?.length ? `, asks #${r.asks.join(", #")}` : ""}
+                    {r.seconds}s video{r.music ? `, ${r.music}` : ""}{r.asks?.length ? `, asks #${r.asks.join(", #")}` : ""}
                   </a>
                 ) : (
                   (r.error || "failed").slice(0, 80)
