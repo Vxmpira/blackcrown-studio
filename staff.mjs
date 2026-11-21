@@ -11,6 +11,7 @@ import { fileProposals, parseModelJson, addTask as corvidAddTask, buildEmbeds, n
 import { MODELS, callLLM, callJSON, canSpend } from "./llm.mjs";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { tune } from "./tuning.mjs";
+import { BENCH_RULES } from "./bench.mjs";
 import { CREW_RULES, queueCap, wakeGapMin, admitRequest, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, recordTicket, shouldWake, tidyQueue } from "./crew.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -553,7 +554,8 @@ Output STRICT JSON only:
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 Rules: finish aggressively; a task whose proposal, delegation, note, or assignment just went out is done unless it waits on the owner, then keep status doing and park it. Never re-file pending work. "say" is almost always empty. Line breaks as \\n, must pass JSON.parse, never em dashes.
-${CREW_RULES}`;
+${CREW_RULES}
+${BENCH_RULES}`;
 
 async function staffWorkTick(key) {
   const a = state[key];
@@ -596,7 +598,8 @@ async function staffWorkTick(key) {
         const n = recentNotes(key, 10);
         return n.length ? `YOUR NEWEST VAULT NOTES (open any with read, page "${key}/<name>"): ${n.join(", ")}` : "";
       })(),
-      t.source ? `PAGE SOURCE you asked to read, ${t.source.note}:\n${t.source.text}` : "",
+      deps.inbox ? deps.inbox(key) : "",
+      t.source ? `THE RESULT you asked for, ${t.source.note}:\n${t.source.text}` : "",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -611,6 +614,15 @@ async function staffWorkTick(key) {
       out.status = "doing";
       t.reads = (t.reads || 0) + 1;
       if (t.reads <= 4) a.lastWorkAt = 0;
+    }
+    // the workbench: one tool a step, its result rides in on the next one
+    if (!t.source && out.tool && out.tool.name && deps.bench) {
+      const r = await deps.bench(key, out.tool);
+      t.source = { note: r.note, text: r.text || "" };
+      log(key, "work", `tool ${String(out.tool.name).slice(0, 20)}${r.err ? `: ${String(r.err).slice(0, 80)}` : ""}`);
+      out.status = "doing";
+      t.reads = (t.reads || 0) + 1;
+      if (t.reads <= 6) a.lastWorkAt = 0;
     }
     if (out.thought) a.thought = String(out.thought).slice(0, 700);
     t.status = out.status === "done" ? "done" : "doing";

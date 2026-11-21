@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
 import { tune, tuningFlat } from "./tuning.mjs";
+import { BENCH_RULES } from "./bench.mjs";
 import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, recordTicket, shouldWake, tidyQueue } from "./crew.mjs";
 export { recordSpend, getSpend, spendSummary };
 
@@ -1571,6 +1572,7 @@ Output STRICT JSON only:
  "say": "one short line for the channel ONLY when something shipped or broke, otherwise empty"
 }
 ${CREW_RULES}
+${BENCH_RULES}
 YOU CAN READ THE SITES. Any page or file on the three properties is yours to open with "read": the brand site by bare file name, the products as korvus:path and crown:path. When a fix needs the exact CURRENT block (a hero, a title, a call to action, a tracker snippet), read the file first, keep status doing, and file the proposal on the next step with CURRENT copied exactly from the PAGE SOURCE you were given. NEVER ask the owner or another desk to paste html, source, or a snippet, and never park a site task for lack of source: reading it is one step away. The vaults open the same way: a "read" whose page ends in .md opens a note from your vault or any desk's ("Page-Frame.md", "Korvus-Hero-Live.md", "bard/Shot-1.md"), so a note is never a tool gap.
 THE JOB IS THE WEBSITES. Your purpose is traffic and paid signups on blackcrownvxj.com, korvus.industries and blackcrown-intelligence.com. Social posts are Herald and Bard's desk; you file one only when a site task directly needs it. Every day most of your proposals must be site changes: pages that rank (titles, meta, new landing pages for searches people make), pages that convert (hero copy, calls to action, pricing clarity, internal links toward signup), and fixes to anything leaking visitors.
 Rules: finish aggressively; a task whose proposal, delegation, or note just went out is done unless it waits on the owner, then set blocked_on and keep status doing. Never re-file a pending proposal. "say" is almost always empty, the daily report covers routine progress. Line breaks as \\n, output must pass JSON.parse, never use em dashes.`;
@@ -1688,7 +1690,8 @@ async function workTick() {
       `MINION REPORTS (latest, the gist IS the answer, use it directly): ${JSON.stringify(
         (state.minionReports || []).slice(-3).map((m) => ({ minion: m.minion, task: m.task, file: m.file, gist: m.gist || "" }))
       )}`,
-      ...(t.source ? [`PAGE SOURCE you asked to read, ${t.source.note}:\n${t.source.text}`] : []),
+      ...(hooks.inbox ? [hooks.inbox("corvid")].filter(Boolean) : []),
+      ...(t.source ? [`THE RESULT you asked for, ${t.source.note}:\n${t.source.text}`] : []),
     ].join("\n\n");
     t.source = null;
     const out = await think(WORK_SYSTEM, user, 5000, { tier: "hands", hot: true });
@@ -1701,6 +1704,15 @@ async function workTick() {
       out.status = "doing";
       t.reads = (t.reads || 0) + 1;
       if (t.reads <= 4) state.lastWorkAt = 0; // the source is in hand, use it on the very next tick (a task that keeps reading waits its turn)
+    }
+    // the workbench: one tool a step, its result rides in on the next one
+    if (!t.source && out.tool && out.tool.name && hooks.bench) {
+      const r = await hooks.bench("corvid", out.tool);
+      t.source = { note: r.note, text: r.text || "" };
+      log("work", `tool ${String(out.tool.name).slice(0, 20)}${r.err ? `: ${String(r.err).slice(0, 80)}` : ""}`);
+      out.status = "doing";
+      t.reads = (t.reads || 0) + 1;
+      if (t.reads <= 6) state.lastWorkAt = 0;
     }
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";

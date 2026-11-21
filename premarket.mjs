@@ -24,7 +24,14 @@ const MUSIC = path.join(__dirname, "brief-music");
 const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|flac)$/i;
 export function musicTracks() {
   try {
-    return fs.readdirSync(MUSIC).filter((f) => AUDIO_EXT.test(f)).sort().map((name) => ({ name, mb: Math.round((fs.statSync(path.join(MUSIC, name)).size / 1048576) * 10) / 10 }));
+    let book = {};
+    try {
+      book = JSON.parse(fs.readFileSync(path.join(MUSIC, "credits.json"), "utf8"));
+    } catch {}
+    return fs.readdirSync(MUSIC).filter((f) => AUDIO_EXT.test(f)).sort().map((name) => {
+      const c = book[name];
+      return { name, mb: Math.round((fs.statSync(path.join(MUSIC, name)).size / 1048576) * 10) / 10, ...(c ? { license: c.license, source: c.source_url, by: c.by, credit: `${c.title} by ${c.creator}` } : {}) };
+    });
   } catch {
     return [];
   }
@@ -43,6 +50,12 @@ export function removeTrack(name) {
   const full = path.join(MUSIC, safe);
   if (!AUDIO_EXT.test(safe) || !fs.existsSync(full)) return false;
   fs.unlinkSync(full);
+  try {
+    const cf = path.join(MUSIC, "credits.json");
+    const book = JSON.parse(fs.readFileSync(cf, "utf8"));
+    delete book[safe];
+    fs.writeFileSync(cf, JSON.stringify(book, null, 2));
+  } catch {}
   return true;
 }
 // today's track: rotate by the day of the year so no two days in a row match

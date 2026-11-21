@@ -44,6 +44,7 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
+import { wireBench, benchCall, inbox as benchInbox, benchState, benchFlag } from "./bench.mjs";
 import { wirePremarket, runPremarket, premarketDue, premarketState, musicTracks, saveTrack, removeTrack } from "./premarket.mjs";
 import {
   startCeo,
@@ -2378,7 +2379,12 @@ const companyFeed = async (key) => {
     }
     return lines.join("\n");
 };
-wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource, board: boardFeed });
+// THE WORKBENCH: every desk's own files, web eyes, memo line and music counter
+wireBench({ ffmpeg: (await import("ffmpeg-static")).default });
+wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource, board: boardFeed, bench: benchCall, inbox: benchInbox });
+app.get("/api/bench", (_req, res) => res.json(benchState()));
+// the owner (or whoever he sent) can run one tool as a desk, to see what it sees
+app.post("/api/bench/try", async (req, res) => res.json(await benchCall(String(req.body?.desk || "bard"), req.body?.tool || {})));
 
 // ---------------------------------------------------------------------------
 // the immune system: every 10 minutes the healer makes the floor whole again.
@@ -4267,12 +4273,18 @@ wireHooks({
   },
   onFiled: receiveProposals,
   ownerDecision,
+  bench: benchCall,
+  inbox: benchInbox,
   // every approved creative passes through the sales desk before it ships
   copyPass: async (input) => heraldCopyPass({ ...input, trends: await readTrends().catch(() => null) }),
 });
 startAgent();
 startCeo();
 startStaff();
+// one-time: Bard stocks the brief's music shelf with the new workbench
+try {
+  if (benchFlag("music-shelf-11-21")) staffAddTask("bard", "Stock brief music shelf: 8 dark tense public-domain tracks");
+} catch {}
 startKeeper(); // keeps the desks' prompts warm in the model cache between bursts
 
 const PORT = process.env.PORT || 3001;

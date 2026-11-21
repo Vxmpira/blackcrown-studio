@@ -978,7 +978,7 @@ export async function saveTuning(patch: Record<string, unknown>): Promise<TunerD
   return j;
 }
 export type BriefRun = { at: number; day: string; reason: string; ok?: boolean; url?: string; seconds?: number; mb?: number; hook?: string; stories?: string[]; asks?: number[]; dropped?: boolean; error?: string; music?: string };
-export type BriefTrack = { name: string; mb: number };
+export type BriefTrack = { name: string; mb: number; license?: string; source?: string; by?: string; credit?: string };
 export async function getPremarket(): Promise<{ lastDay: string; running: boolean; runs: BriefRun[]; tracks?: BriefTrack[] } | null> {
   try {
     const r = await fetch(`${BASE}/api/premarket`);

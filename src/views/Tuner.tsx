@@ -293,8 +293,13 @@ export const Tuner: React.FC = () => {
           </div>
           {(brief?.tracks || []).map((t) => (
             <div className="srow" key={t.name}>
-              <span className="sk">{t.name}</span>
+              <span className="sk">{t.credit || t.name}</span>
               <span className="sv">
+                {t.license && t.source ? (
+                  <a href={t.source} target="_blank" rel="noreferrer">{t.license}, stocked by {t.by}</a>
+                ) : (
+                  "your upload"
+                )}{" "}
                 {t.mb} MB{" "}
                 <button className="btn" onClick={() => onDropTrack(t.name)}>Remove</button>
               </span>
