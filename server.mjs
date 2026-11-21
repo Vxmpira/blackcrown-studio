@@ -44,6 +44,7 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
+import { wireCro, refresh as croRefresh, croBoard, croTools, croState } from "./cro.mjs";
 import { wireBench, benchCall, inbox as benchInbox, benchState, benchFlag } from "./bench.mjs";
 import { wirePremarket, runPremarket, premarketDue, premarketState, musicTracks, saveTrack, removeTrack } from "./premarket.mjs";
 import {
@@ -1789,6 +1790,11 @@ async function boardFeed() {
     if (n) lines.push(`THE NUMBERS (read these before asking anyone for a count):\n${n}`);
   } catch {}
   try {
+    await croRefresh();
+    const c = croBoard();
+    if (c) lines.push(c);
+  } catch {}
+  try {
     const l = await linkHealth();
     if (l) lines.push(`OUTBOUND LINKS (every external link on the pages above, fetched from this server; read this before asking whether a link or a Discord invite works):\n${l}`);
   } catch {}
@@ -2380,7 +2386,20 @@ const companyFeed = async (key) => {
     return lines.join("\n");
 };
 // THE WORKBENCH: every desk's own files, web eyes, memo line and music counter
-wireBench({ ffmpeg: (await import("ffmpeg-static")).default });
+wireCro({
+  korvus: async () => {
+    if (!INTEL_KEY) return null;
+    const r = await fetch(`${trafficUrl()}?days=60`, { headers: { "X-Intel-Key": INTEL_KEY }, signal: AbortSignal.timeout(8000) });
+    return r.ok ? r.json() : null;
+  },
+  brand: () => loadStats(),
+  executed: () => ceoState().executed || [],
+});
+app.get("/api/cro", async (_req, res) => {
+  await croRefresh().catch(() => {});
+  res.json(croState());
+});
+wireBench({ ffmpeg: (await import("ffmpeg-static")).default, tools: croTools });
 wireStaff({ feed: companyFeed, wire: recordWire, readPage: readAnySource, board: boardFeed, bench: benchCall, inbox: benchInbox });
 app.get("/api/bench", (_req, res) => res.json(benchState()));
 // the owner (or whoever he sent) can run one tool as a desk, to see what it sees
@@ -3046,7 +3065,70 @@ async function postToX({ content, media }) {
     throw new Error(`X refused the post (${r.status}): ${JSON.stringify(j.errors || j.detail || j).slice(0, 160)}`);
   return j.data?.id || "";
 }
-async function publishPost({ platform, content, media, number, summary }) {
+// --- Reddit, posted by the owner's hand. Reddit closed self-service API keys
+// and labels automated accounts, and subreddits ban them on sight, so the
+// server prepares the post and the owner submits it from his own account:
+// one tap opens Reddit's submit page with the title (and the text when it
+// fits) already filled in.
+const REDDIT_LOG = path.join(__dirname, "studio-reddit.json");
+const redditLog = () => {
+  try {
+    return JSON.parse(fs.readFileSync(REDDIT_LOG, "utf8"));
+  } catch {
+    return [];
+  }
+};
+if (!PUBLISH_PLATFORMS.includes("reddit")) PUBLISH_PLATFORMS.push("reddit");
+const FENCE = "`".repeat(3);
+const unfence = (t) => String(t).split(FENCE).join("'''");
+function redditPackage({ sub, title, body, rules, number, attached = false }) {
+  const base = `https://www.reddit.com/r/${sub}/submit?type=TEXT&title=${encodeURIComponent(String(title).slice(0, 300))}`;
+  const full = `${base}&text=${encodeURIComponent(body)}`;
+  const link = full.length <= 1700 ? full : base;
+  const fits = !attached && body.length <= 1000;
+  const msg = [
+    `**REDDIT POST READY** · r/${sub}${number ? ` · ask #${number}` : ""}`,
+    `Post it from your own Reddit account: ${link === full ? "the link opens the submit page with title and text filled in" : "the link opens the submit page with the title filled in; paste the text"}.`,
+    `<${link}>`,
+    `Title:\n${FENCE}\n${unfence(String(title).slice(0, 300))}\n${FENCE}`,
+    fits ? `Text:\n${FENCE}\n${unfence(body)}\n${FENCE}` : "Text: in the attached file.",
+    rules ? `Rule checked by the desk: ${String(rules).slice(0, 200)}` : "",
+    "Read the subreddit's rules once yourself before you submit. If it gets removed, tell Herald so that community is closed.",
+  ].filter(Boolean).join("\n");
+  return { msg: msg.slice(0, 1990), fits: fits && msg.length <= 1990, link };
+}
+async function handRedditPost({ subreddit, title, content, rules, number }) {
+  const sub = String(subreddit || "").replace(/^\/?r\//i, "");
+  if (!/^[A-Za-z0-9_]{3,21}$/.test(sub)) return { ok: false, msg: "reddit posts need SUBREDDIT: r/name" };
+  const log = redditLog();
+  const dayMs = 86400000;
+  if (log.some((e) => Date.now() - e.at < 20 * 3600000)) return { ok: false, msg: "one reddit post a day: one already went to the owner in the last 20 hours. Refile tomorrow" };
+  const same = log.find((e) => e.sub.toLowerCase() === sub.toLowerCase() && Date.now() - e.at < 7 * dayMs);
+  if (same) return { ok: false, msg: `r/${sub} already got a post ${Math.ceil((Date.now() - same.at) / dayMs)} day(s) ago; the same subreddit waits a week. Pick another community` };
+  const body = String(content || "").trim();
+  let pack = redditPackage({ sub, title, body, rules, number });
+  let file = null;
+  if (!pack.fits) {
+    try {
+      fs.mkdirSync(RENDERS_DIR, { recursive: true });
+      file = path.join(RENDERS_DIR, `reddit-${number || Date.now()}.md`);
+      fs.writeFileSync(file, `# ${title}\n\n${body}\n`);
+      pack = redditPackage({ sub, title, body, rules, number, attached: true });
+    } catch {
+      file = null;
+    }
+  }
+  const ch = (process.env.REDDIT_CHANNEL_ID || process.env.HERALD_CHANNEL_ID || "").trim() || JOBS_CH.corvid;
+  let r = await postToChannel(ch, pack.msg, file);
+  if (!r.ok && JOBS_CH.corvid && ch !== JOBS_CH.corvid) r = await postToChannel(JOBS_CH.corvid, pack.msg, file);
+  if (!r.ok) return { ok: false, msg: `the reddit package could not be delivered to Discord (${r.status || "no answer"})` };
+  try {
+    fs.writeFileSync(REDDIT_LOG, JSON.stringify([...log, { at: Date.now(), sub, title: String(title).slice(0, 120), number }].slice(-60), null, 2));
+  } catch {}
+  return { ok: true, msg: `reddit post for r/${sub} handed to the owner in Discord with a one-tap submit link; he posts it from his own account` };
+}
+async function publishPost({ platform, content, media, number, summary, subreddit, title, rules }) {
+  if (platform === "reddit") return handRedditPost({ subreddit, title, content, rules, number });
   if (!PUBLISH_PLATFORMS.includes(platform)) {
     return {
       ok: false,
@@ -3113,6 +3195,7 @@ wireCeo({
   makeAllowed,
   engineText: () => engineCache.text,
   publish: publishPost,
+  cro: croBoard,
   staffChannels: {
     Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
     Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
