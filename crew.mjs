@@ -558,8 +558,13 @@ export function keyLines(src) {
   const html = cleanHtml(raw);
   const h1 = strip((html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || "");
   const ctas = linksOf(html)
-    .filter((l) => /signup|sign-up|register|join|start|discord\.gg|upgrade|pricing|checkout|subscribe|trial|chat\.html|login/i.test(l.href + " " + l.label))
-    .slice(0, 5)
+    // by where the link goes (signup, login, checkout, the Crown console at
+    // /chat) or by what it says (open, get, try, free...). Crown's buttons all
+    // point at /chat, which the old list of words missed entirely.
+    .filter((l) =>
+      /signup|sign-up|register|join|discord\.gg|upgrade|pricing|checkout|subscribe|trial|login|\/chat(\.html)?([?#]|$)/i.test(l.href) ||
+      /\b(sign ?up|join|start|open|get|try|create|upgrade|subscribe|log ?in|free|pricing)\b/i.test(l.label))
+    .slice(0, 8)
     .map((l) => l.line);
   return `title "${title.slice(0, 90)}"; h1 "${h1.slice(0, 120)}"; calls to action: ${ctas.join("; ") || "none found"}`;
 }

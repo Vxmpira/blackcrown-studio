@@ -3,6 +3,7 @@
 // to the owner on Discord, and on the owner's green light executes the change
 // itself: live site edits on this server, Bloom renders for creatives. The
 // owner's word is the only authority; Regent is the only hand that writes.
+import { noteBody } from "./vault.mjs";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -415,7 +416,9 @@ function preflightProposal(p) {
       const fromNote = body.trim().match(/^FROM NOTE:\s*(.+)$/i);
       if (fromNote) {
         try {
-          body = String((brainFile(fromNote[1].trim()) || {}).body || "");
+          // the filing desk's own vault first: a page a desk's minion wrote lives
+          // in that desk's vault, not Corvid's
+          body = noteBody(fromNote[1].trim(), String(p.author || "")) || String((brainFile(fromNote[1].trim()) || {}).body || "");
         } catch {
           body = "";
         }
@@ -806,7 +809,9 @@ async function executeSiteEdit(p) {
     const fromNote = body.trim().match(/^FROM NOTE:\s*(.+)$/i);
     if (fromNote) {
       try {
-        body = String((brainFile(fromNote[1].trim()) || {}).body || "");
+        // the filing desk's own vault first: a page a desk's minion wrote lives
+          // in that desk's vault, not Corvid's
+          body = noteBody(fromNote[1].trim(), String(p.author || "")) || String((brainFile(fromNote[1].trim()) || {}).body || "");
       } catch {
         body = "";
       }

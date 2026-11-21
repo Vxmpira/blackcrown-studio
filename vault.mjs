@@ -105,6 +105,28 @@ export function readNote(name, find = "", who = "") {
   };
 }
 
+// the whole note, from whichever desk's vault holds it ("" when none does)
+export function noteBody(name, who = "") {
+  const raw = String(name || "").trim().replace(/^vault:/i, "").replace(/^\/+/, "").replace(/\\/g, "/");
+  if (!raw || raw.includes("..")) return "";
+  const seg = raw.split("/");
+  const tries = [];
+  if (DESKS.includes(seg[0].toLowerCase()) && seg.length > 1) tries.push([seg[0].toLowerCase(), seg.slice(1).join("/")]);
+  for (const d of [String(who || "").toLowerCase(), "corvid", ...DESKS].filter((d, i, a) => d && a.indexOf(d) === i)) tries.push([d, raw]);
+  for (const [desk, rel] of tries) {
+    const root = roots[desk];
+    if (!root) continue;
+    const full = inside(root, rel);
+    try {
+      if (full && fs.existsSync(full)) {
+        const body = fs.readFileSync(full, "utf8");
+        if (body.trim()) return body;
+      }
+    } catch {}
+  }
+  return "";
+}
+
 function slice(page, text, find) {
   let from = 0;
   if (find) {

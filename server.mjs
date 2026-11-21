@@ -1371,6 +1371,31 @@ app.post("/api/agent/proposal/:id", async (req, res) => {
   res.json({ proposal: p });
 });
 
+// An exact edit from the owner (or whoever he sent): filed like any ask so the
+// record, the preflight law and the git push are the same, then approved in
+// one step. Body: { page, kind, summary, what, current, next }.
+app.post("/api/owner/edit", async (req, res) => {
+  const b = req.body || {};
+  const page = String(b.page || "").trim(), next = String(b.next || "");
+  if (!page || !next.trim()) return res.status(400).json({ error: "page and next are required" });
+  const detail = [
+    `WHAT: ${String(b.what || b.summary || "Owner edit").trim()}`,
+    `WHY: asked for by the owner`,
+    `CURRENT: ${String(b.current || "none (new file)")}`,
+    `NEW: ${next}`,
+    `GREEN LIGHT MEANS: exactly this text changes on ${page}, nothing else`,
+  ].join("\n");
+  try {
+    const filed = fileProposals([{ page, kind: String(b.kind || "content"), summary: String(b.summary || "Owner edit").slice(0, 80), detail }], "Owner");
+    if (!filed.length) return res.status(400).json({ error: "the ask could not be filed (a twin may already be pending)" });
+    const p = await ownerDecision(filed[0].id, "approve", "owner edit", "admin");
+    const done = (ceoState().executed || []).find((e) => e.number === filed[0].number);
+    res.json({ number: filed[0].number, status: p && p.status, ok: done ? done.ok : null, result: done ? done.result : "not executed" });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e).slice(0, 300) });
+  }
+});
+
 // ----- Regent, the CEO agent -----------------------------------------------
 app.get("/api/ceo", (_req, res) => res.json(ceoState()));
 app.post("/api/ceo/enabled", (req, res) => {
@@ -1637,8 +1662,9 @@ async function korvusTrafficLine() {
       `KORVUS.INDUSTRIES TRAFFIC (counted on the Korvus server since ${j.counting_since || "today"}, last 7 days, the 7 before in brackets): ` +
       `human page views ${listed(w.view_h, p.view_h)}; crawler hits ${listed(w.view_b)}; human sources ${listed(w.src)}; ` +
       `BUTTON CLICKS by data-k (hero_primary, hero_secondary, nav_signup, nav_login, pricing_observer, pricing_operator, lodestone_explore) ${listed(w.click, p.click)}; ` +
-      `SIGNUP FUNNEL: form views ${g(w.view_h, "signup")} > submits ${g(st, "signup_submit")} > accounts created ${g(st, "signup_created")} > emails verified ${g(st, "email_verified")} > logins ${g(st, "login_ok")}; ` +
-      `leaks: rejected ${g(st, "signup_rejected")}, blocked ${g(st, "signup_blocked")}, honeypot ${g(st, "signup_honeypot")} (trap causes: no script ${g(st, "hp_no_script")}, sent in under 3 seconds ${g(st, "hp_instant")}, junk text at human pace ${g(st, "hp_junk")}; a visitor whose browser filled the trap with their own details is let through, ${g(st, "hp_autofill")} so far), login tried before verifying ${g(st, "login_unverified")}, failed logins ${g(st, "login_failed")}, scripted submits ${g(st, "signup_submit_bot")}`;
+      `SIGNUP FUNNEL (read the bot note before judging the form): form views ${g(w.view_h, "signup")} > submits ${g(st, "signup_submit")} > accounts created ${g(st, "signup_created")} > emails verified ${g(st, "email_verified")} > logins ${g(st, "login_ok")}; ` +
+      `leaks: rejected ${g(st, "signup_rejected")}, blocked ${g(st, "signup_blocked")}, honeypot ${g(st, "signup_honeypot")} (trap causes: no script ${g(st, "hp_no_script")}, sent in under 3 seconds ${g(st, "hp_instant")}, junk text at human pace ${g(st, "hp_junk")}; a visitor whose browser filled the trap with their own details is let through, ${g(st, "hp_autofill")} so far), login tried before verifying ${g(st, "login_unverified")}, failed logins ${g(st, "login_failed")}, scripted submits ${g(st, "signup_submit_bot")}. ` +
+      `BOT NOTE: a "no script" trap hit is a form-spam bot, not a person: it filled a field no browser shows AND the page's own script never ran, which every real browser runs (verified on the live form 11-20: stamp set, trap empty). Those bots also load the form, so they sit inside "form views" and "submits". PEOPLE who submitted: ${Math.max(0, g(st, "signup_submit") - g(st, "signup_honeypot"))}; form views by people: at most ${Math.max(0, g(w.view_h, "signup") - g(st, "signup_honeypot"))}. Judge the form on those two numbers`;
   } catch (e) {
     line = `KORVUS.INDUSTRIES TRAFFIC: the Korvus feed did not answer (${String(e?.message || e).slice(0, 80)}), counts show again when it does`;
   }
@@ -3419,12 +3445,17 @@ shutdown -h now
 `;
   awsJobs.set(job, { status: "launching", notes: [], error: null });
   let instanceId = null, lastErr = null;
-  for (const itype of AWS_RENDER_TYPES) {
+  // spot first (cheapest), then the same types on demand: spot and on-demand
+  // GPUs sit under two separate AWS quotas, and a render is minutes long, so
+  // an on-demand run costs cents. AWS_RENDER_ON_DEMAND=0 keeps it spot only.
+  const markets = (process.env.AWS_RENDER_ON_DEMAND || "1").trim() === "0" ? ["spot"] : ["spot", "on-demand"];
+  const refusals = [];
+  for (const [market, itype] of markets.flatMap((m) => AWS_RENDER_TYPES.map((t) => [m, t]))) {
     try {
       const run = await ec2.send(new EC2.RunInstancesCommand({
         ImageId: ami, InstanceType: itype, MinCount: 1, MaxCount: 1,
         InstanceInitiatedShutdownBehavior: "terminate",
-        InstanceMarketOptions: { MarketType: "spot", SpotOptions: { SpotInstanceType: "one-time", InstanceInterruptionBehavior: "terminate" } },
+        ...(market === "spot" ? { InstanceMarketOptions: { MarketType: "spot", SpotOptions: { SpotInstanceType: "one-time", InstanceInterruptionBehavior: "terminate" } } } : {}),
         TagSpecifications: [{ ResourceType: "instance", Tags: [
           { Key: "Name", Value: `blackcrown-render-${job}` },
           { Key: "purpose", Value: "blackcrown-render" },
@@ -3432,19 +3463,25 @@ shutdown -h now
         UserData: Buffer.from(script).toString("base64"),
       }));
       instanceId = run?.Instances?.[0]?.InstanceId || null;
-      if (instanceId) { agentLog("render", `furnace ${job}: ${itype} spot launched (${instanceId})`); break; }
+      if (instanceId) { agentLog("render", `furnace ${job}: ${itype} ${market} launched (${instanceId})`); break; }
     } catch (e) {
       lastErr = e;
-      agentLog("render", `furnace ${job}: ${itype} refused: ${String(e.message || e).slice(0, 140)}`);
+      refusals.push(`${market}: ${String(e.message || e)}`);
+      agentLog("render", `furnace ${job}: ${itype} ${market} refused: ${String(e.message || e).slice(0, 140)}`);
     }
   }
   if (!instanceId) {
     awsJobs.delete(job);
     const msg = String(lastErr?.message || lastErr || "no instance type available");
-    if (/MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded/i.test(msg)) {
-      throw new Error("AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
+    const all = refusals.join(" | ");
+    const quota = /MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded/i;
+    if (quota.test(all)) {
+      const od = refusals.some((r) => r.startsWith("on-demand") && quota.test(r));
+      throw new Error(od
+        ? "AWS refused the GPU both ways: this account's G-instance quota is 0 for spot AND for on-demand. In Service Quotas (us-east-2, EC2) ask for 4 vCPUs on 'Running On-Demand G and VT instances' first; AWS grants that one more readily than spot. Then retry"
+        : "AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
     }
-    if (/service-linked role/i.test(msg)) {
+    if (/service-linked role/i.test(all)) {
       throw new Error("AWS has never run a spot instance on this account, and this server is not allowed to create the one-time spot role. Fix once, as the account owner, in AWS CloudShell: aws iam create-service-linked-role --aws-service-name spot.amazonaws.com  Then retry the render");
     }
     throw new Error(`could not launch a GPU worker: ${msg.slice(0, 180)}`);
