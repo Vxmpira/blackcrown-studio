@@ -1788,10 +1788,59 @@ async function boardFeed() {
     if (n) lines.push(`THE NUMBERS (read these before asking anyone for a count):\n${n}`);
   } catch {}
   try {
+    const l = await linkHealth();
+    if (l) lines.push(`OUTBOUND LINKS (every external link on the pages above, fetched from this server; read this before asking whether a link or a Discord invite works):\n${l}`);
+  } catch {}
+  try {
     lines.push(crewBoardLines());
   } catch {}
   return lines.join("\n");
 }
+// OUTBOUND LINKS: every external link on the pages the Board watches, checked
+// from this server once an hour. A discord.gg invite is asked of Discord's own
+// API (a dead invite still loads a web page, so a plain fetch proves nothing).
+let linkCache = { at: 0, text: "" };
+async function checkLink(url) {
+  const ctl = AbortSignal.timeout(7000);
+  const inv = url.match(/discord\.(?:gg|com\/invite)\/([A-Za-z0-9-]+)/i);
+  try {
+    if (inv) {
+      const r = await fetch(`https://discord.com/api/v10/invites/${inv[1]}?with_counts=true`, { signal: ctl });
+      if (r.status === 404) return "DEAD (Discord says the invite is unknown or expired)";
+      if (!r.ok) return `could not be checked (Discord answered ${r.status})`;
+      const j = await r.json();
+      return `resolves: ${j.guild?.name || "a server"}, about ${j.approximate_member_count ?? "?"} members, ${j.expires_at ? `expires ${String(j.expires_at).slice(0, 10)}` : "never expires"}`;
+    }
+    const h = { "user-agent": "Mozilla/5.0 (BlackCrown link check)" };
+    let r = await fetch(url, { method: "HEAD", redirect: "follow", signal: ctl, headers: h });
+    if ([403, 405, 501].includes(r.status)) r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(7000), headers: h });
+    if (r.ok) return "ok";
+    if ([401, 403, 429, 999].includes(r.status)) return `answers ${r.status} to robots (the site blocks checkers; not proof it is broken)`;
+    return `BROKEN (${r.status})`;
+  } catch (e) {
+    return `no answer (${String(e?.name || e).slice(0, 40)})`;
+  }
+}
+async function linkHealth() {
+  if (linkCache.text && Date.now() - linkCache.at < 60 * 60000) return linkCache.text;
+  const seen = new Map();
+  for (const [label, page] of BOARD_PAGES) {
+    try {
+      const r = readPageSource(page, "", 8000000);
+      for (const m of String(r?.text || "").matchAll(/<a\b[^>]*\bhref="(https?:\/\/[^"#\s]+)/gi)) {
+        const u = m[1];
+        if (!seen.has(u)) seen.set(u, label.split(" ").slice(0, 2).join(" "));
+      }
+    } catch {}
+  }
+  const list = [...seen.entries()].sort((a, b) => /discord/i.test(b[0]) - /discord/i.test(a[0])).slice(0, 24);
+  if (!list.length) return "";
+  const out = await Promise.all(list.map(async ([u, where]) => `- ${u} (${where}): ${await checkLink(u)}`));
+  linkCache = { at: Date.now(), text: `checked ${new Date().toISOString().slice(0, 16)}Z, refreshed hourly\n${out.join("\n")}` };
+  return linkCache.text;
+}
+app.get("/api/links", async (_req, res) => res.type("text/plain").send(await linkHealth()));
+
 async function readEngine() {
   if (!MAKE_TOKEN) return null;
   if (engineCache.text && Date.now() - engineCache.at < 6 * 3600 * 1000) {
@@ -4068,6 +4117,10 @@ app.get("/api/wire", (_req, res) => res.json({ wire: WIRE.slice(0, 40) }));
 try {
   const n = sweepGaps("tools-11-16", "wired 11-16: read opens vault notes (.md), THE NUMBERS on the Board carry visits, clicks, the signup funnel, Crown and X stats");
   if (n) console.log(`crew: closed ${n} tool gaps wired by the 11-16 release`);
+} catch {}
+try {
+  const n = sweepGaps("tools-11-21", "wired 11-21: OUTBOUND LINKS on the Board checks every external link hourly, Discord invites through Discord's own API");
+  if (n) console.log(`crew: closed ${n} tool gaps wired by the 11-21 release`);
 } catch {}
 
 // 11-17 release: the two walls the desks kept refiling around are on the
