@@ -1,7 +1,8 @@
 // premarket.mjs: the Pre-market Brief. Every market day before the open the
 // server reads Korvus's overnight scored stories, the futures board and the
 // day's calendar, writes a 35 second vertical brief, renders it on this box
-// with ffmpeg and libass (no Bloom, no GPU, no credits), and delivers it:
+// with ffmpeg and libass and its own synthesized score (no Bloom, no GPU, no
+// credits, no licensed audio), and delivers it:
 //   - the finished MP4 and a ready-to-paste caption land in the owner's
 //     TikTok channel on Discord, to download and post by hand
 //   - an X post and a YouTube post are filed as asks through Regent, so the
@@ -214,6 +215,7 @@ function arrow(dir) {
 export function buildAss(brief, board, calendar, dateLabel) {
   const L = 90; // left margin; the right 150px stay clear for TikTok's buttons
   const evs = [];
+  const starts = []; // when each scene begins, for the sound hits
   let t = 0;
   // 1. the hook
   const s1 = 4.4;
@@ -222,12 +224,28 @@ export function buildAss(brief, board, calendar, dateLabel) {
   const hook = wrap(brief.hook.toUpperCase(), 16, 4);
   evs.push(line(0.6, s1, "Hook", L, 500, hook));
   const subY = 500 + hook.split("\\N").length * 168 + 70;
-  evs.push(line(1.6, s1, "Sub", L, subY, wrap("What moved overnight and why it matters before the open.", 34, 2)));
+  // the number first: the biggest overnight move on the board, in its colour.
+  // A figure pulls the eye harder than a sentence does.
+  const rows = boardRows(board);
+  // an index first (this is an index futures brief); crude or gold only when
+  // no index moved enough to show
+  const big = (list) => list.slice().sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))[0];
+  const idx = big(rows.filter((r) => ["S&P 500", "NASDAQ 100", "DOW"].includes(r.label)));
+  const top = idx && Math.abs(idx.pct) >= 0.05 ? idx : big(rows);
+  if (top && Math.abs(top.pct) >= 0.05) {
+    const col = top.pct > 0 ? C.green : C.red;
+    evs.push(line(1.4, s1, "Mono", L, subY, `${top.label}  OVERNIGHT`, 0));
+    evs.push(ev(1.5, s1, "Big", `${top.pct > 0 ? "▲ +" : "▼ "}${top.pct.toFixed(2)}%`, `{\\an7\\pos(${L},${subY + 56})\\c${col}\\fscx70\\fscy70\\t(0,320,0.6,\\fscx100\\fscy100)\\fad(160,220)}`));
+  } else {
+    evs.push(line(1.6, s1, "Sub", L, subY, wrap("What moved overnight and why it matters before the open.", 34, 2)));
+  }
+  starts.push(0);
   t = s1;
   // 2. the board, only when Korvus had prices
-  const rows = boardRows(board);
   if (rows.length) {
     const s2 = t + 4.4;
+    starts.push(t);
+    const span = Math.max(...rows.map((r) => Math.abs(r.pct)), 0.25);
     evs.push(line(t + 0.1, s2, "Kicker", L, 330, "OVERNIGHT FUTURES", 0));
     rows.slice(0, 5).forEach((r, i) => {
       const y = 460 + i * 150;
@@ -237,6 +255,10 @@ export function buildAss(brief, board, calendar, dateLabel) {
       const pct = `${up ? "▲" : down ? "▼" : "◆"} ${r.pct > 0 ? "+" : ""}${r.pct.toFixed(2)}%`;
       evs.push(line(t + 0.25 + i * 0.18, s2, "Board", L, y, r.label));
       evs.push(line(t + 0.35 + i * 0.18, s2, "BoardPct", 590, y + 6, `{\\c${col}}${pct}`));
+      // a bar that grows to the size of the move, so the board reads at a glance
+      const bw = Math.max(14, Math.round((Math.abs(r.pct) / span) * 880));
+      const b0 = Math.round((t + 0.45 + i * 0.18) * 1000) - Math.round((t + 0.35 + i * 0.18) * 1000);
+      evs.push(ev(t + 0.35 + i * 0.18, s2, "Rail", `m 0 0 l ${bw} 0 ${bw} 8 0 8`, `{\\an7\\pos(${L},${y + 108})\\p1\\c${col}\\fscx0\\t(${b0},${b0 + 700},0.5,\\fscx100)\\fad(0,220)}`));
     });
     evs.push(line(t + 1.4, s2, "Dim", L, 1230, "Micro contracts shown, same index moves."));
     t = s2;
@@ -244,6 +266,7 @@ export function buildAss(brief, board, calendar, dateLabel) {
   // 3. the stories
   brief.stories.forEach((s, i) => {
     const end = t + 7.2;
+    starts.push(t);
     const col = s.dir === "up" ? C.green : s.dir === "down" ? C.red : C.gray;
     const tag = `0${i + 1}  /  ${s.index.toUpperCase()}  {\\c${col}}${arrow(s.dir)}{\\c${C.pink}}  ${s.impact === "high" ? "HIGH IMPACT" : s.impact === "med" ? "MEDIUM IMPACT" : "LOW IMPACT"}`;
     evs.push(line(t + 0.1, end, "Kicker", L, 330, tag, 0));
@@ -255,6 +278,7 @@ export function buildAss(brief, board, calendar, dateLabel) {
   // 4. the calendar
   const cal = (calendar || []).slice(0, 4);
   const s4 = t + 3.6;
+  starts.push(t);
   evs.push(line(t + 0.1, s4, "Kicker", L, 330, "ON TODAY'S CALENDAR", 0));
   if (cal.length) {
     cal.forEach((c, i) => {
@@ -267,6 +291,7 @@ export function buildAss(brief, board, calendar, dateLabel) {
   t = s4;
   // 5. the close
   const s5 = t + 4.2;
+  starts.push(t);
   evs.push(line(t + 0.1, s5, "Hook", L, 500, wrap("GET THIS EVERY MORNING. FREE.", 16, 3)));
   evs.push(line(t + 0.5, s5, "Url", L, 1010, "korvus.industries"));
   evs.push(line(t + 0.9, s5, "Dim", L, 1150, "Education only. Not financial advice."));
@@ -286,6 +311,7 @@ export function buildAss(brief, board, calendar, dateLabel) {
     `Style: Kicker,JetBrains Mono,42,${C.pink},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,4,0,1,0,0,7,0,0,0,1`,
     `Style: Mono,JetBrains Mono,38,${C.gray},&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,2,0,1,0,0,7,0,0,0,1`,
     `Style: Hook,Space Grotesk,148,${C.white},&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,0,4,7,0,0,0,1`,
+    `Style: Big,JetBrains Mono,150,${C.white},&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,0,3,7,0,0,0,1`,
     `Style: Sub,Space Grotesk,58,${C.gray},&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1`,
     `Style: Board,Space Grotesk,84,${C.white},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1`,
     `Style: BoardPct,JetBrains Mono,72,${C.white},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1`,
@@ -300,10 +326,36 @@ export function buildAss(brief, board, calendar, dateLabel) {
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
-  return { ass: [...head, ...evs, ""].join("\n"), seconds: Math.ceil(t * 10) / 10 };
+  return { ass: [...head, ...evs, ""].join("\n"), seconds: Math.ceil(t * 10) / 10, starts };
 }
 
-async function render(ass, seconds, name) {
+// The score, made by ffmpeg from plain maths on this box: no sample packs, no
+// licence, no cost, nothing a platform can mute or claim. A minor-key pad, an
+// eighth-note pluck line that walks four chords, a soft kick on the beat, and
+// a low hit on every scene change so the cuts land.
+export function scoreGraph(seconds, starts) {
+  const T = Number(seconds).toFixed(2);
+  const root = "st(1, floor(mod(t/8,4))); st(2, if(eq(ld(1),0),0, if(eq(ld(1),1),-4, if(eq(ld(1),2),3,-2))));";
+  const step = "st(3, floor(mod(t/0.25,8))); st(4, if(eq(ld(3),0),0, if(eq(ld(3),1),7, if(eq(ld(3),2),12, if(eq(ld(3),3),15, if(eq(ld(3),4),12, if(eq(ld(3),5),7, if(eq(ld(3),6),3,7))))))));";
+  const pluck = `${root} ${step} st(5, 220*pow(2,(ld(2)+ld(4))/12)); st(6, mod(t,0.25)); 0.16*(sin(2*PI*ld(5)*t)+0.35*sin(4*PI*ld(5)*t))*exp(-9*ld(6))*min(1,ld(6)*400)`;
+  const pad = `${root} st(5, 110*pow(2,ld(2)/12)); (0.5+0.5*sin(2*PI*0.07*t))*(0.07*sin(2*PI*ld(5)*t)+0.06*sin(2*PI*ld(5)*1.4983*t)+0.05*sin(2*PI*ld(5)*2*t)+0.04*sin(2*PI*ld(5)*2.3784*t))`;
+  const kick = "st(6, mod(t,1)); 0.5*sin(2*PI*(45*ld(6)+11*(1-exp(-12*ld(6)))))*exp(-7*ld(6))";
+  const hit = "0.75*sin(2*PI*(38*t+7*(1-exp(-8*t))))*exp(-2.6*t)+0.22*(random(0)*2-1)*exp(-10*t)";
+  const n = Math.max(1, starts.length);
+  const parts = [
+    `aevalsrc='${pluck}':s=44100:d=${T},aecho=0.8:0.7:375:0.35,highpass=f=180[pl]`,
+    `aevalsrc='${pad}':s=44100:d=${T}[pd]`,
+    `aevalsrc='${kick}':s=44100:d=${T},lowpass=f=900[kk]`,
+    `aevalsrc='${hit}':s=44100:d=2.2,asplit=${n}${starts.map((_, i) => `[h${i}]`).join("")}`,
+    ...starts.map((at, i) => `[h${i}]adelay=${Math.max(0, Math.round(at * 1000))}:all=1[d${i}]`),
+    `[pl][pd][kk]${starts.map((_, i) => `[d${i}]`).join("")}amix=inputs=${3 + n}:normalize=0:duration=first,` +
+      `alimiter=limit=0.85,afade=t=in:d=0.4,afade=t=out:st=${Math.max(0, seconds - 1.6).toFixed(2)}:d=1.6,` +
+      `aformat=channel_layouts=stereo,asplit=2[aout][aviz]`,
+  ];
+  return parts.join(";");
+}
+
+async function render(ass, seconds, name, starts = [0], sound = true) {
   const { default: ffmpegPath } = await import("ffmpeg-static");
   const { execFileSync } = await import("child_process");
   fs.mkdirSync(deps.rendersDir, { recursive: true });
@@ -318,12 +370,22 @@ async function render(ass, seconds, name) {
     "format=yuv420p",
     `ass='${esc(assFile)}':fontsdir='${esc(FONTS)}'`,
   ].join(",");
+  // with sound: the score plays, and a thin live waveform of it rides above
+  // the progress rail so the frame moves with the music
+  const graph = sound
+    ? [
+        scoreGraph(seconds, starts),
+        `[0:v]${vf}[bg]`,
+        `[aviz]showwaves=s=900x110:mode=cline:rate=30:scale=sqrt:draw=full:colors=0xFF2D8F,format=rgba,colorkey=black:0.12:0.2,colorchannelmixer=aa=0.7[wv]`,
+        `[bg][wv]overlay=90:1455:shortest=1,format=yuv420p[vout]`,
+      ].join(";")
+    : `[0:v]${vf}[vout];anullsrc=r=44100:cl=stereo[aout]`;
   const args = [
     "-y", "-loop", "1", "-framerate", "30", "-i", BG,
-    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-    "-t", String(seconds), "-vf", vf,
+    "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
+    "-t", String(seconds),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30",
-    "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", outFile,
+    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-movflags", "+faststart", outFile,
   ];
   try {
     execFileSync(ffmpegPath, args, { timeout: 300000, stdio: ["ignore", "ignore", "pipe"] });
@@ -339,6 +401,7 @@ async function render(ass, seconds, name) {
 // ---------------------------------------------------------------------------
 // 4. the run
 // ---------------------------------------------------------------------------
+export const _render = render;
 export async function runPremarket({ force = false, reason = "schedule" } = {}) {
   if (state.running) return { ok: false, error: "a brief is already rendering" };
   const t = etParts();
@@ -350,9 +413,9 @@ export async function runPremarket({ force = false, reason = "schedule" } = {}) 
     const feed = await readFeed();
     const dateLabel = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" });
     const brief = await writeBrief(feed, dateLabel);
-    const { ass, seconds } = buildAss(brief, feed.board, feed.calendar, `${dateLabel}  ·  ${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")} ET`);
+    const { ass, seconds, starts } = buildAss(brief, feed.board, feed.calendar, `${dateLabel}  ·  ${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")} ET`);
     const name = `brief-${t.day}-${String(Date.now()).slice(-5)}`;
-    const vid = await render(ass, seconds, name);
+    const vid = await render(ass, seconds, name, starts, (deps.settings() || {}).sound !== false);
     rec.url = vid.url;
     rec.seconds = seconds;
     rec.mb = Math.round((vid.bytes / 1048576) * 10) / 10;

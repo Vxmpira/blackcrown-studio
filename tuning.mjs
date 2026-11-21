@@ -45,6 +45,7 @@ export const TUNING_SCHEMA = {
   "crew.wakeGapMin": { label: "Desk-to-desk asks wake a desk at most every", unit: "min", min: 1, max: 240, step: 1, def: env("CREW_WAKE_GAP_MIN", 15) },
   "brief.enabled": { label: "Pre-market Brief runs every market day", type: "bool", def: true },
   "brief.time": { label: "Brief start time, ET", type: "time", def: "05:30" },
+  "brief.sound": { label: "Brief plays its music score (off renders silent)", type: "bool", def: true },
   "brief.tiktokDrop": { label: "Drop the video and caption in the TikTok channel", type: "bool", def: true },
   "brief.fileX": { label: "File an X post ask with the video", type: "bool", def: true },
   "brief.fileYouTube": { label: "File a YouTube Short ask with the video", type: "bool", def: true },
@@ -146,6 +147,7 @@ export const tune = {
   brief: () => ({
     enabled: tv("brief.enabled") !== false,
     time: tv("brief.time"),
+    sound: tv("brief.sound") !== false,
     tiktokDrop: tv("brief.tiktokDrop") !== false,
     fileX: tv("brief.fileX") !== false,
     fileYouTube: tv("brief.fileYouTube") !== false,
