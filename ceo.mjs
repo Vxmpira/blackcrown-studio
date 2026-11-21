@@ -365,22 +365,7 @@ function preflightProposal(p) {
     if (kind === "post" || plat) {
       if (!plat) return "post asks need a PLATFORM line";
       const pl = plat.toLowerCase();
-      if (pl === "reddit") {
-        // Reddit punishes promotion harder than any other platform, so the
-        // shape is strict: a real text post, the sub's rule on record, the
-        // maker saying he is the maker
-        const sub = (detail.match(/SUBREDDIT:\s*(\S+)/i) || [])[1] || "";
-        if (!/^r\/[A-Za-z0-9_]{3,21}$/.test(sub)) return "reddit posts need SUBREDDIT: r/name on its own line";
-        const title = (detail.match(/TITLE:\s*(.+)/i) || [])[1] || "";
-        if (title.trim().length < 15 || title.trim().length > 300) return "reddit posts need TITLE: on its own line, 15 to 300 characters";
-        if (!/RULES CHECKED:\s*\S/i.test(detail)) return "reddit posts need RULES CHECKED: one line saying which rule of that subreddit allows this post and where you read it (open the subreddit's rules with web.open or web.search first)";
-        const rbody = String(section(detail, "NEW") || "").trim();
-        if (rbody.length < 400) return "a reddit post is a real text post that helps the reader on its own: NEW must carry at least 400 characters of substance";
-        if ((rbody.match(/https?:\/\//g) || []).length > 2) return "a reddit post carries 2 links at most; more reads as spam and gets the account banned";
-        if (!/\b(i|we) (built|build|made|make|run|work on|founded)\b|\bmy (own )?(product|tool|terminal|company|project|app)\b|\b(founder|disclosure)\b/i.test(rbody)) return "a reddit post about our own product must say so in plain words (for example: I built this); undisclosed promotion breaks Reddit's rules";
-        return null;
-      }
-      if (pl !== "youtube" && pl !== "x") return `platform ${plat} is not wired; wired platforms: youtube, x, reddit`;
+      if (pl !== "youtube" && pl !== "x") return `platform ${plat} is not wired; wired platforms: youtube, x`;
       const media = (detail.match(/MEDIA:\s*(\S+)/i) || [])[1];
       if (pl === "youtube") {
         if (!media || !/^https?:\/\//i.test(media)) return "MEDIA must be the full https url of the rendered file";
@@ -1141,9 +1126,6 @@ async function execute(p) {
     return deps.publish({
       platform: (platformLine || "unspecified").trim().toLowerCase(),
       content: postBody,
-      subreddit: (String(p.detail).match(/SUBREDDIT:\s*(\S+)/i) || [])[1] || "",
-      title: ((String(p.detail).match(/TITLE:\s*(.+)/i) || [])[1] || "").trim(),
-      rules: ((String(p.detail).match(/RULES CHECKED:\s*(.+)/i) || [])[1] || "").trim(),
       media,
       number: p.number,
       summary: p.summary,

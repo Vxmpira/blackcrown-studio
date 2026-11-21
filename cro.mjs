@@ -58,7 +58,10 @@ export async function refresh(force = false) {
   try {
     for (const [d, v] of Object.entries(deps.brand() || {})) if (/^\d{4}-\d\d-\d\d$/.test(d)) (days[d] = days[d] || {}).brand = v;
   } catch {}
-  cache = { at: Date.now(), days, since, err };
+  // the first day a real-browser count exists; before it, Korvus "human" views
+  // include scripts posing as browsers and are not used as people
+  const jsSince = Object.keys(days).filter((d) => days[d].korvus && days[d].korvus.view_js).sort()[0] || "";
+  cache = { at: Date.now(), days, since, err, jsSince };
   return cache;
 }
 
@@ -66,10 +69,29 @@ const sum = (o) => Object.values(o || {}).reduce((a, b) => a + (Number(b) || 0),
 const pick = (o, keys) => keys.reduce((a, k) => a + (Number((o || {})[k]) || 0), 0);
 const SIGNUP_CLICKS = ["hero_primary", "nav_signup", "pricing_observer", "pricing_operator"];
 // what one day holds, as people counts (form-spam bots taken out)
-function dayCounts(d) {
+function dayCounts(d, day = "") {
   const k = (d && d.korvus) || {}, b = (d && d.brand) || {};
   const st = k.step || {};
   const bots = Number(st.signup_honeypot) || 0;
+  // once the pages report real browsers, that is the people count, and days
+  // before it carry no usable Korvus view count at all
+  if (cache.jsSince) {
+    const js = day >= cache.jsSince ? k.view_js || {} : {};
+    const early = day < cache.jsSince;
+    return {
+      k_home: Number(js.home) || 0,
+      k_views: sum(js),
+      k_cta: early ? 0 : pick(k.click, SIGNUP_CLICKS),
+      k_operator: early ? 0 : Number((k.click || {}).pricing_operator) || 0,
+      k_form: Number(js.signup) || 0,
+      k_submit: early ? 0 : Math.max(0, (Number(st.signup_submit) || 0) - bots),
+      k_account: early ? 0 : Number(st.signup_created) || 0,
+      k_verified: early ? 0 : Number(st.email_verified) || 0,
+      b_visit: sum(b.visit),
+      b_click: sum(b.click),
+      b_signup: sum(b.signup),
+    };
+  }
   return {
     k_home: Number((k.view_h || {}).home) || 0,
     k_views: sum(k.view_h),
@@ -101,7 +123,7 @@ function windowCounts(fromDay, toDay) {
   for (const [d, v] of Object.entries(cache.days)) {
     if (d < fromDay || d > toDay) continue;
     n++;
-    for (const [k, x] of Object.entries(dayCounts(v))) out[k] = (out[k] || 0) + x;
+    for (const [k, x] of Object.entries(dayCounts(v, d))) out[k] = (out[k] || 0) + x;
   }
   return { counts: out, days: n };
 }
@@ -188,6 +210,9 @@ export function funnelText() {
     `Operator price clicks: ${g(now, "k_operator")} of ${g(now, "k_home")} home visits (${pct(g(now, "k_operator"), g(now, "k_home"))}).`,
     `BRAND SITE: ${g(now, "b_visit")} visits > ${g(now, "b_click")} product clicks (${pct(g(now, "b_click"), g(now, "b_visit"))}${range(g(now, "b_click"), g(now, "b_visit"))}) > ${g(now, "b_signup")} Korvus signups by first source.`,
     small ? `SMALL NUMBERS WARNING: at ${g(now, "k_home")} home visits a week, most rate changes are noise. Trust a step only when its range above is narrow, and prefer bold changes over small ones: only a big lift can be seen at this traffic.` : "",
+    cache.jsSince
+      ? `PEOPLE COUNT: Korvus visits here are pages a real browser rendered, counted since ${cache.jsSince}; nothing before that day is used.`
+      : `WARNING, THE VISIT COUNT IS INFLATED: until the pages report real browsers (shipped 11-21, shows here once the Korvus server restarts), "home visits" includes scripts that pose as browsers. Checked 11-21: of 865 "human" home views, 804 had no referrer, while the click counter works and saw 0 signup clicks. Judge nothing off the top step yet; visits that came from google, the brand site and x are the trustworthy ones.`,
     cache.since ? `Korvus counts start ${cache.since}.` : "",
   ];
   return lines.filter(Boolean).join("\n");
