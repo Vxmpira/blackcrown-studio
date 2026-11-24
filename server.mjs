@@ -44,6 +44,7 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
+import { runCoach, coachState, coachCard, COACHED } from "./coach.mjs";
 import { wireCro, refresh as croRefresh, croBoard, croTools, croState } from "./cro.mjs";
 import { wireBench, benchCall, inbox as benchInbox, benchState, benchFlag } from "./bench.mjs";
 import { wirePremarket, runPremarket, premarketDue, premarketState, musicTracks, saveTrack, removeTrack } from "./premarket.mjs";
@@ -4442,6 +4443,68 @@ function tunerStats() {
   }
   return { desks: out, budget: usageReport().budget, gaps: crew.gaps.filter((g) => g.status === "open").length, tickets: (crew.tickets || []).filter((t) => t.status === "open").map((t) => ({ id: t.id, what: t.what, evidence: t.evidence || "", desks: t.desks || [], count: t.count || 1, firstAt: t.firstAt })) };
 }
+// ---------------------------------------------------------------------------
+// THE COACH: one review a day. The server gathers the evidence (scorecards,
+// the ledger, each desk's own log, the Board) and the coach writes the notes.
+// ---------------------------------------------------------------------------
+const coachDay = (back = 0) => new Date(Date.now() - back * 864e5).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+function coachInputs(board) {
+  const stats = tunerStats().desks;
+  const scorecards = Object.entries(stats)
+    .map(([k, d]) => `${k}: today $${d.today.usd} in ${d.today.calls} calls, 7 days $${d.week.usd} in ${d.week.calls} calls; steps today ${d.steps ?? "n/a"}; open tasks ${d.openTasks}, closed in 24h ${d.doneToday}${d.asks ? `; asks filed in 7 days ${d.asks.filed}, approved ${d.asks.approved}, vetoed ${d.asks.rejected}, pending ${d.asks.pending}${d.costPerApproved != null ? `, $${d.costPerApproved} per approved ask` : ""}` : ""}`)
+    .join("\n");
+  // the ledger carries no author, so each line is matched to its desk by ask number
+  const who = new Map(proposalBook().map((p) => [p.number, String(p.author || "").toLowerCase()]));
+  const from = coachDay(7);
+  const ledger = String(ceoBrainFile("Ledger.md")?.body || "")
+    .split("\n")
+    .filter((l) => /^- \d{4}-\d\d-\d\d: #/.test(l) && l.slice(2, 12) >= from)
+    .map((l) => {
+      const n = Number((l.match(/#(\d+)/) || [])[1]);
+      return `${l.slice(2, 240)}${who.get(n) ? ` [${who.get(n)}]` : ""}`;
+    })
+    .slice(-90)
+    .join("\n");
+  const read = (dir, day) => {
+    try {
+      return fs.readFileSync(path.join(dir, "Log", `${day}.md`), "utf8").replace(/^# .*\n/, "").replace(/\nSee \[\[.*$/s, "").replace(/\s+/g, " ").trim().slice(0, 700);
+    } catch {
+      return "";
+    }
+  };
+  const dirs = { corvid: brainDirPath(), herald: staffVaultDir("herald"), steward: staffVaultDir("steward"), bard: staffVaultDir("bard") };
+  const tasks = { corvid: agentState().tasks || [], ...Object.fromEntries(staffStates().map((x) => [x.key, x.tasks || []])) };
+  const logs = Object.entries(dirs)
+    .map(([k, dir]) => {
+      const open = (tasks[k] || []).filter((t) => t.status !== "done").slice(0, 8).map((t) => `"${String(t.title).slice(0, 60)}"${(t.reads || 0) >= 8 ? ` (${t.reads} reads, no finish)` : ""}`).join("; ");
+      return `${k.toUpperCase()}\n yesterday: ${read(dir, coachDay(1)) || "no log"}\n today so far: ${read(dir, coachDay(0)) || "no log"}\n open tasks: ${open || "none"}`;
+    })
+    .join("\n");
+  return { scorecards, ledger: ledger || "nothing shipped", logs, board: String(board || "").slice(0, 11000) };
+}
+async function coachRun(force = false) {
+  const r = await runCoach(coachInputs(await boardFeed().catch(() => "")), { force });
+  if (r.ok && tune.coach().post && JOBS_BOT && JOBS_CH.boardroom) {
+    try {
+      await fetch(`https://discord.com/api/v10/channels/${JOBS_CH.boardroom}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${JOBS_BOT}` },
+        body: JSON.stringify({ content: "", embeds: buildEmbeds(coachCard(r.today), 0xff2d8f, "The Coach, daily review") }),
+      });
+    } catch {}
+  }
+  if (!r.ok) console.error("[coach]", r.msg);
+  return r;
+}
+setInterval(() => {
+  const c = tune.coach();
+  if (!c.enabled || coachState().lastRunDay === coachDay(0)) return;
+  const now = new Date().toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" });
+  if (now >= c.time) coachRun().catch(() => {});
+}, 60 * 1000);
+app.get("/api/coach", (_req, res) => res.json({ ...coachState(), settings: tune.coach() }));
+app.post("/api/coach/run", async (_req, res) => res.json(await coachRun(true)));
+
 const TUNER_MODELS = ["", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];
 app.get("/api/tuning", (_req, res) => {
   res.json({ schema: TUNING_SCHEMA, values: tuningFlat(), models: TUNER_MODELS, defaults: MODELS, stats: tunerStats() });

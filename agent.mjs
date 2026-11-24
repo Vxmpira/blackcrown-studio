@@ -12,6 +12,7 @@ import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
 import { tune, tuningFlat } from "./tuning.mjs";
 import { BENCH_RULES } from "./bench.mjs";
+import { coachBlock } from "./coach.mjs";
 import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, recordTicket, shouldWake, tidyQueue } from "./crew.mjs";
 export { recordSpend, getSpend, spendSummary };
 
@@ -777,7 +778,16 @@ export function institutionBlock() {
   return instCache.text;
 }
 
-setInstitution(institutionBlock);
+// every desk's every call opens with the company's ground truth and, under
+// it, the coach's notes for the day
+setInstitution(() => {
+  const inst = institutionBlock();
+  let coach = "";
+  try {
+    coach = coachBlock();
+  } catch {}
+  return [inst, coach].filter(Boolean).join("\n\n");
+});
 
 // opts: { model, tier: "hands", who, hot, priority }
 function pickModel(opts) {

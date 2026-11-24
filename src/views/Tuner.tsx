@@ -10,6 +10,9 @@ import {
   type TunerData,
   type DeskCard,
   type BriefRun,
+  type CoachState,
+  getCoach,
+  runCoachNow,
   type BriefTrack,
   uploadBriefTrack,
   removeBriefTrack,
@@ -43,6 +46,8 @@ export const Tuner: React.FC = () => {
   const [draft, setDraft] = useState<Patch>({});
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [msg, setMsg] = useState<string | null>(null);
+  const [coach, setCoach] = useState<CoachState | null>(null);
+  const [coaching, setCoaching] = useState(false);
   const [brief, setBrief] = useState<{ running: boolean; runs: BriefRun[]; tracks?: BriefTrack[] } | null>(null);
   const [shelf, setShelf] = useState<ExpressionShelf | null>(null);
   const [stocking, setStocking] = useState<string | null>(null);
@@ -50,6 +55,7 @@ export const Tuner: React.FC = () => {
   const load = useCallback(() => {
     getTuning().then((d) => setData(d));
     getPremarket().then((b) => setBrief(b));
+    getCoach().then((c) => setCoach(c));
     getExpressionShelf().then((x) => setShelf(x));
   }, []);
   useEffect(() => {
@@ -274,6 +280,55 @@ export const Tuner: React.FC = () => {
           <div className="sgroup-h">Crew rules</div>
           {["crew.queueCap", "crew.staleHours", "crew.wakeGapMin"].map(field)}
           {field("videos.tiktokDrop")}
+        </div>
+        <div className="sgroup">
+          <div className="sgroup-h">The Coach</div>
+          {["coach.enabled", "coach.time", "coach.post"].map(field)}
+          <div className="brief-actions">
+            <button
+              className="btn"
+              disabled={coaching}
+              onClick={async () => {
+                setCoaching(true);
+                const r = await runCoachNow();
+                if (!r.ok) setMsg(r.msg || "the coach could not run");
+                setCoach(await getCoach());
+                setCoaching(false);
+              }}
+            >
+              {coaching ? "Reviewing the desks..." : "Run the review now"}
+            </button>
+          </div>
+          {coach?.today ? (
+            <>
+              <div className="srow">
+                <span className="sk">Bottleneck, {coach.today.day}</span>
+                <span className="sv">{coach.today.bottleneck}</span>
+              </div>
+              {Object.entries(coach.today.desks).map(([k, d]) => (
+                <div className="srow" key={k}>
+                  <span className="sk">
+                    {k} · {d.grade || "?"}
+                    {d.followed ? ` · followed: ${d.followed}` : ""}
+                  </span>
+                  <span className="sv">
+                    {d.do.map((x) => `Do: ${x}`).concat(d.stop.map((x) => `Stop: ${x}`)).join(" ") || "on course, no notes"}
+                  </span>
+                </div>
+              ))}
+              {coach.today.owner.length ? (
+                <div className="srow">
+                  <span className="sk">Only you can</span>
+                  <span className="sv">{coach.today.owner.join(" ")}</span>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="srow">
+              <span className="sk">Notes</span>
+              <span className="sv">none yet; the first review runs at the set time</span>
+            </div>
+          )}
         </div>
         <div className="sgroup">
           <div className="sgroup-h">Pre-market Brief</div>

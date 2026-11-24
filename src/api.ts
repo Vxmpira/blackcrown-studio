@@ -1025,3 +1025,19 @@ export async function getExpressionShelf(): Promise<ExpressionShelf | null> {
     return null;
   }
 }
+
+export type CoachDesk = { grade: string; followed: string; worked: string; wasted: string; do: string[]; stop: string[] };
+export type CoachDay = { day: string; at: number; bottleneck: string; team: string; desks: Record<string, CoachDesk>; owner: string[] };
+export type CoachState = { lastRunDay: string; running: boolean; today: CoachDay | null; history: { day: string; grades: Record<string, string> }[] };
+export async function getCoach(): Promise<CoachState | null> {
+  try {
+    const r = await fetch(`${BASE}/api/coach`);
+    return r.ok ? r.json() : null;
+  } catch {
+    return null;
+  }
+}
+export async function runCoachNow(): Promise<{ ok: boolean; msg?: string; today?: CoachDay }> {
+  const r = await fetch(`${BASE}/api/coach/run`, { method: "POST" });
+  return r.json().catch(() => ({ ok: false, msg: `HTTP ${r.status}` }));
+}
