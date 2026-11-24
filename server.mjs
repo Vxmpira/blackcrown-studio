@@ -2160,12 +2160,12 @@ function recapLesson(t) {
   const win = (Number(t.pnl) || 0) > 0;
   const why = String(t.exit_reason || "").toLowerCase();
   const mfe = Number(t.mfe_pct), mae = Number(t.mae_pct);
-  const ran = Number.isFinite(mfe) ? `${Math.abs(mfe).toFixed(2)}%` : null;
+  const ran = Number.isFinite(mfe) && Math.abs(mfe) >= 0.05 ? `${Math.abs(mfe).toFixed(2)}%` : null;
   const against = Number.isFinite(mae) ? `${Math.abs(mae).toFixed(2)}%` : null;
   if (why.includes("target")) return `The read held: price went the filing's way and reached the target${against ? `, after going ${against} against the entry first` : ""}.`;
   if (why.includes("stop") && !win) return ran && Math.abs(mfe) >= 0.5 ? `It ran ${ran} in favor, then turned and hit the stop. The read was right at first; the exit gave it back.` : `Price never followed the filing${ran ? ` (best it showed was ${ran})` : ""} and the stop took it out. On this one the market did not agree with the read.`;
   if (why.includes("stop") && win) return `The stop had been moved up behind the trade, so the turn still closed it for a gain.`;
-  if (why.includes("time") || why.includes("close") || why.includes("flat") || why.includes("max")) return win ? `No target and no stop: time ran out with a small gain${ran ? `, best was ${ran}` : ""}. The move was real but slow.` : `No target and no stop: time ran out under water${ran ? `, best was ${ran}` : ""}. The filing did not move price enough to matter.`;
+  if (why.includes("time") || why.includes("close") || why.includes("flat") || why.includes("max")) return win ? `Neither the target nor the stop was reached: time ran out with a small gain${ran ? `, best was ${ran}` : ""}. The move was real but slow.` : `Neither the target nor the stop was reached: time ran out under water${ran ? `, best was ${ran} in favor` : ", and it never went in favor"}. The filing did not move price enough to matter.`;
   return win ? "Closed for a gain." : "Closed for a loss.";
 }
 function recapPost(t) {
@@ -2176,7 +2176,7 @@ function recapPost(t) {
   const rr = [planned != null ? `planned ${planned.toFixed(1)} : 1` : "", t.r_mult != null ? `result ${Number(t.r_mult) >= 0 ? "+" : ""}${Number(t.r_mult).toFixed(2)}R` : ""].filter(Boolean).join(", ") || "n/a";
   const why = [
     f.headline ? `${f.form ? `${f.form}: ` : ""}${String(f.headline).slice(0, 160)}` : "a filing the crawler scored",
-    f.impact ? `scored ${f.impact} impact, ${f.direction || (long ? "bullish" : "bearish")}${f.confidence != null ? `, ${Math.round(Number(f.confidence) <= 1 ? Number(f.confidence) * 100 : Number(f.confidence))}% confidence` : ""}` : "",
+    f.impact ? `scored ${f.impact} impact, ${/^bear/i.test(f.direction || "") ? "bearish" : /^bull/i.test(f.direction || "") ? "bullish" : f.direction || (long ? "bullish" : "bearish")}${f.confidence != null ? `, ${Math.round(Number(f.confidence) <= 1 ? Number(f.confidence) * 100 : Number(f.confidence))}% confidence` : ""}` : "",
     `price then moved the same way, which is the bot's entry rule${t.playbook ? ` (${t.playbook})` : ""}`,
   ].filter(Boolean).join("; ");
   const lines = [
