@@ -2723,7 +2723,20 @@ const JOB_SYSTEM = `You are The Desk, BlackCrownVxJ LLC's automated reporting se
 async function runJob(job) {
   try {
     const data = await companyFeed("jobs");
-    const text = await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 1200, { tier: "hands", who: "jobs", priority: "owner" });
+    // a short report from data already gathered is work for the fast model,
+    // with room to finish; an empty report is never posted
+    const text = String(await thinkText(JOB_SYSTEM, `REPORT SPEC:\n${job.spec}\n\nLIVE COMPANY DATA:\n${data}`, 2500, { model: MODELS.hands, who: "jobs", priority: "owner" })).trim();
+    if (text.length < 40) {
+      console.error("job produced no report, nothing posted:", job.name);
+      const all = loadJobs();
+      const me = all.find((x) => x.id === job.id);
+      if (me) {
+        me.lastRunAt = Date.now();
+        me.emptyRuns = (me.emptyRuns || 0) + 1;
+        saveJobs(all);
+      }
+      return false;
+    }
     const content = `**THE DESK // ${job.name.toUpperCase().slice(0, 60)}** · ${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}\n${text}`;
     const channelId = JOBS_CH[job.channel] || JOBS_CH.corvid;
     if (JOBS_BOT && channelId) {

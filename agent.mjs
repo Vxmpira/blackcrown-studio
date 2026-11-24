@@ -791,15 +791,21 @@ async function think(system, user, maxTokens = 4000, opts = {}) {
 }
 
 export async function thinkText(system, user, maxTokens = 1400, opts = {}) {
-  const r = await callLLM({
-    who: opts.who || "corvid",
-    model: pickModel(opts),
-    system,
-    user,
-    maxTokens,
-    hot: opts.hot,
-    priority: opts.priority,
-  });
+  const ask = (n) =>
+    callLLM({
+      who: opts.who || "corvid",
+      model: pickModel(opts),
+      system,
+      user,
+      maxTokens: n,
+      hot: opts.hot,
+      priority: opts.priority,
+    });
+  let r = await ask(maxTokens);
+  // a model that reasons before it writes can spend the whole allowance on
+  // reasoning and hand back no words at all. That is a paid call with nothing
+  // to show, so it gets one more try with room to finish.
+  if (!r.text && r.stop === "max_tokens") r = await ask(Math.max(4000, maxTokens * 3));
   return r.text.replace(/\u2014|\u2013/g, ", ");
 }
 
