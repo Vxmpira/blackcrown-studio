@@ -356,30 +356,48 @@ export const PaperBot: React.FC = () => {
   }, [st, live, data, now]);
 
   /* --------------------------- path to live */
-  const gates = useMemo(() => {
-    const s = sb;
-    const n = s?.closed_trades ?? 0;
-    const aw = s?.avg_win_pct ?? 0, al = Math.abs(s?.avg_loss_pct ?? 0);
-    const be = aw + al > 0 ? (al / (aw + al)) * 100 : null;
-    // performance gates cannot pass on a handful of trades: they only count from 30
-    const enough = n >= 30;
-    const g = (label: string, val: string, ok: boolean, prog: number, note: string, perf = false) => ({
-      label, val, ok: perf ? ok && enough : ok,
-      prog: Math.max(0, Math.min(1, perf && !enough ? Math.min(prog, n / 30) : prog)),
-      note: perf && !enough ? `${note} (counts from 30 trades)` : note,
+  // Real money is earned by the INDEX FUTURES book only, one market at a time,
+  // and only on what that market's champion did AFTER it was crowned. The
+  // company stock book never goes live: it is the paper record that checks the
+  // crawler's reads.
+  const paths = useMemo(() => {
+    const risk = lab?.style?.risk_usd || 150;
+    const need = lab?.min_champion || 20;
+    const crownT = lab?.style?.crown_t || 2;
+    return ["MNQ", "MES"].map((sym) => {
+      const m = (lab?.markets || []).find((x) => x.sym === sym);
+      const champ = (m?.strategies || []).find((x) => x.status === "champion");
+      const a = champ?.since_crowned;
+      const n = a?.trades ?? 0;
+      const since = champ?.promoted_utc || "";
+      const mine = (lab?.trades || [])
+        .filter((t) => champ && t.strat === champ.id && t.status !== "open" && t.exit_utc && t.exit_utc > since)
+        .sort((x, y) => String(x.exit_utc).localeCompare(String(y.exit_utc)));
+      const days = new Set(mine.map((t) => String(t.exit_utc).slice(0, 10))).size;
+      const last = mine.slice(-20);
+      const lastR = last.length ? last.reduce((sum, t) => sum + (t.r ?? 0), 0) / last.length : null;
+      const ddR = a?.max_drawdown != null ? a.max_drawdown / risk : null;
+      // performance gates cannot pass on a handful of trades: they count from the lab's own sample size
+      const enough = n >= need;
+      const g = (label: string, val: string, ok: boolean, prog: number, note: string, perf = false) => ({
+        label, val, ok: perf ? ok && enough : ok,
+        prog: Math.max(0, Math.min(1, perf && !enough ? Math.min(prog, n / need) : prog)),
+        note: perf && !enough ? `${note} (counts from ${need} trades)` : note,
+      });
+      const list = [
+        g("Champion crowned", champ ? champ.id : "none yet", Boolean(champ), champ ? 1 : 0, "one rule set has to win the crown before anything counts"),
+        g("Trades since the crown", `${n} / 60`, n >= 60, n / 60, "enough trades after the crown that luck washes out"),
+        g("Trading days since the crown", `${days} / 30`, days >= 30, days / 30, "about six weeks of different market moods"),
+        g("Edge per trade", a?.exp_r != null ? rmult(a.exp_r) : "n/a", (a?.exp_r ?? -1) >= 0.1, ((a?.exp_r ?? 0) + 0.1) / 0.2, "at least +0.10R after commission and slippage", true),
+        g("Proof it is not luck", a?.t_stat != null ? `t ${a.t_stat}` : "n/a", (a?.t_stat ?? 0) >= crownT, (a?.t_stat ?? 0) / crownT, `a t-score of ${crownT} or better on the trades since the crown`, true),
+        g("Profit factor", a?.profit_factor ? String(a.profit_factor) : "n/a", (a?.profit_factor ?? 0) >= 1.3, (a?.profit_factor ?? 0) / 1.3, "gross wins at least 1.3x gross losses", true),
+        g("Max drawdown", ddR != null && n ? `${ddR.toFixed(1)}R` : "n/a", n > 0 && (ddR ?? 99) <= 8, n > 0 ? 1 - (ddR ?? 0) / 16 : 0, `no worse than 8 losing trades deep ($${n0(risk * 8)} at $${n0(risk)} a trade)`, true),
+        g("Recent form (last 20)", lastR != null ? rmult(lastR) : "n/a", (lastR ?? -1) > 0 && last.length >= 20, last.length / 20, "still working lately, not just early luck", true),
+      ];
+      return { sym, name: m?.name || sym, champ: champ?.id || null, gates: list, passed: list.filter((x) => x.ok).length, all: list.every((x) => x.ok) };
     });
-    return [
-      g("Closed trades", `${n} / 100`, n >= 100, n / 100, "enough trades that luck washes out"),
-      g("Trading days", `${s?.trading_days ?? 0} / 40`, (s?.trading_days ?? 0) >= 40, (s?.trading_days ?? 0) / 40, "about two months of different market moods"),
-      g("Expectancy per trade", pct(s?.expectancy_pct), (s?.expectancy_pct ?? -1) >= 0.1, ((s?.expectancy_pct ?? 0) + 0.1) / 0.2, "at least +0.10% after modeled slippage", true),
-      g("Recent form (last 30)", pct(s?.last30_expectancy_pct), (s?.last30_expectancy_pct ?? -1) > 0 && n >= 30, n >= 30 ? 1 : n / 30, "still working lately, not just early luck", true),
-      g("Profit factor", s?.profit_factor ? String(s.profit_factor) : "n/a", (s?.profit_factor ?? 0) >= 1.3, (s?.profit_factor ?? 0) / 1.3, "gross wins at least 1.3x gross losses", true),
-      g("Max drawdown", s?.max_drawdown_pct !== undefined && s?.max_drawdown_pct !== null ? `${s.max_drawdown_pct}%` : "n/a", n > 0 && (s?.max_drawdown_pct ?? 100) <= 5, n > 0 ? 1 - (s?.max_drawdown_pct ?? 0) / 10 : 0, `no worse than 5% of $${n0(s?.capital_at_work ?? 50000)} at work`, true),
-      g("Win rate vs break-even", s?.win_rate_pct !== null && s?.win_rate_pct !== undefined && be !== null ? `${s.win_rate_pct}% vs ${be.toFixed(0)}%` : "n/a", be !== null && (s?.win_rate_pct ?? 0) > be + 5, be !== null ? (s?.win_rate_pct ?? 0) / (be + 5) : 0, "comfortably above what the win/loss sizes need", true),
-    ];
-  }, [sb]);
-  const gatesPassed = gates.filter((x) => x.ok).length;
-  const allPass = gatesPassed === gates.length;
+  }, [lab]);
+  const anyLiveReady = paths.some((x) => x.all);
 
   const events: IntelEvent[] = (live?.events || []).slice().reverse().slice(0, 40);
 
@@ -415,8 +433,9 @@ export const PaperBot: React.FC = () => {
           <span className="eyebrow">Paper Bot</span>
           <h1>Korvus Intel</h1>
           <p>
-            Two paper books, one standard. Company stock is traded on the filings the crawler reads: a scalp when the
-            filing is minutes old, a swing inside the day otherwise. Index futures are swing trades inside the day, never scalps.
+            Two paper books with two jobs. Index futures (MNQ and MES) are swing trades inside the day, never scalps,
+            and are the only book that can ever trade real money, once a champion proves itself. Company stock is traded
+            on the filings the crawler reads and stays on paper for good, as the check on how accurate those reads are.
             No broker, no real money, until it earns it.
           </p>
         </div>
@@ -444,11 +463,11 @@ export const PaperBot: React.FC = () => {
               <div className="bk-books">
                 <button className="bk-book" onClick={() => setView("stocks")}>
                   <div className="bk-book-top">
-                    <span className="bk-book-k">Company stock</span>
+                    <span className="bk-book-k">Company stock · paper for good</span>
                     <span className="pb-tag bk-pb">{sb?.strategy || rules?.strategy || "no rules yet"}</span>
                   </div>
                   <h3>Catalyst bot</h3>
-                  <p>Scalps a filing the crawler just read. Swings the rest inside the day. Flat by the close.</p>
+                  <p>Scalps a filing the crawler just read. Swings the rest inside the day. Flat by the close. Never real money: this book checks the crawler's reads and builds the accuracy record.</p>
                   <div className="bk-book-main">
                     <div>
                       <strong className={tone(sb?.paper_pnl)}>{usd(sb?.paper_pnl ?? 0)}</strong>
@@ -471,7 +490,7 @@ export const PaperBot: React.FC = () => {
 
                 <button className="bk-book" onClick={() => setView("futures")}>
                   <div className="bk-book-top">
-                    <span className="bk-book-k">Index futures</span>
+                    <span className="bk-book-k">Index futures · the real money path</span>
                     <span className="pb-tag bk-pb">{lab?.rules || "first-generation rules"}</span>
                   </div>
                   <h3>Strategy lab</h3>
@@ -523,14 +542,14 @@ export const PaperBot: React.FC = () => {
               {/* ---------------- path to live ---------------- */}
               <section className="pb-panel pb-path">
                 <div className="pb-panel-h">
-                  <span>Path to real money · company stock book</span>
-                  <span className={allPass ? "pb-pass" : "pb-dim"}>{gatesPassed}/{gates.length} gates passed</span>
+                  <span>Path to real money · index futures only (MNQ, MES)</span>
+                  <span className={anyLiveReady ? "pb-pass" : "pb-dim"}>{paths.map((x) => `${x.sym} ${x.passed}/${x.gates.length}`).join(" · ")} gates passed</span>
                 </div>
                 <div className="pb-steps">
                   {[
-                    ["Paper", "Simulated fills on live data. Rules frozen while the sample builds.", true],
-                    ["Broker paper", "Same rules routed to a broker's paper account for about 4 weeks, to compare real order handling against our fills.", false],
-                    ["Live pilot", "Real money, tiny size: one small position at a time, a hard daily loss stop, a kill switch, and your approval on each order.", false],
+                    ["Paper", "The strategy lab trades MNQ and MES on live CME data with simulated fills. A market's champion has to prove itself again after it is crowned.", true],
+                    ["Broker paper", "The proven champion's orders routed to a broker's paper account for about 4 weeks, to compare real order handling against our fills.", false],
+                    ["Live pilot", "Real money, one micro contract at a time in that market only, a hard daily loss stop, a kill switch, and your approval on each order.", false],
                     ["Scale", "Size goes up in steps only while live results keep matching paper.", false],
                   ].map(([t, d, cur], i) => (
                     <div className={`pb-step${cur ? " cur" : ""}`} key={String(t)}>
@@ -539,20 +558,32 @@ export const PaperBot: React.FC = () => {
                     </div>
                   ))}
                 </div>
-                <div className="pb-gates">
-                  {gates.map((g) => (
-                    <div className={`pb-gate${g.ok ? " ok" : ""}`} key={g.label}>
-                      <div className="pb-gate-top"><span>{g.ok ? "✓" : "○"} {g.label}</span><b>{g.val}</b></div>
-                      <span className="pb-bar"><i style={{ width: `${g.prog * 100}%` }} /></span>
-                      <em>{g.note}</em>
+                {paths.map((x) => (
+                  <div key={x.sym}>
+                    <div className="pb-panel-h" style={{ marginTop: 14 }}>
+                      <span>{x.sym} · {x.champ ? `champion ${x.champ}, judged only on trades since its crown` : "no champion yet, so nothing counts toward real money"}</span>
+                      <span className={x.all ? "pb-pass" : "pb-dim"}>{x.passed}/{x.gates.length}</span>
                     </div>
-                  ))}
-                </div>
+                    <div className="pb-gates">
+                      {x.gates.map((g) => (
+                        <div className={`pb-gate${g.ok ? " ok" : ""}`} key={g.label}>
+                          <div className="pb-gate-top"><span>{g.ok ? "✓" : "○"} {g.label}</span><b>{g.val}</b></div>
+                          <span className="pb-bar"><i style={{ width: `${g.prog * 100}%` }} /></span>
+                          <em>{g.note}</em>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
                 <p className="pb-fine">
-                  Stage 2 unlocks when every gate passes on the same rule version. Changing a rule starts a fresh
-                  scoreboard. The futures lab earns its own path the same way: a champion has to hold up after it is crowned.
-                  Passing the gates is evidence, not a guarantee. Markets change, and paper fills are kinder than real
-                  ones. Paper results are simulated and are not a promise of returns.
+                  Only MNQ and MES can ever trade real money, and each earns it separately: stage 2 unlocks for a market
+                  when every one of its gates passes on the same champion. A champion that loses its crown starts that
+                  market over. The lab's total P&L above counts every rule set it has tried, including retired ones, so
+                  it is not the number that unlocks anything. The company stock book stays on paper for good: its job is
+                  to check the crawler's reads against what price did and to build the record that can later be posted to
+                  Discord as proof of how accurate the news calls are. Passing the gates is evidence, not a guarantee.
+                  Markets change, and paper fills are kinder than real ones. Paper results are simulated and are not a
+                  promise of returns.
                 </p>
               </section>
             </div>
