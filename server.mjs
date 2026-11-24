@@ -2173,14 +2173,15 @@ function recapPost(t) {
   const long = (t.side || "long") === "long";
   const stop0 = t.init_stop_px ?? t.stop_px;
   const planned = t.target_px != null && stop0 != null && Math.abs(t.entry_px - stop0) > 0 ? Math.abs(t.target_px - t.entry_px) / Math.abs(t.entry_px - stop0) : null;
-  const rr = [planned != null ? `planned ${planned.toFixed(1)} : 1` : "", t.r_mult != null ? `result ${Number(t.r_mult) >= 0 ? "+" : ""}${Number(t.r_mult).toFixed(2)}R` : ""].filter(Boolean).join(", ") || "n/a";
+  const ratio = (x) => (Math.abs(x - Math.round(x)) < 0.05 ? String(Math.round(x)) : x.toFixed(1));
+  const rr = planned != null ? `1:${ratio(planned)}` : "n/a";
   const why = [
     f.headline ? `${f.form ? `${f.form}: ` : ""}${String(f.headline).slice(0, 160)}` : "a filing the crawler scored",
     f.impact ? `scored ${f.impact} impact, ${/^bear/i.test(f.direction || "") ? "bearish" : /^bull/i.test(f.direction || "") ? "bullish" : f.direction || (long ? "bullish" : "bearish")}${f.confidence != null ? `, ${Math.round(Number(f.confidence) <= 1 ? Number(f.confidence) * 100 : Number(f.confidence))}% confidence` : ""}` : "",
     `price then moved the same way, which is the bot's entry rule${t.playbook ? ` (${t.playbook})` : ""}`,
   ].filter(Boolean).join("; ");
   // the forum's own template: plain labels, one per line
-  const cmp = t.cmp != null ? `${px(t.cmp)} when this posted (${t.cmp >= t.exit_px === long ? "it kept going after the exit" : "it came back after the exit"})` : "not available when this posted";
+  const cmp = t.cmp != null ? px(t.cmp) : "n/a";
   const lines = [
     `> Ticker: **${t.symbol}**`,
     `> Direction: ${long ? "Long" : "Short"}`,
@@ -2190,14 +2191,14 @@ function recapPost(t) {
     `> TP: ${px(t.target_px)}`,
     `> SL: ${px(stop0)}`,
     `> CMP: ${cmp}`,
-    `> Net PnL: ${money(t.pnl)}${t.pnl_pct != null ? ` (${Number(t.pnl_pct) >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%)` : ""} on paper${t.qty ? `, ${t.qty} shares` : ""}`,
+    `> Net PnL: ${money(t.pnl)}${t.pnl_pct != null ? ` (${Number(t.pnl_pct) >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%)` : ""}${t.qty ? `, ${t.qty} shares` : ""}`,
     `> Why did you enter: ${why}.`,
     `> Lesson's learned: ${recapLesson(t)}`,
     f.url ? `Filing: <${f.url}>` : "",
     `-# Paper trade by the Korvus catalyst bot. Simulated fills, no real money, not advice.`,
   ].filter(Boolean);
   return {
-    title: `${t.symbol} ${long ? "Long" : "Short"} · ${money(t.pnl)} paper${t.playbook ? ` · ${t.playbook}` : ""}`.slice(0, 96),
+    title: `${t.symbol} ${long ? "Long" : "Short"} · ${money(t.pnl)}${t.playbook ? ` · ${t.playbook}` : ""}`.slice(0, 96),
     content: lines.join("\n").slice(0, 1990),
     win: (Number(t.pnl) || 0) > 0,
   };
