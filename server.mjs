@@ -1789,6 +1789,9 @@ async function boardFeed() {
     const n = await numbersFeed();
     if (n) lines.push(`THE NUMBERS (read these before asking anyone for a count):\n${n}`);
   } catch {}
+  if (Date.now() - furnaceDown.at < 24 * 3600000) {
+    lines.push(`FURNACE IS DOWN (as of ${new Date(furnaceDown.at).toISOString().slice(0, 16)}Z): AWS will not give this account a GPU, so no furnace video can render. Do NOT file furnace or Monolith video asks until this line is gone; each one burns an approval and fails. Put video effort into the Pre-market Brief, X posts and pages instead. Only the owner can fix it (AWS quota).`);
+  }
   try {
     await croRefresh();
     const c = croBoard();
@@ -3568,6 +3571,9 @@ app.post("/api/premarket/run", (_req, res) => {
 const AWS_REGION = (process.env.AWS_RENDER_REGION || "us-east-2").trim();
 const AWS_RENDER_TYPES = (process.env.AWS_RENDER_TYPES || "g5.xlarge,g4dn.xlarge")
   .split(",").map((s) => s.trim()).filter(Boolean);
+// set when AWS refuses a GPU for lack of quota; the Board warns the desks off
+// furnace videos for a day so approvals are not spent on renders that cannot start
+let furnaceDown = { at: 0 };
 const AWS_RENDER_CAP_MIN = Math.max(30, Number(process.env.AWS_RENDER_MONTHLY_MINUTES || 600));
 const AWS_LEDGER_PATH = path.join(__dirname, "aws-render-ledger.json");
 function awsLedger() {
@@ -3718,7 +3724,7 @@ shutdown -h now
       if (instanceId) { agentLog("render", `furnace ${job}: ${itype} ${market} launched (${instanceId})`); break; }
     } catch (e) {
       lastErr = e;
-      refusals.push(`${market}: ${String(e.message || e)}`);
+      refusals.push(`${market}: ${e?.name || e?.Code || ""} ${String(e.message || e)}`);
       agentLog("render", `furnace ${job}: ${itype} ${market} refused: ${String(e.message || e).slice(0, 140)}`);
     }
   }
@@ -3726,12 +3732,13 @@ shutdown -h now
     awsJobs.delete(job);
     const msg = String(lastErr?.message || lastErr || "no instance type available");
     const all = refusals.join(" | ");
-    const quota = /MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded/i;
+    const quota = /MaxSpotInstanceCount|Max spot instance count|VcpuLimitExceeded|vCPU (limit|capacity)|more vCPU/i;
     if (quota.test(all)) {
+      furnaceDown = { at: Date.now() };
       const od = refusals.some((r) => r.startsWith("on-demand") && quota.test(r));
       throw new Error(od
         ? "AWS refused the GPU both ways: this account's G-instance quota is 0 for spot AND for on-demand. In Service Quotas (us-east-2, EC2) ask for 4 vCPUs on 'Running On-Demand G and VT instances' first; AWS grants that one more readily than spot. Then retry"
-        : "AWS refused the spot GPU: the G-instance spot quota is still 0. Approve the Service Quotas request (All G and VT Spot Instance Requests) and retry");
+        : `AWS refused the spot GPU: the G-instance spot quota is still 0. On-demand was tried too and AWS said: ${(refusals.find((r) => r.startsWith("on-demand")) || "nothing recorded").slice(0, 200)}`);
     }
     if (/service-linked role/i.test(all)) {
       throw new Error("AWS has never run a spot instance on this account, and this server is not allowed to create the one-time spot role. Fix once, as the account owner, in AWS CloudShell: aws iam create-service-linked-role --aws-service-name spot.amazonaws.com  Then retry the render");

@@ -446,7 +446,11 @@ function preflightProposal(p) {
         if (/<table/i.test(b) && !/tablewrap/i.test(b)) {
           return "the page has a table outside a tablewrap rail, it will bleed off phone screens; wrap every table in <div class=\"tablewrap\"> per the Page Frame";
         }
-        if (!/radial-gradient/i.test(b)) {
+        // Korvus /p/ pages are dressed by the Korvus server itself (fonts,
+        // colours, the atmosphere background), so they need no style of
+        // their own; demanding one made the page too long for a minion to finish
+        const dressed = loc.rootKey === "korvus" && /^pages\//.test(loc.file);
+        if (!dressed && !/radial-gradient/i.test(b)) {
           return "the page has a flat background; the Page Frame's atmosphere block (glows, grid, vignette) is law on every page";
         }
       }
