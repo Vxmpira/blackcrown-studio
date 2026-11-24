@@ -2195,7 +2195,7 @@ function recapPost(t) {
     `> Why did you enter: ${why}.`,
     `> Lesson's learned: ${recapLesson(t)}`,
     f.url ? `Filing: <${f.url}>` : "",
-    `-# Paper trade by the Korvus catalyst bot. Simulated fills, no real money, not advice.`,
+    t.simTag ? "" : `-# Korvus catalyst bot · simulated`,
   ].filter(Boolean);
   return {
     title: `${t.symbol} ${long ? "Long" : "Short"} · ${money(t.pnl)}${t.playbook ? ` · ${t.playbook}` : ""}`.slice(0, 96),
@@ -2255,7 +2255,10 @@ async function tradeRecapsTick() {
       fs.writeFileSync(RECAPS_PATH, JSON.stringify(st, null, 2));
       return;
     }
+    // a forum tag named Simulated (or Sim) carries the label instead of a line of text
+    const simTag = forum.tags.find((g) => /^sim/i.test(g.name));
     for (const t of fresh) {
+      t.simTag = Boolean(simTag);
       // CMP: the stock's price right now, asked of the Korvus server
       try {
         const q = await (await fetch(`${INTEL_STATUS_URL.replace(/intel-status\/?$/, "quote")}?symbol=${encodeURIComponent(t.symbol)}`, { headers: { "X-Intel-Key": INTEL_KEY }, signal: AbortSignal.timeout(12000) })).json();
@@ -2266,7 +2269,7 @@ async function tradeRecapsTick() {
       const r = await fetch(`https://discord.com/api/v10/channels/${forum.id}/threads`, {
         method: "POST",
         headers: { authorization: `Bot ${tok}`, "content-type": "application/json" },
-        body: JSON.stringify({ name: p.title, auto_archive_duration: 10080, applied_tags: tag ? [tag.id] : [], message: { content: p.content, allowed_mentions: { parse: [] } } }),
+        body: JSON.stringify({ name: p.title, auto_archive_duration: 10080, applied_tags: [tag, simTag].filter(Boolean).map((g) => g.id), message: { content: p.content, allowed_mentions: { parse: [] } } }),
       });
       const j = await r.json().catch(() => ({}));
       st.log = [{ at: Date.now(), ok: r.ok, what: r.ok ? `${p.title}` : `${t.symbol}: Discord refused the post (${r.status} ${String(j?.message || "").slice(0, 80)})` }, ...(st.log || [])].slice(0, 20);
