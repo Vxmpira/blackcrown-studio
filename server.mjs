@@ -2179,16 +2179,20 @@ function recapPost(t) {
     f.impact ? `scored ${f.impact} impact, ${/^bear/i.test(f.direction || "") ? "bearish" : /^bull/i.test(f.direction || "") ? "bullish" : f.direction || (long ? "bullish" : "bearish")}${f.confidence != null ? `, ${Math.round(Number(f.confidence) <= 1 ? Number(f.confidence) * 100 : Number(f.confidence))}% confidence` : ""}` : "",
     `price then moved the same way, which is the bot's entry rule${t.playbook ? ` (${t.playbook})` : ""}`,
   ].filter(Boolean).join("; ");
+  // the forum's own template: plain labels, one per line
+  const cmp = t.cmp != null ? `${px(t.cmp)} when this posted (${t.cmp >= t.exit_px === long ? "it kept going after the exit" : "it came back after the exit"})` : "not available when this posted";
   const lines = [
-    `> *Ticker:* **${t.symbol}**`,
-    `> *Direction:* ${long ? "Long" : "Short"}`,
-    `> *Entry:* ${px(t.entry_px)}, ${etClock(t.entry_utc)}`,
-    `> *Exit:* ${px(t.exit_px)}, ${etClock(t.exit_utc)}${t.exit_reason ? ` (${String(t.exit_reason).replace(/_/g, " ")})` : ""}`,
-    `> *RR:* ${rr}`,
-    `> *TP:* ${px(t.target_px)}${stop0 != null ? `, stop ${px(stop0)}` : ""}`,
-    `> *Net PnL:* ${money(t.pnl)}${t.pnl_pct != null ? ` (${Number(t.pnl_pct) >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%)` : ""} on paper${t.qty ? `, ${t.qty} shares` : ""}`,
-    `> *Why did you enter:* ${why}.`,
-    `> *Lesson's learned:* ${recapLesson(t)}`,
+    `> Ticker: **${t.symbol}**`,
+    `> Direction: ${long ? "Long" : "Short"}`,
+    `> Entry: ${px(t.entry_px)}, ${etClock(t.entry_utc)}`,
+    `> Exit: ${px(t.exit_px)}, ${etClock(t.exit_utc)}${t.exit_reason ? ` (${String(t.exit_reason).replace(/_/g, " ")})` : ""}`,
+    `> RR: ${rr}`,
+    `> TP: ${px(t.target_px)}`,
+    `> SL: ${px(stop0)}`,
+    `> CMP: ${cmp}`,
+    `> Net PnL: ${money(t.pnl)}${t.pnl_pct != null ? ` (${Number(t.pnl_pct) >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%)` : ""} on paper${t.qty ? `, ${t.qty} shares` : ""}`,
+    `> Why did you enter: ${why}.`,
+    `> Lesson's learned: ${recapLesson(t)}`,
     f.url ? `Filing: <${f.url}>` : "",
     `-# Paper trade by the Korvus catalyst bot. Simulated fills, no real money, not advice.`,
   ].filter(Boolean);
@@ -2251,6 +2255,11 @@ async function tradeRecapsTick() {
       return;
     }
     for (const t of fresh) {
+      // CMP: the stock's price right now, asked of the Korvus server
+      try {
+        const q = await (await fetch(`${INTEL_STATUS_URL.replace(/intel-status\/?$/, "quote")}?symbol=${encodeURIComponent(t.symbol)}`, { headers: { "X-Intel-Key": INTEL_KEY }, signal: AbortSignal.timeout(12000) })).json();
+        if (q && Number(q.price) > 0) t.cmp = Number(q.price);
+      } catch {}
       const p = recapPost(t);
       const tag = forum.tags.find((g) => (p.win ? /profit|win/i : /loss|losing|stopped/i).test(g.name));
       const r = await fetch(`https://discord.com/api/v10/channels/${forum.id}/threads`, {
