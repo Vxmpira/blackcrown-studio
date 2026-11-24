@@ -43,10 +43,21 @@ function save() {
 // How X itself weighs a post: any link counts 23 whatever its length, plain
 // Latin text counts 1 a character, and emoji, arrows and most symbols count 2.
 // The cap is 280.
+// Desks sometimes write a line break as the two characters backslash and n.
+// Posted as is, X shows them literally and stops seeing the link beside them
+// as a link, so the whole address counts against the 280. Make them real.
+export function xClean(text) {
+  return String(text || "")
+    .replace(/\\r?\\n|\\n/g, "\n")
+    .replace(/\\t/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 export function xWeight(text) {
-  let t = String(text || "").trim().normalize("NFC");
+  let t = xClean(text).normalize("NFC");
   let w = 0;
-  t = t.replace(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?/gi, () => {
+  t = t.replace(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[\/?#][^\s]*)?/gi, () => {
     w += 23;
     return "";
   });

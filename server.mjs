@@ -44,7 +44,7 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
-import { xWeight, recordPost as xRecord, idsToRead as xIdsToRead, storeMetrics as xStore, noteReadError as xReadErr, lastRead as xLastRead, scoreboardText as xScoreboard, xlabState } from "./xlab.mjs";
+import { xWeight, recordPost as xRecord, idsToRead as xIdsToRead, storeMetrics as xStore, noteReadError as xReadErr, lastRead as xLastRead, scoreboardText as xScoreboard, xlabState, xClean } from "./xlab.mjs";
 import { runCoach, coachState, coachCard, COACHED, addOrder } from "./coach.mjs";
 import { wireCro, refresh as croRefresh, croBoard, croTools, croState } from "./cro.mjs";
 import { wireBench, benchCall, inbox as benchInbox, benchState, benchFlag } from "./bench.mjs";
@@ -3218,7 +3218,7 @@ async function xUploadBuffer(buf, mediaType, category) {
   return mediaId;
 }
 async function postToX({ content, media }) {
-  let text = String(content || "").trim();
+  let text = xClean(content);
   const weight = () => xWeight(text);
   while (weight() > 280 && /\s/.test(text)) text = text.replace(/\s+\S+$/, "");
   const payload = { text };

@@ -3,7 +3,7 @@
 // to the owner on Discord, and on the owner's green light executes the change
 // itself: live site edits on this server, Bloom renders for creatives. The
 // owner's word is the only authority; Regent is the only hand that writes.
-import { xWeight, angleOf, ANGLE_LIST } from "./xlab.mjs";
+import { xWeight, xClean, angleOf, ANGLE_LIST } from "./xlab.mjs";
 import { noteBody } from "./vault.mjs";
 import fs from "fs";
 import path from "path";
@@ -623,7 +623,7 @@ function changeLines(p) {
     const media = (d.match(/MEDIA:\s*(\S+)/i) || [])[1];
     return [
       `**THE POST** (X, ${xWeight(next)} of 280${angleOf(d) ? `, angle: ${angleOf(d)}` : ""})`,
-      quote(next, 600),
+      xClean(next).slice(0, 700).split("\n").map((l) => `> ${l}`).join("\n"),
       media ? `**VIDEO** ${media}` : "",
     ];
   }
