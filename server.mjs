@@ -2133,6 +2133,161 @@ app.get("/api/intel", (_req, res) => {
   });
 });
 
+
+// ----- TRADE RECAPS: every closed company-stock paper trade becomes a post in
+// the Eclipse-X #trade-recaps forum, in the forum's own format. The company
+// stock book never trades real money; this is its public record, so members
+// can check how the crawler's reads held up against price.
+const RECAPS_PATH = path.join(__dirname, "studio-recaps.json");
+const recapState = () => {
+  try {
+    return JSON.parse(fs.readFileSync(RECAPS_PATH, "utf8"));
+  } catch {
+    return { posted: [], primed: false, log: [] };
+  }
+};
+const money = (n) => `${n < 0 ? "-" : "+"}$${Math.abs(Number(n) || 0).toFixed(2)}`;
+const px = (n) => (n == null ? "n/a" : `$${Number(n).toFixed(Number(n) < 5 ? 3 : 2)}`);
+const etClock = (iso) => {
+  try {
+    return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " ET";
+  } catch {
+    return "";
+  }
+};
+// what the numbers of one trade teach, in a sentence; no model call, no guessing
+function recapLesson(t) {
+  const win = (Number(t.pnl) || 0) > 0;
+  const why = String(t.exit_reason || "").toLowerCase();
+  const mfe = Number(t.mfe_pct), mae = Number(t.mae_pct);
+  const ran = Number.isFinite(mfe) ? `${Math.abs(mfe).toFixed(2)}%` : null;
+  const against = Number.isFinite(mae) ? `${Math.abs(mae).toFixed(2)}%` : null;
+  if (why.includes("target")) return `The read held: price went the filing's way and reached the target${against ? `, after going ${against} against the entry first` : ""}.`;
+  if (why.includes("stop") && !win) return ran && Math.abs(mfe) >= 0.5 ? `It ran ${ran} in favor, then turned and hit the stop. The read was right at first; the exit gave it back.` : `Price never followed the filing${ran ? ` (best it showed was ${ran})` : ""} and the stop took it out. On this one the market did not agree with the read.`;
+  if (why.includes("stop") && win) return `The stop had been moved up behind the trade, so the turn still closed it for a gain.`;
+  if (why.includes("time") || why.includes("close") || why.includes("flat") || why.includes("max")) return win ? `No target and no stop: time ran out with a small gain${ran ? `, best was ${ran}` : ""}. The move was real but slow.` : `No target and no stop: time ran out under water${ran ? `, best was ${ran}` : ""}. The filing did not move price enough to matter.`;
+  return win ? "Closed for a gain." : "Closed for a loss.";
+}
+function recapPost(t) {
+  const f = t.filing || {};
+  const long = (t.side || "long") === "long";
+  const stop0 = t.init_stop_px ?? t.stop_px;
+  const planned = t.target_px != null && stop0 != null && Math.abs(t.entry_px - stop0) > 0 ? Math.abs(t.target_px - t.entry_px) / Math.abs(t.entry_px - stop0) : null;
+  const rr = [planned != null ? `planned ${planned.toFixed(1)} : 1` : "", t.r_mult != null ? `result ${Number(t.r_mult) >= 0 ? "+" : ""}${Number(t.r_mult).toFixed(2)}R` : ""].filter(Boolean).join(", ") || "n/a";
+  const why = [
+    f.headline ? `${f.form ? `${f.form}: ` : ""}${String(f.headline).slice(0, 160)}` : "a filing the crawler scored",
+    f.impact ? `scored ${f.impact} impact, ${f.direction || (long ? "bullish" : "bearish")}${f.confidence != null ? `, ${Math.round(Number(f.confidence) <= 1 ? Number(f.confidence) * 100 : Number(f.confidence))}% confidence` : ""}` : "",
+    `price then moved the same way, which is the bot's entry rule${t.playbook ? ` (${t.playbook})` : ""}`,
+  ].filter(Boolean).join("; ");
+  const lines = [
+    `> *Ticker:* **${t.symbol}**`,
+    `> *Direction:* ${long ? "Long" : "Short"}`,
+    `> *Entry:* ${px(t.entry_px)}, ${etClock(t.entry_utc)}`,
+    `> *Exit:* ${px(t.exit_px)}, ${etClock(t.exit_utc)}${t.exit_reason ? ` (${String(t.exit_reason).replace(/_/g, " ")})` : ""}`,
+    `> *RR:* ${rr}`,
+    `> *TP:* ${px(t.target_px)}${stop0 != null ? `, stop ${px(stop0)}` : ""}`,
+    `> *Net PnL:* ${money(t.pnl)}${t.pnl_pct != null ? ` (${Number(t.pnl_pct) >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%)` : ""} on paper${t.qty ? `, ${t.qty} shares` : ""}`,
+    `> *Why did you enter:* ${why}.`,
+    `> *Lesson's learned:* ${recapLesson(t)}`,
+    f.url ? `Filing: <${f.url}>` : "",
+    `-# Paper trade by the Korvus catalyst bot. Simulated fills, no real money, not advice.`,
+  ].filter(Boolean);
+  return {
+    title: `${t.symbol} ${long ? "Long" : "Short"} · ${money(t.pnl)} paper${t.playbook ? ` · ${t.playbook}` : ""}`.slice(0, 96),
+    content: lines.join("\n").slice(0, 1990),
+    win: (Number(t.pnl) || 0) > 0,
+  };
+}
+let recapForum = { at: 0, id: "", tags: [], err: "" };
+async function findRecapForum() {
+  if (recapForum.id && Date.now() - recapForum.at < 6 * 3600000) return recapForum;
+  const tok = (process.env.DISCORD_BOT_TOKEN || "").trim();
+  const gid = (process.env.DISCORD_GUILD_ID || "").trim();
+  const H = { authorization: `Bot ${tok}` };
+  let id = (process.env.TRADE_RECAPS_CHANNEL_ID || "").trim();
+  try {
+    if (!id) {
+      const chans = await (await fetch(`https://discord.com/api/v10/guilds/${gid}/channels`, { headers: H })).json();
+      const hit = (Array.isArray(chans) ? chans : []).find((c) => c.type === 15 && /trade[-\s]?recaps/i.test(c.name));
+      if (!hit) return (recapForum = { at: 0, id: "", tags: [], err: "no forum channel named trade-recaps was found (or the bot cannot see it)" });
+      id = hit.id;
+    }
+    const ch = await (await fetch(`https://discord.com/api/v10/channels/${id}`, { headers: H })).json();
+    if (!ch || !ch.id) return (recapForum = { at: 0, id: "", tags: [], err: `the bot cannot read the trade-recaps channel (${ch?.message || "no answer"})` });
+    return (recapForum = { at: Date.now(), id, tags: ch.available_tags || [], err: "" });
+  } catch (e) {
+    return (recapForum = { at: 0, id: "", tags: [], err: String(e?.message || e).slice(0, 120) });
+  }
+}
+function closedStockTrades() {
+  const dataDir = path.join(INTEL_DIR, "data");
+  const trades = readJsonl(path.join(dataDir, "trades.jsonl")).filter((t) => t.status === "closed" && t.exit_utc && t.id != null);
+  const byAcc = new Map(readJsonl(path.join(dataDir, "filings.jsonl"), 600).map((f) => [f.accession, f]));
+  return trades.map((t) => ({ ...t, filing: byAcc.get(t.accession) || null })).sort((a, b) => String(a.exit_utc).localeCompare(String(b.exit_utc)));
+}
+let recapBusy = false;
+async function tradeRecapsTick() {
+  if (recapBusy || (process.env.TRADE_RECAPS || "1").trim() === "0") return;
+  const tok = (process.env.DISCORD_BOT_TOKEN || "").trim();
+  if (!tok || !(process.env.DISCORD_GUILD_ID || process.env.TRADE_RECAPS_CHANNEL_ID)) return;
+  recapBusy = true;
+  try {
+    const st = recapState();
+    const closed = closedStockTrades();
+    // first run: everything already on the book counts as posted, so the forum
+    // is not flooded with history; only trades closed from here on are posted
+    if (!st.primed) {
+      st.posted = closed.map((t) => t.id);
+      st.primed = true;
+      fs.writeFileSync(RECAPS_PATH, JSON.stringify(st, null, 2));
+      return;
+    }
+    const fresh = closed.filter((t) => !st.posted.includes(t.id)).slice(0, 3);
+    if (!fresh.length) return;
+    const forum = await findRecapForum();
+    if (!forum.id) {
+      st.log = [{ at: Date.now(), ok: false, what: forum.err }, ...(st.log || [])].slice(0, 20);
+      fs.writeFileSync(RECAPS_PATH, JSON.stringify(st, null, 2));
+      return;
+    }
+    for (const t of fresh) {
+      const p = recapPost(t);
+      const tag = forum.tags.find((g) => (p.win ? /profit|win/i : /loss|losing|stopped/i).test(g.name));
+      const r = await fetch(`https://discord.com/api/v10/channels/${forum.id}/threads`, {
+        method: "POST",
+        headers: { authorization: `Bot ${tok}`, "content-type": "application/json" },
+        body: JSON.stringify({ name: p.title, auto_archive_duration: 10080, applied_tags: tag ? [tag.id] : [], message: { content: p.content, allowed_mentions: { parse: [] } } }),
+      });
+      const j = await r.json().catch(() => ({}));
+      st.log = [{ at: Date.now(), ok: r.ok, what: r.ok ? `${p.title}` : `${t.symbol}: Discord refused the post (${r.status} ${String(j?.message || "").slice(0, 80)})` }, ...(st.log || [])].slice(0, 20);
+      // a refused post is retried on the next tick, except a shape Discord will never take
+      if (r.ok || r.status === 400) st.posted = [...st.posted, t.id].slice(-2000);
+      fs.writeFileSync(RECAPS_PATH, JSON.stringify(st, null, 2));
+      if (!r.ok) break;
+    }
+  } catch (e) {
+    console.error("[recaps]", e?.message || e);
+  } finally {
+    recapBusy = false;
+  }
+}
+setInterval(tradeRecapsTick, 5 * 60 * 1000);
+setTimeout(tradeRecapsTick, 45 * 1000);
+// what the next posts would look like, and what has gone out; posts nothing
+app.get("/api/recaps", async (_req, res) => {
+  const st = recapState();
+  const closed = closedStockTrades();
+  const forum = await findRecapForum();
+  res.json({
+    on: (process.env.TRADE_RECAPS || "1").trim() !== "0",
+    forum: forum.id ? { id: forum.id, tags: forum.tags.map((t) => t.name) } : { error: forum.err },
+    primed: st.primed, posted: (st.posted || []).length, closedOnBook: closed.length,
+    waiting: closed.filter((t) => st.primed && !st.posted.includes(t.id)).length,
+    log: st.log || [],
+    sample: closed.length ? recapPost(closed[closed.length - 1]) : null,
+  });
+});
+
 // Live crawler status straight from the Korvus server (key stays server-side).
 // KORVUS_INTEL_STATUS_URL + KORVUS_INTEL_KEY in .env; the same key is
 // INTEL_STATUS_KEY on the Korvus box. Cached 4s so many tabs = one request.
