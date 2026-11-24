@@ -277,7 +277,7 @@ export const Tuner: React.FC = () => {
         </div>
         <div className="sgroup">
           <div className="sgroup-h">Pre-market Brief</div>
-          {["brief.enabled", "brief.time", "brief.sound", "brief.tiktokDrop", "brief.fileX", "brief.fileYouTube", "brief.communityPost"].map(field)}
+          {["brief.enabled", "brief.time", "brief.sound", "brief.musicLevel", "brief.tiktokDrop", "brief.fileX", "brief.fileYouTube", "brief.communityPost"].map(field)}
           <div className="brief-actions">
             <button className="btn" onClick={onRunBrief} disabled={Boolean(brief?.running)}>
               {brief?.running ? "Rendering..." : "Make today's brief now"}

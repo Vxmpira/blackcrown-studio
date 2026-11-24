@@ -304,7 +304,13 @@ export function licenceProblem(x) {
   if (!OK_SOURCE.includes(String(x.source || "").toLowerCase())) return `it comes from ${x.source || "an unknown source"}; only ${OK_SOURCE.join(" and ")} are stocked`;
   if (!/^https:\/\/creativecommons\.org\/publicdomain\//.test(String(x.license_url || ""))) return "its licence link is not a Creative Commons public domain deed";
   const sec = Number(x.duration || 0) / 1000;
-  if (sec < 30 || sec > 600) return `it runs ${Math.round(sec)} seconds; tracks must run 30 seconds to 10 minutes`;
+  // loops are fine (the brief repeats a short track), but it has to be MUSIC:
+  // the catalogue is mostly sound effects, drones and field recordings
+  if (sec < 8 || sec > 300) return `it runs ${Math.round(sec)} seconds; tracks must run 8 seconds to 5 minutes`;
+  const words = `${x.title || ""} ${(x.tags || []).map((t) => t.name).join(" ")}`.toLowerCase();
+  const off = words.match(/ambient|ambience|drone|atmos|soundscape|field.?record|horror|creepy|scary|spooky|noise|sfx|sound.?effect|\bfx\b|voice|vocal|speech|foley|glitch|wind\b|rain\b|cave|whoosh|impact|riser/);
+  if (off) return `it is tagged "${off[0]}": the shelf takes music with a beat, never ambience, drones or sound effects`;
+  if (!/beat|music|song|loop|instrumental|track|synth|drum|bass|trap|hip.?hop|techno|house|edm|electro|lofi|lo-fi|piano|guitar|soundtrack|bpm/.test(words)) return "nothing in its title or tags says it is music";
   if (!x.url) return "the catalogue gives no file for it";
   return "";
 }
@@ -316,9 +322,9 @@ async function musicSearch(desk, a) {
   if (r.status !== 200) return { err: `the music catalogue answered ${r.status}` };
   const have = new Set(Object.values(credits()).map((c) => c.id));
   const rows = (JSON.parse(r.buf.toString("utf8")).results || []).filter((x) => !licenceProblem(x)).slice(0, 12);
-  if (!rows.length) return { note: `music search "${q}"`, text: "No stockable track matched (public domain, 30 seconds to 10 minutes). Try other words: dark ambient, tension, suspense, cinematic drone, trap beat, synthwave." };
+  if (!rows.length) return { note: `music search "${q}"`, text: "No stockable track matched (public domain music with a beat, 8 seconds to 5 minutes). Try other words: trap beat, hip hop beat, synthwave, cyberpunk beat, drum loop, techno loop." };
   return {
-    note: `music search "${q}": public-domain tracks the server may stock. Stock up to 3 with the music.add tool and their ids. Pick MUSIC (a beat, a pad, a score), never a sound effect, a voice or a field recording.`,
+    note: `music search "${q}": public-domain tracks the server may stock. Stock up to 3 with the music.add tool and their ids. Pick tracks with a clear BEAT and a modern feel (trap, hip hop, synthwave, electronic); the owner rejected ambient and drone pieces as unlistenable.`,
     text: rows.map((x) => `${x.id} | ${String(x.title).slice(0, 80)} | by ${String(x.creator || "?").slice(0, 30)} | ${Math.round(x.duration / 1000)}s | ${String(x.license).toUpperCase()}${have.has(x.id) ? " | ALREADY STOCKED" : ""}${(x.tags || []).length ? ` | tags: ${(x.tags || []).slice(0, 6).map((t) => t.name).join(", ")}` : ""}`).join("\n"),
   };
 }
@@ -365,7 +371,7 @@ export async function stockTrack(desk, id) {
   const full = path.join(MUSIC, name);
   fs.writeFileSync(full, file.buf);
   const secs = probeSeconds(full);
-  if (secs !== null && secs < 25) {
+  if (secs !== null && secs < 6) {
     try { fs.unlinkSync(full); } catch {}
     return `${clean}: the file is not playable audio`;
   }
@@ -449,7 +455,7 @@ export const BENCH_RULES = `YOUR WORKBENCH, your own working environment on the 
  "tool": {"name":"files.list"}  lists your workbench files and the shared folder
  "tool": {"name":"files.read","path":"notes/x.md","find":"optional"}  reads one of them
  "tool": {"name":"files.write","path":"research/competitors.md","body":"full text","append":false}  saves working files that are yours to keep between tasks; a path starting shared/ is readable by every desk, use it to hand work over
- "tool": {"name":"music.search","query":"dark cinematic tension"}  finds public-domain music the server may stock for the Pre-market Brief
+ "tool": {"name":"music.search","query":"dark trap beat"}  finds public-domain music the server may stock for the Pre-market Brief
  "tool": {"name":"music.add","ids":["id from music.search"]}  stocks up to 3; the server checks each licence itself and refuses anything that is not public domain
  "tool": {"name":"music.shelf"}  shows what is stocked
  "tool": {"name":"memo","to":"corvid|regent|herald|steward|bard|all","text":"max 280 characters of news","file":"optional shared/ path"}  tells another desk something it should know. A memo is NEWS (I found, I shipped, this number moved, the file is at shared/x); it never asks for anything, use "request" for asks.

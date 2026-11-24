@@ -382,19 +382,24 @@ export function buildAss(brief, board, calendar, dateLabel) {
 // licence, no cost, nothing a platform can mute or claim. A minor-key pad, an
 // eighth-note pluck line that walks four chords, a soft kick on the beat, and
 // a low hit on every scene change so the cuts land.
-export function scoreGraph(seconds, starts, track = false) {
+// level: the music's volume, 0 to 100. It sits UNDER a video people read, so
+// the default is quiet; the waveform strip is drawn from the mix before the
+// volume is turned down, so it stays lively at any level.
+export function scoreGraph(seconds, starts, track = false, level = 22) {
+  const vol = (Math.max(0, Math.min(100, Number(level) || 0)) / 100).toFixed(3);
   const T = Number(seconds).toFixed(2);
   if (track) {
     // a real track (input 1, looped): levelled, with a softer hit on each
     // scene change so the cuts still land on top of it
-    const hitT = "0.5*sin(2*PI*(38*t+7*(1-exp(-8*t))))*exp(-2.6*t)+0.12*(random(0)*2-1)*exp(-10*t)";
+    const hitT = "0.28*sin(2*PI*(38*t+7*(1-exp(-8*t))))*exp(-2.6*t)+0.06*(random(0)*2-1)*exp(-10*t)";
     const k = Math.max(1, starts.length);
     return [
-      `[1:a]aresample=44100,aformat=channel_layouts=stereo,atrim=0:${T},dynaudnorm=f=250:g=15:p=0.7,volume=0.9[mu]`,
+      `[1:a]aresample=44100,aformat=channel_layouts=stereo,atrim=0:${T},loudnorm=I=-16:TP=-2:LRA=9,aresample=44100[mu]`,
       `aevalsrc='${hitT}':s=44100:d=2.2,aformat=channel_layouts=stereo,asplit=${k}${starts.map((_, i) => `[h${i}]`).join("")}`,
       ...starts.map((at, i) => `[h${i}]adelay=${Math.max(0, Math.round(at * 1000))}:all=1[d${i}]`),
       `[mu]${starts.map((_, i) => `[d${i}]`).join("")}amix=inputs=${1 + k}:normalize=0:duration=first,` +
-        `alimiter=limit=0.75,afade=t=in:d=0.4,afade=t=out:st=${Math.max(0, seconds - 1.6).toFixed(2)}:d=1.6,asplit=2[aout][aviz]`,
+        `alimiter=limit=0.75,afade=t=in:d=0.4,afade=t=out:st=${Math.max(0, seconds - 1.6).toFixed(2)}:d=1.6,asplit=2[apre][aviz]`,
+      `[apre]volume=${vol}[aout]`,
     ].join(";");
   }
   const root = "st(1, floor(mod(t/8,4))); st(2, if(eq(ld(1),0),0, if(eq(ld(1),1),-4, if(eq(ld(1),2),3,-2))));";
@@ -412,12 +417,13 @@ export function scoreGraph(seconds, starts, track = false) {
     ...starts.map((at, i) => `[h${i}]adelay=${Math.max(0, Math.round(at * 1000))}:all=1[d${i}]`),
     `[pl][pd][kk]${starts.map((_, i) => `[d${i}]`).join("")}amix=inputs=${3 + n}:normalize=0:duration=first,` +
       `alimiter=limit=0.85,afade=t=in:d=0.4,afade=t=out:st=${Math.max(0, seconds - 1.6).toFixed(2)}:d=1.6,` +
-      `aformat=channel_layouts=stereo,asplit=2[aout][aviz]`,
+      `aformat=channel_layouts=stereo,asplit=2[apre][aviz]`,
+    `[apre]volume=${vol}[aout]`,
   ];
   return parts.join(";");
 }
 
-async function render(ass, seconds, name, starts = [0], sound = true, track = null) {
+async function render(ass, seconds, name, starts = [0], sound = true, track = null, level = 22) {
   const { default: ffmpegPath } = await import("ffmpeg-static");
   const { execFileSync } = await import("child_process");
   fs.mkdirSync(deps.rendersDir, { recursive: true });
@@ -436,7 +442,7 @@ async function render(ass, seconds, name, starts = [0], sound = true, track = nu
   // the progress rail so the frame moves with the music
   const graph = sound
     ? [
-        scoreGraph(seconds, starts, Boolean(track)),
+        scoreGraph(seconds, starts, Boolean(track), level),
         `[0:v]${vf}[bg]`,
         `[aviz]showwaves=s=900x110:mode=cline:rate=30:scale=sqrt:draw=full:colors=0xFF2D8F,format=rgba,colorkey=black:0.12:0.2,colorchannelmixer=aa=0.7[wv]`,
         `[bg][wv]overlay=90:1455:shortest=1,format=yuv420p[vout]`,
@@ -482,14 +488,14 @@ export async function runPremarket({ force = false, reason = "schedule" } = {}) 
     let track = wantSound ? pickTrack(t.day) : null;
     let vid;
     try {
-      vid = await render(ass, seconds, name, starts, wantSound, track);
+      vid = await render(ass, seconds, name, starts, wantSound, track, (deps.settings() || {}).musicLevel);
     } catch (e) {
       // a track ffmpeg cannot read must never cost the day's brief
       if (!track) throw e;
       deps.log(`track ${track} would not play (${String(e.message || e).slice(0, 120)}); using the built-in score`);
       rec.trackError = track;
       track = null;
-      vid = await render(ass, seconds, name, starts, wantSound, null);
+      vid = await render(ass, seconds, name, starts, wantSound, null, (deps.settings() || {}).musicLevel);
     }
     rec.music = !wantSound ? "silent" : track || "built-in score";
     rec.url = vid.url;
