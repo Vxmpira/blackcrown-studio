@@ -43,6 +43,8 @@ export const TUNING_SCHEMA = {
   "crew.queueCap": { label: "Open tasks per desk, max", unit: "tasks", min: 5, max: 60, step: 1, def: env("CREW_QUEUE_CAP", 15) },
   "crew.staleHours": { label: "Close tasks with no movement after", unit: "h", min: 12, max: 336, step: 12, def: env("CREW_STALE_HOURS", 72) },
   "crew.wakeGapMin": { label: "Desk-to-desk asks wake a desk at most every", unit: "min", min: 1, max: 240, step: 1, def: env("CREW_WAKE_GAP_MIN", 15) },
+  "regent.dailyBrief": { label: "Regent posts one Daily Brief each evening: what shipped, what failed, what waits on you", type: "bool", def: true },
+  "regent.briefTime": { label: "Daily Brief time, ET", type: "time", def: "20:00" },
   "coach.enabled": { label: "The Coach reviews every desk each morning and writes its notes for the day", type: "bool", def: true },
   "coach.time": { label: "Coach review time, ET", type: "time", def: "04:45" },
   "coach.post": { label: "Post the Coach's daily card in the boardroom", type: "bool", def: true },
@@ -148,6 +150,7 @@ export const tune = {
   queueCap: () => Number(tv("crew.queueCap")),
   staleHours: () => Number(tv("crew.staleHours")),
   wakeGapMin: () => Number(tv("crew.wakeGapMin")),
+  regentBrief: () => ({ on: tv("regent.dailyBrief") !== false, time: String(tv("regent.briefTime") || "20:00") }),
   coach: () => ({ enabled: tv("coach.enabled") !== false, time: String(tv("coach.time") || "04:45"), post: tv("coach.post") !== false }),
   brief: () => ({
     enabled: tv("brief.enabled") !== false,

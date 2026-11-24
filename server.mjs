@@ -44,7 +44,8 @@ import {
 import { startGateway, wireGateway } from "./gateway.mjs";
 import { usageReport, callJSON, MODELS, startKeeper, keeperState } from "./llm.mjs";
 import { tune, tuningFlat, setTuning, TUNING_SCHEMA } from "./tuning.mjs";
-import { runCoach, coachState, coachCard, COACHED } from "./coach.mjs";
+import { xWeight, recordPost as xRecord, idsToRead as xIdsToRead, storeMetrics as xStore, noteReadError as xReadErr, lastRead as xLastRead, scoreboardText as xScoreboard, xlabState } from "./xlab.mjs";
+import { runCoach, coachState, coachCard, COACHED, addOrder } from "./coach.mjs";
 import { wireCro, refresh as croRefresh, croBoard, croTools, croState } from "./cro.mjs";
 import { wireBench, benchCall, inbox as benchInbox, benchState, benchFlag } from "./bench.mjs";
 import { wirePremarket, runPremarket, premarketDue, premarketState, musicTracks, saveTrack, removeTrack } from "./premarket.mjs";
@@ -61,6 +62,8 @@ import {
   ceoVaultPath,
   REPO_ROOTS,
   readPageSource,
+  dailyBriefCard,
+  sendDailyBrief,
 } from "./ceo.mjs";
 import { startStaff, wireStaff, staffStates, staffSetEnabled, staffRunCycle, staffAddTask, heraldCopyPass, staffHeal, staffLibrarian, staffVaultDir } from "./staff.mjs";
 import { wireVault, readNote, isNote } from "./vault.mjs";
@@ -1674,57 +1677,45 @@ async function korvusTrafficLine() {
   korvusTraffic = { at: Date.now(), line };
   return line;
 }
-// the brand's own X posts: ids from Regent's executions plus any a desk named
-let xStats = { at: 0, ids: "", line: "" };
-function xPostIds() {
-  const ids = [];
+async function xStatsLine() {
+  if (!xConfigured()) return "";
+  // posts made before the lab existed join it once, unlabeled, as the baseline
   try {
     for (const e of ceoState().executed || []) {
       const m = String(e.result || "").match(/\bpost (\d{15,22})\b/);
-      if (m && !ids.includes(m[1])) ids.push(m[1]);
-      if (ids.length >= 3) break;
+      if (m) xRecord({ id: m[1], angle: "unlabeled", number: e.number, text: e.summary, at: e.at });
     }
   } catch {}
-  try {
-    for (const gap of crewState().gaps || []) {
-      if (gap.status !== "open") continue;
-      for (const m of String(gap.what).matchAll(/\b(\d{17,21})\b/g)) if (!ids.includes(m[1])) ids.push(m[1]);
+  // numbers are read from X twice a day: young posts each time, every post one
+  // last time once it is two days old
+  if (Date.now() - xLastRead().at > 12 * 3600000) {
+    const ids = xIdsToRead(40);
+    if (ids.length) {
+      try {
+        const ask = async (fields) => {
+          const url = `https://api.twitter.com/2/tweets?ids=${ids.join(",")}&tweet.fields=${fields}`;
+          const r = await fetch(url, { headers: { authorization: oauth1Header("GET", url) }, signal: AbortSignal.timeout(12000) });
+          const j = await r.json().catch(() => ({}));
+          return { r, j };
+        };
+        let { r, j } = await ask("created_at,public_metrics,non_public_metrics");
+        if (!r.ok || !Array.isArray(j.data)) ({ r, j } = await ask("created_at,public_metrics"));
+        if (!r.ok || !Array.isArray(j.data)) {
+          const why = j?.title || j?.detail || (j?.errors && j.errors[0]?.message) || `HTTP ${r.status}`;
+          throw new Error(r.status === 403 || r.status === 401 ? `X refused the read (${r.status}): ${String(why).slice(0, 90)}; this X API plan may not include reading posts` : String(why).slice(0, 120));
+        }
+        xStore(j.data.map((t) => {
+          const pm = t.public_metrics || {}, np = t.non_public_metrics || {};
+          return { id: t.id, imp: np.impression_count ?? pm.impression_count ?? null, likes: pm.like_count, reposts: pm.retweet_count, replies: pm.reply_count, clicks: np.url_link_clicks ?? null, profile: np.user_profile_clicks ?? null };
+        }));
+      } catch (e) {
+        xReadErr(String(e?.message || e));
+      }
     }
-  } catch {}
-  return ids.slice(0, 5);
-}
-async function xStatsLine() {
-  if (!xConfigured()) return "";
-  const ids = xPostIds();
-  if (!ids.length) return "X BRAND POSTS: none posted by Regent yet";
-  const key = ids.join(",");
-  const fresh = Date.now() - xStats.at < (xStats.ids === key ? 12 * 3600000 : 30 * 60000);
-  if (xStats.line && fresh) return xStats.line;
-  let line;
-  try {
-    const ask = async (fields) => {
-      const url = `https://api.twitter.com/2/tweets?ids=${key}&tweet.fields=${fields}`;
-      const r = await fetch(url, { headers: { authorization: oauth1Header("GET", url) }, signal: AbortSignal.timeout(10000) });
-      const j = await r.json().catch(() => ({}));
-      return { r, j };
-    };
-    let { r, j } = await ask("created_at,public_metrics,non_public_metrics");
-    if (!r.ok || !Array.isArray(j.data)) ({ r, j } = await ask("created_at,public_metrics"));
-    if (!r.ok || !Array.isArray(j.data)) {
-      const why = j?.title || j?.detail || (j?.errors && j.errors[0]?.message) || `HTTP ${r.status}`;
-      throw new Error(r.status === 403 || r.status === 401 ? `X refused the read (${r.status}): ${String(why).slice(0, 90)}; this X API plan may not include reading posts` : String(why).slice(0, 120));
-    }
-    const rows = j.data.map((t) => {
-      const pm = t.public_metrics || {}, np = t.non_public_metrics || {};
-      return `${t.id} (${String(t.created_at || "").slice(0, 10)}): impressions ${np.impression_count ?? pm.impression_count ?? "?"}, link clicks ${np.url_link_clicks ?? "not available"}, profile clicks ${np.user_profile_clicks ?? "n/a"}, likes ${pm.like_count ?? 0}, reposts ${pm.retweet_count ?? 0}, replies ${pm.reply_count ?? 0}, bookmarks ${pm.bookmark_count ?? 0}`;
-    });
-    line = `X BRAND POSTS (read from X, refreshed twice a day): ${rows.join(" | ")}`;
-  } catch (e) {
-    line = `X BRAND POSTS: ${String(e?.message || e).slice(0, 200)}`;
   }
-  xStats = { at: Date.now(), ids: key, line };
-  return line;
+  return xScoreboard();
 }
+app.get("/api/xlab", (_req, res) => res.json(xlabState()));
 // Crown's own counters (accounts, signups, views, referrers) from the Crown box,
 // behind CROWN_FEED_KEY, the same value in both boxes' .env
 let crownNums = { at: 0, line: "" };
@@ -3228,7 +3219,7 @@ async function xUploadBuffer(buf, mediaType, category) {
 }
 async function postToX({ content, media }) {
   let text = String(content || "").trim();
-  const weight = () => text.replace(/https?:\/\/\S+/g, "x".repeat(23)).length;
+  const weight = () => xWeight(text);
   while (weight() > 280 && /\s/.test(text)) text = text.replace(/\s+\S+$/, "");
   const payload = { text };
   if (media) payload.media = { media_ids: [await xUploadVideo(media)] };
@@ -3250,7 +3241,7 @@ async function postToX({ content, media }) {
     throw new Error(`X refused the post (${r.status}): ${JSON.stringify(j.errors || j.detail || j).slice(0, 160)}`);
   return j.data?.id || "";
 }
-async function publishPost({ platform, content, media, number, summary }) {
+async function publishPost({ platform, content, media, number, summary, angle }) {
   if (!PUBLISH_PLATFORMS.includes(platform)) {
     return {
       ok: false,
@@ -3275,6 +3266,7 @@ async function publishPost({ platform, content, media, number, summary }) {
     }
     try {
       const id = await postToX({ content, media });
+      if (id) xRecord({ id, angle, number, text: content });
       return { ok: true, msg: `posted to X with the brand account${id ? ` (post ${id})` : ""}` };
     } catch (e) {
       return { ok: false, msg: `X publish failed: ${String(e.message || e).slice(0, 160)}` };
@@ -3318,6 +3310,8 @@ wireCeo({
   engineText: () => engineCache.text,
   publish: publishPost,
   cro: croBoard,
+  briefSettings: () => tune.regentBrief(),
+  spentToday: () => usageReport().budget?.spent ?? 0,
   staffChannels: {
     Herald: (process.env.HERALD_CHANNEL_ID || "").trim(),
     Steward: (process.env.STEWARD_CHANNEL_ID || "").trim(),
@@ -4506,7 +4500,10 @@ setInterval(() => {
   const now = new Date().toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" });
   if (now >= c.time) coachRun().catch(() => {});
 }, 60 * 1000);
+app.get("/api/regent/brief", (_req, res) => res.type("text/plain").send(dailyBriefCard() || "nothing to report yet today"));
+app.post("/api/regent/brief", async (_req, res) => res.json(await sendDailyBrief(true)));
 app.get("/api/coach", (_req, res) => res.json({ ...coachState(), settings: tune.coach() }));
+app.post("/api/coach/orders", (req, res) => res.json({ ok: addOrder(String(req.body?.text || "")), orders: coachState().orders }));
 app.post("/api/coach/run", async (_req, res) => res.json(await coachRun(true)));
 
 const TUNER_MODELS = ["", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];

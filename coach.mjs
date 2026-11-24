@@ -51,7 +51,22 @@ export function coachBlock() {
   return lines.join("\n").slice(0, 3600);
 }
 
-const SYSTEM = `You are the Coach of a five-desk AI company (BlackCrownVxJ LLC: Korvus, a market intelligence terminal for index futures traders, and Crown, a private AI workspace). The desks are Corvid (SEO and site), Herald (sales and offers), Steward (project manager and community), Bard (video) and Regent (the CEO desk that approves or vetoes every ask). The owner is one person with little time. The company's goal is its first paying customers.
+// What the owner has decided. The coach works inside these.
+const STANDING_ORDERS = [
+  "X is the company's traffic engine: its job is to make strangers curious and pull them to the products. Do NOT tell desks or Regent to cut or cap X volume. Coach X on creativity and on testing: every post carries a sales ANGLE, the X LAB on the Board scores the angles, and the desks should try different approaches, move posts toward what earns impressions and link clicks, and keep giving untested angles a fair try. Herald runs X as the company's ad and social manager.",
+  "Do not cut the desks' production to save money. Make them smarter instead: gather everything a task needs in ONE step (up to three reads and tools at once), finish tasks in fewer steps, and stop work that cannot produce a result. Name wasted steps; never tell a desk to simply do less.",
+];
+export function standingOrders() {
+  return [...STANDING_ORDERS, ...((state && state.orders) || [])];
+}
+export function addOrder(text) {
+  const t = one(text, 400);
+  if (t.length < 12) return false;
+  state.orders = [...(state.orders || []), t].slice(-8);
+  save();
+  return true;
+}
+const SYSTEM_BASE = `You are the Coach of a five-desk AI company (BlackCrownVxJ LLC: Korvus, a market intelligence terminal for index futures traders, and Crown, a private AI workspace). The desks are Corvid (SEO and site), Herald (sales and offers), Steward (project manager and community), Bard (video) and Regent (the CEO desk that approves or vetoes every ask). The owner is one person with little time. The company's goal is its first paying customers.
 
 Each morning you get every desk's scorecard, its own log of what it worked on, the ledger of what actually shipped, and the company's real numbers. You write today's coaching.
 
@@ -70,8 +85,13 @@ WHAT YOU WRITE:
 - Regent's notes are about its approving: what it should have vetoed, what it should wave through faster.
 - Plain words, no em dashes, no hype, no praise that the numbers do not earn.
 
+THE OWNER'S STANDING ORDERS. These outrank your own judgement; coach the desks toward them, never against them:
+__ORDERS__
+
 Return ONLY valid JSON, no markdown fences:
 {"bottleneck":"one sentence naming the single thing holding the company back right now, with the number that shows it","team":"one or two sentences every desk should carry today","desks":{"corvid":{"grade":"A|B|C|D|F","followed":"yes|partly|no|first day","worked":"one sentence, or none","wasted":"one sentence, or none","do":["..."],"stop":["..."]},"herald":{...},"steward":{...},"bard":{...},"regent":{...}},"owner":["..."]}`;
+
+const systemPrompt = () => SYSTEM_BASE.replace("__ORDERS__", standingOrders().map((o, i) => `${i + 1}. ${o}`).join("\n"));
 
 // inputs: { scorecards, logs, ledger, board } all plain text built by the server
 export async function runCoach(inputs, { force = false } = {}) {
@@ -106,7 +126,7 @@ export async function runCoach(inputs, { force = false } = {}) {
     };
     // bare: the coach gets the evidence above, not the desks' constitution
     // (and not its own notes read back to it)
-    const out = await callJSON({ who: "coach", model: (process.env.COACH_MODEL || MODELS.hands).trim(), system: SYSTEM, user, maxTokens: 12000, priority: "owner", bare: true }, parse);
+    const out = await callJSON({ who: "coach", model: (process.env.COACH_MODEL || MODELS.hands).trim(), system: systemPrompt(), user, maxTokens: 12000, priority: "owner", bare: true }, parse);
     const desks = {};
     for (const k of COACHED) {
       const d = (out.desks || {})[k] || {};
@@ -133,7 +153,7 @@ export async function runCoach(inputs, { force = false } = {}) {
   }
 }
 export function coachState() {
-  return { lastRunDay: state.lastRunDay, running: Boolean(state.running), lastError: state.lastError || "", today: state.today, history: (state.history || []).slice(-14) };
+  return { orders: standingOrders(), lastRunDay: state.lastRunDay, running: Boolean(state.running), lastError: state.lastError || "", today: state.today, history: (state.history || []).slice(-14) };
 }
 // the owner's card: short enough to read on a phone
 export function coachCard(t) {

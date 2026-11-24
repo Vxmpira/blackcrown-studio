@@ -283,7 +283,7 @@ export const Tuner: React.FC = () => {
         </div>
         <div className="sgroup">
           <div className="sgroup-h">The Coach</div>
-          {["coach.enabled", "coach.time", "coach.post"].map(field)}
+          {["coach.enabled", "coach.time", "coach.post", "regent.dailyBrief", "regent.briefTime"].map(field)}
           <div className="brief-actions">
             <button
               className="btn"

@@ -3,6 +3,7 @@
 // to the owner on Discord, and on the owner's green light executes the change
 // itself: live site edits on this server, Bloom renders for creatives. The
 // owner's word is the only authority; Regent is the only hand that writes.
+import { xWeight, angleOf, ANGLE_LIST } from "./xlab.mjs";
 import { noteBody } from "./vault.mjs";
 import fs from "fs";
 import path from "path";
@@ -373,8 +374,10 @@ function preflightProposal(p) {
         if (media && !/^https?:\/\//i.test(media)) return "MEDIA, when present, must be the full https url of the rendered file";
         const body = String(section(detail, "NEW") || "").trim();
         if (!body) return "x posts need NEW carrying the exact final text";
-        const len = body.replace(/https?:\/\/\S+/g, "x".repeat(23)).length;
-        if (len > 280) return `x posts cap at 280 characters (every link counts as 23); this one weighs ${len}. Tighten the text`;
+        const len = xWeight(body);
+        if (len > 280) return `x posts cap at 280 as X weighs them (any link counts 23, emoji and arrows count 2); this one weighs ${len}. Cut ${len - 280} and refile`;
+        // every X post is a test of one sales angle; the brief is the one house format that is always "news"
+        if (!angleOf(detail)) return `x asks carry a line ANGLE: with one of ${ANGLE_LIST.join(", ")} (above NEW), so the X LAB can tell which approach pulls people in`;
       }
       return null;
     }
@@ -578,18 +581,176 @@ export async function receiveProposals(filed) {
   saveState();
 }
 
+
+// ---------------------------------------------------------------------------
+// THE OWNER'S CARDS. Every card answers, in the same order every time: what
+// is this, why, exactly what changes (the words before and after, or the
+// post itself), where to see it, and what is wanted from him. Sections are
+// short labelled blocks so a card can be read at a glance or in full.
+// ---------------------------------------------------------------------------
+const clip = (s, n) => {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
+};
+const quote = (s, n) => {
+  const t = clip(String(s || "").replace(/<[^>]+>/g, " "), n);
+  return t ? `> ${t}` : "";
+};
+// WHAT and WHY can trail the ask's machine lines; those are shown elsewhere on the card
+const tidySection = (t) => String(t || "").split("\n").filter((l) => !/^\s*(PLATFORM|MEDIA|ANGLE|SCHEDULE|CHANNEL):/i.test(l)).join("\n").trim();
+// where a changed file can be seen by a visitor
+export function liveUrl(page) {
+  const pg = String(page || "").trim();
+  if (!pg || /^make(:|$)/i.test(pg)) return "";
+  let m;
+  if ((m = pg.match(/^korvus:pages\/([a-z0-9-]+)\.html$/i))) return `https://korvus.industries/p/${m[1]}`;
+  if (/^korvus:korvus_landing\.html$/i.test(pg)) return "https://korvus.industries/";
+  if ((m = pg.match(/^korvus:korvus_([a-z]+)\.html$/i))) return `https://korvus.industries/${m[1]}`;
+  if (/^korvus:/i.test(pg)) return "https://korvus.industries/";
+  if (/^crown:index\.html$/i.test(pg)) return "https://blackcrown-intelligence.com/";
+  if (/^crown:/i.test(pg)) return "https://blackcrown-intelligence.com/";
+  if (/^[a-z0-9._-]+\.html$/i.test(pg)) return `https://blackcrownvxj.com/${/^index\.html$/i.test(pg) ? "" : pg}`;
+  return "";
+}
+const PRODUCT = (page) => (/^korvus:/i.test(page) ? "Korvus site" : /^crown:/i.test(page) ? "Crown site" : /^make/i.test(page) ? "automation" : "brand site");
+// the heart of a card: what exactly changes, in the reader's words
+function changeLines(p) {
+  const d = String(p.detail || "");
+  const plat = ((d.match(/PLATFORM:\s*([a-z0-9]+)/i) || [])[1] || "").toLowerCase();
+  const cur = section(d, "CURRENT"), next = section(d, "NEW");
+  const kind = String(p.kind || "").toLowerCase();
+  if (plat === "x") {
+    const media = (d.match(/MEDIA:\s*(\S+)/i) || [])[1];
+    return [
+      `**THE POST** (X, ${xWeight(next)} of 280${angleOf(d) ? `, angle: ${angleOf(d)}` : ""})`,
+      quote(next, 600),
+      media ? `**VIDEO** ${media}` : "",
+    ];
+  }
+  if (plat === "youtube") {
+    return [`**THE UPLOAD** (YouTube)`, quote(next, 500), `**VIDEO** ${(d.match(/MEDIA:\s*(\S+)/i) || [])[1] || "not attached"}`];
+  }
+  if (/SCHEDULE:\s*(daily|weekly)/i.test(d)) {
+    return [`**THE REPORT** ${clip((d.match(/SCHEDULE:\s*([^\n]+)/i) || [])[1], 60)}, posts in ${(d.match(/CHANNEL:\s*(\w+)/i) || [])[1] || "corvid"}`, quote(next, 420)];
+  }
+  if (["creative", "video", "furnace"].includes(kind) || /furnace|monolith|creative/i.test(p.summary || "")) {
+    return [`**THE VIDEO** what gets made`, quote(next || section(d, "WHAT"), 560)];
+  }
+  const url = liveUrl(p.page);
+  const fresh = /^\(new file\)$/i.test(cur.trim()) || /^none\b/i.test(cur.trim());
+  const fromNote = (next.match(/^FROM NOTE:\s*(.+)$/im) || [])[1];
+  return [
+    `**WHERE** ${PRODUCT(p.page)}, ${String(p.page).replace(/^[a-z]+:/i, "")}${url ? `\n${url}` : ""}`,
+    fresh ? `**NEW PAGE** ${fromNote ? `built from the desk's note "${clip(fromNote, 80)}"` : "added"}` : `**NOW READS**`,
+    fresh ? (fromNote ? "" : quote(next, 420)) : quote(cur, 380) || "> (nothing there yet)",
+    fresh ? "" : `**WILL READ**`,
+    fresh ? "" : quote(next, 380),
+  ];
+}
+function askCard(p) {
+  const d = String(p.detail || "");
+  const gl = clip((d.match(/GREEN LIGHT MEANS:\s*([^\n]+)/i) || [])[1] || "see Agent HQ", 300);
+  return [
+    `**REGENT // ASK** · #${p.number} · ${etDayKey()}`,
+    `${clip(p.summary, 160)}`,
+    `Filed by ${p.author || "Corvid"}. Regent reviewed it and passes it to you.`,
+    `**WHAT** ${clip(tidySection(section(d, "WHAT")) || p.summary, 320)}`,
+    tidySection(section(d, "WHY")) ? `**WHY** ${clip(tidySection(section(d, "WHY")), 380)}` : "",
+    ...changeLines(p),
+    `**GREEN LIGHT MEANS** ${gl}`,
+    `**YOUR MOVE** React with the check to approve or the X to reject. Words work too: approve ${p.number}.`,
+  ].filter(Boolean).join("\n");
+}
+// what one executed ask did, as a sentence a person can check
+function doneSentence(p, r) {
+  const d = String(p.detail || "");
+  const plat = ((d.match(/PLATFORM:\s*([a-z0-9]+)/i) || [])[1] || "").toLowerCase();
+  const xid = (String(r.msg).match(/\bpost (\d{15,22})\b/) || [])[1];
+  if (plat === "x") return { what: `Posted on the brand X account${angleOf(d) ? ` (angle: ${angleOf(d)})` : ""}.`, show: quote(section(d, "NEW"), 420), see: xid ? `https://x.com/i/status/${xid}` : "" };
+  if (plat === "youtube") return { what: "Handed to the publisher for YouTube.", show: quote(section(d, "NEW"), 300), see: "" };
+  if (/job registered/i.test(r.msg)) return { what: "A scheduled report was registered; the server runs it from now on.", show: "", see: "" };
+  if (/rendering/i.test(r.msg)) return { what: "The video was sent to render. This is the start, not the finished file; the package lands in the channel only if the render completes.", show: "", see: "" };
+  if (/already (carries|satisfies)|nothing to change/i.test(r.msg)) return { what: "Nothing needed changing: the live page already had it.", show: "", see: liveUrl(p.page) };
+  const cur = section(d, "CURRENT"), next = section(d, "NEW");
+  const fresh = /^\(new file\)$/i.test(cur.trim());
+  return {
+    what: fresh ? `A new page went live on the ${PRODUCT(p.page)}.` : `The ${PRODUCT(p.page)} was edited (${String(p.page).replace(/^[a-z]+:/i, "")}) and is live.`,
+    show: fresh ? "" : [cur ? `Was: ${clip(cur.replace(/<[^>]+>/g, " "), 200)}` : "", next ? `Now: ${clip(next.replace(/<[^>]+>/g, " "), 240)}` : ""].filter(Boolean).map((x) => `> ${x}`).join("\n"),
+    see: liveUrl(p.page),
+  };
+}
+function doneCard(p, r, measured) {
+  if (!r.ok) {
+    return [
+      `**REGENT // FAILED** · #${p.number} · ${etDayKey()}`,
+      clip(p.summary, 160),
+      `**WHAT WENT WRONG** ${clip(r.msg, 420)}`,
+      `**WHO FIXES IT** ${p.author || "Corvid"}'s desk has the fix as a task. Nothing is needed from you.`,
+    ].join("\n");
+  }
+  const s = doneSentence(p, r);
+  return [
+    `**REGENT // DONE** · #${p.number} · ${etDayKey()}`,
+    clip(p.summary, 160),
+    `**WHAT GOT DONE** ${s.what}`,
+    s.show,
+    s.see ? `**SEE IT** ${s.see}` : "",
+    `**RECORD** ${clip(r.msg, 260)}`,
+    measured ? `**NEXT** Corvid reads the effect on this page in 7 days.` : "",
+    `**FILED BY** ${p.author || "Corvid"}`,
+  ].filter(Boolean).join("\n");
+}
+
+// THE DAILY BRIEF: one card each evening that says what the company actually
+// did today, grouped and in plain words, with what is waiting on the owner.
+// Built from the day's records; no model call.
+export function dailyBriefCard() {
+  const day = etDayKey();
+  const todays = (state.executed || []).filter((e) => new Date(e.at).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === day).reverse();
+  const ok = todays.filter((e) => e.ok), bad = todays.filter((e) => !e.ok);
+  const is = (re) => (e) => re.test(String(e.result));
+  const xs = ok.filter(is(/posted to X/i));
+  const yt = ok.filter(is(/youtube/i));
+  const vid = ok.filter(is(/^rendering/i));
+  const jobs = ok.filter(is(/job registered/i));
+  const edits = ok.filter((e) => !xs.includes(e) && !yt.includes(e) && !vid.includes(e) && !jobs.includes(e));
+  const bullets = (list, f, max = 6) => (list.length ? [...list.slice(0, max).map((e) => `• #${e.number} ${f(e)}`), list.length > max ? `• and ${list.length - max} more` : ""].filter(Boolean).join("\n").slice(0, 980) : "");
+  const xid = (e) => (String(e.result).match(/\bpost (\d{15,22})\b/) || [])[1];
+  const pend = state.asks.map((id) => findProposal(id)).filter((p) => p && p.status === "pending");
+  const vetoes = (state.log || []).filter((l) => l.kind === "veto" && new Date(l.t || l.at || 0).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === day);
+  let spent = "";
+  try {
+    spent = ` Model spend today: $${Number(deps.spentToday ? deps.spentToday() : 0).toFixed(2)}.`;
+  } catch {}
+  if (!todays.length && !pend.length && !vetoes.length) return "";
+  return [
+    `**REGENT // DAILY BRIEF** · ${day}`,
+    `${ok.length} shipped, ${bad.length} failed, ${pend.length} waiting on you, ${vetoes.length} vetoed before reaching you.${spent}`,
+    xs.length ? `**X POSTS** ${xs.length} went out\n${bullets(xs, (e) => `${clip(e.summary, 70)}${xid(e) ? ` · https://x.com/i/status/${xid(e)}` : ""}`, 5)}` : "",
+    edits.length ? `**SITE CHANGES** ${edits.length} live\n${bullets(edits, (e) => `${clip(e.summary, 70)}: ${clip(String(e.result).replace(/ repo committed and pushed\.?/, ""), 80)}`)}` : "",
+    yt.length ? `**YOUTUBE** ${yt.length} handed to the publisher\n${bullets(yt, (e) => clip(e.summary, 90))}` : "",
+    vid.length ? `**VIDEO** ${vid.length} sent to render (started, not confirmed finished)\n${bullets(vid, (e) => clip(e.summary, 90))}` : "",
+    jobs.length ? `**REPORTS** ${jobs.length} new scheduled\n${bullets(jobs, (e) => clip(e.summary, 90))}` : "",
+    bad.length ? `**FAILED** ${bad.length}, each routed back to its desk\n${bullets(bad, (e) => `${clip(e.summary, 60)}: ${clip(e.result, 110)}`)}` : "",
+    pend.length ? `**WAITING ON YOU** ${pend.length}\n${bullets(pend, (p) => `${clip(p.summary, 80)} (${p.author || "Corvid"})`)}` : "",
+    vetoes.length ? `**VETOED BY REGENT** ${vetoes.length}\n${vetoes.slice(0, 5).map((l) => `• ${clip(l.text, 110)}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n");
+}
+export async function sendDailyBrief(force = false) {
+  const day = etDayKey();
+  if (!force && state.lastBriefDay === day) return { ok: false, msg: "already sent today" };
+  const card = dailyBriefCard();
+  state.lastBriefDay = day;
+  saveState();
+  if (!card) return { ok: false, msg: "nothing happened today, so no brief" };
+  await send(card);
+  return { ok: true };
+}
+
 // one card per ask, check and X pre-attached: a reaction is a ruling
 const OWNER_ID = (process.env.DISCORD_OWNER_ID || "").trim();
 async function sendAskCard(p) {
-  const gl = ((p.detail.match(/GREEN LIGHT MEANS:\s*([^\n]+)/i) || [])[1] || "see Agent HQ").trim();
-  const content = [
-    `**REGENT // ASK** · #${p.number} · ${etDayKey()}`,
-    `${p.page} · ${p.summary}${p.author && p.author !== "Corvid" ? `  (filed by ${p.author})` : ""}`,
-    `**GREEN LIGHT MEANS**`,
-    gl,
-    `**YOUR MOVE**`,
-    `React with the check to approve or the X to reject. Words work too: approve ${p.number}.`,
-  ].join("\n");
+  const content = askCard(p);
   if (!(BOT_TOKEN && CEO_CHANNEL)) {
     await send(content);
     return;
@@ -661,7 +822,7 @@ async function checkAskReactions() {
 // execution
 // ---------------------------------------------------------------------------
 function section(detail, label) {
-  const re = new RegExp(`${label}:\\s*([\\s\\S]*?)(?=\\n(?:WHAT|WHY|CURRENT|NEW|GREEN LIGHT MEANS):|$)`, "i");
+  const re = new RegExp(`${label}:\\s*([\\s\\S]*?)(?=\\n(?:WHAT|WHY|CURRENT|NEW|GREEN LIGHT MEANS|ANGLE):|$)`, "i");
   const m = String(detail).match(re);
   return m ? m[1].trim() : "";
 }
@@ -1130,6 +1291,7 @@ async function execute(p) {
     return deps.publish({
       platform: (platformLine || "unspecified").trim().toLowerCase(),
       content: postBody,
+      angle: angleOf(p.detail),
       media,
       number: p.number,
       summary: p.summary,
@@ -1229,15 +1391,13 @@ export async function ownerDecision(id, action, note = "", via = "discord") {
   saveState();
   vaultAppend("Ledger.md", `- ${etDayKey()}: #${p.number} ${p.summary} > ${r.ok ? "DONE" : "FAILED"}: ${r.msg.slice(0, 160)}`);
   // a site change that shipped gets measured a week later
-  if (r.ok && (["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) || EDIT_KINDS.test(String(p.kind || "").toLowerCase())) && p.page && !/^make(:|$)/i.test(String(p.page))) {
-    bookMeasurement(p.number, p.page, p.summary);
-  }
+  const measured = Boolean(r.ok && (["title", "meta", "content"].includes(String(p.kind || "").toLowerCase()) || EDIT_KINDS.test(String(p.kind || "").toLowerCase())) && p.page && !/^make(:|$)/i.test(String(p.page)));
+  if (measured) bookMeasurement(p.number, p.page, p.summary);
   log(r.ok ? "exec" : "error", `#${p.number} ${r.ok ? "done" : "failed"}: ${r.msg}`);
-  await send(`**REGENT // ${r.ok ? "DONE" : "FAILED"}** · #${p.number} ${p.summary}\n${r.msg}`);
+  await send(doneCard(p, r, measured));
   if (!r.ok && deps.assignFix) {
     try {
       deps.assignFix(p.author || "Corvid", `Fix and refile #${p.number}: ${r.msg.slice(0, 150)}`);
-      await send(`**REGENT //** Routed the fix to ${p.author || "Corvid"}'s desk; the owner does not debug.`);
     } catch {}
   }
   agentLog("regent", `#${p.number} ${r.ok ? "executed by Regent" : "execution failed"}`);
@@ -1366,6 +1526,13 @@ export function startCeo() {
   saveState();
   // Regent polls its own channel only when it is distinct; otherwise owner
   // decisions arrive routed through Corvid's reactor.
+  setInterval(() => {
+    try {
+      const b = deps.briefSettings ? deps.briefSettings() : { on: true, time: "20:00" };
+      const now = new Date().toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" });
+      if (state.enabled && b.on && state.lastBriefDay !== etDayKey() && now >= b.time) sendDailyBrief().catch(() => {});
+    } catch {}
+  }, 60 * 1000);
   setInterval(() => {
     if (!state.enabled || initiativeBusy) return;
     if (canSpend() && (!state.lastInitiativeAt || Date.now() - state.lastInitiativeAt >= INITIATIVE_EVERY_H * 3600000)) {

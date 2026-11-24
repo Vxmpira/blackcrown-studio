@@ -519,7 +519,7 @@ export async function runPremarket({ force = false, reason = "schedule" } = {}) 
         kind: "post",
         target: "korvus",
         summary: `Pre-market Brief video on X, ${dateLabel}`,
-        detail: `WHAT: today's Pre-market Brief video posted on the brand X account.\nWHY: the brief is Korvus's own overnight read, the free daily demo of the product.\nPLATFORM: x\nMEDIA: ${vid.url}\nCURRENT: none (new post)\nNEW: ${brief.x_post}\nGREEN LIGHT MEANS: the brief video and this text post on the brand X account, once.`,
+        detail: `WHAT: today's Pre-market Brief video posted on the brand X account.\nWHY: the brief is Korvus's own overnight read, the free daily demo of the product.\nPLATFORM: x\nANGLE: news\nMEDIA: ${vid.url}\nCURRENT: none (new post)\nNEW: ${brief.x_post}\nGREEN LIGHT MEANS: the brief video and this text post on the brand X account, once.`,
       });
     }
     if (s.fileYouTube !== false) {

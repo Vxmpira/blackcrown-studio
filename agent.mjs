@@ -11,7 +11,8 @@ import { fileURLToPath } from "url";
 import { BRAND_LAW_TEXT, ENGINE_LAW_TEXT } from "./brandlaw.mjs";
 import { MODELS, callLLM, callJSON, setInstitution, canSpend, thrift, recordSpend, getSpend, spendSummary } from "./llm.mjs";
 import { tune, tuningFlat } from "./tuning.mjs";
-import { BENCH_RULES } from "./bench.mjs";
+import { BENCH_RULES, serveLooks } from "./bench.mjs";
+import { X_RULES } from "./xlab.mjs";
 import { coachBlock } from "./coach.mjs";
 import { CREW_RULES, closeRequest, findTwin, mergeCycleTasks, minionEyes, newTask, pickNext, recordGap, recordTicket, shouldWake, tidyQueue } from "./crew.mjs";
 export { recordSpend, getSpend, spendSummary };
@@ -904,7 +905,7 @@ NEW: {exact final text, ready to paste}
 GREEN LIGHT MEANS: {one line, precisely what happens on approve and who does it}
 
 PAGE ADDRESSING: a bare file name like korvus.html means the brand site. Prefix with a repo to reach a product codebase: "korvus:relative/path/file.ext" is the Korvus engine, "crown:relative/path/file.ext" is Crown. Use ONLY file paths the audit actually lists, never guess conventional names; the korvus.industries homepage is korvus:korvus_landing.html (there is no index.html in that repo). KORVUS LIVE PAGES, the only ones crawlers and visitors ever see: korvus_landing.html (/), korvus_lodestone.html (/lodestone), korvus_signup.html, korvus_login.html, korvus_legal.html. Every other html in that repo is either login gated or not routed at all (trading_news_terminal.html and korvus_promo_studio.html are NOT served on the web), so SEO work on them is wasted; do not file head tag, noindex, or score asks for them. korvus.industries already serves robots.txt and sitemap.xml that block the gated pages and the bar fragment. The shared bar component blackcrown-bar.html is a body fragment with no head on every site and is already blocked by robots.txt, never file noindex asks for it. PRICING BLOCKS: Korvus pricing is a SECTION inside korvus:korvus_landing.html (anchor id pricing); Crown pricing lives on intelligence.html and crown:chat.html. There is no pricing file anywhere; a page like korvus:pricing does not exist and will be vetoed. Only propose repo edits when you know the exact file and exact CURRENT text.
-POSTING TO THE WEB, kind "post": detail MUST carry: PLATFORM: <platform> on its own line. WIRED PLATFORMS: youtube and x (TikTok still ships by the owner's hand from the render package). youtube REQUIRES MEDIA: <url>, the full https link to the rendered file copied from the render delivery; a word like "Bloom" or a file name is rejected. x is the brand X account posted direct from the server: NEW is the exact final post text, 280 characters max with every link counting as 23, MEDIA optional (a rendered video link attaches it to the post). Write X posts like a trader talking, one sharp claim with a number, destination link last; never hashtag soup, two hashtags max. GREEN LIGHT MEANS the server publishes it with the owner's own account connections. Every post is one ask; never batch platforms in one proposal.
+POSTING TO THE WEB, kind "post": detail MUST carry: PLATFORM: <platform> on its own line. WIRED PLATFORMS: youtube and x (TikTok still ships by the owner's hand from the render package). ${X_RULES} youtube REQUIRES MEDIA: <url>, the full https link to the rendered file copied from the render delivery; a word like "Bloom" or a file name is rejected. x is the brand X account posted direct from the server: NEW is the exact final post text, 280 characters max with every link counting as 23, MEDIA optional (a rendered video link attaches it to the post). Write X posts like a trader talking, one sharp claim with a number, destination link last; never hashtag soup, two hashtags max. GREEN LIGHT MEANS the server publishes it with the owner's own account connections. Every post is one ask; never batch platforms in one proposal.
 ${ENGINE_LAW_TEXT} GREEN LIGHT MEANS Regent applies it to the live scenario, raw backup saved first.
 RECURRING REPORTS, kind "job": for any recurring digest, report, or monitoring post, file kind "job" instead of an automation paste. The server itself runs these, no Make involved. detail MUST carry, each on its own line: SCHEDULE: daily HH:MM ET, or weekly <monday..sunday> HH:MM ET. CHANNEL: corvid or boardroom. NEW: the exact content spec, what the report covers, in what order, pulled from live analytics, revenue, uptime, and SEO data. GREEN LIGHT MEANS the server registers the job and posts the report on schedule from then on.
 ADDING HEAD TAGS: to add canonical, og, twitter, or other meta and link tags to an html page, set CURRENT: none and make NEW only the tags themselves, nothing else. Regent merges them into the head, updating any tag that already exists and inserting the rest. Never guess head text as a CURRENT anchor. Sitemap entries work the same way: NEW is just the url blocks, Regent appends what is missing.
@@ -1707,38 +1708,32 @@ async function workTick() {
         (state.minionReports || []).slice(-3).map((m) => ({ minion: m.minion, task: m.task, file: m.file, gist: m.gist || "" }))
       )}`,
       ...(hooks.inbox ? [hooks.inbox("corvid")].filter(Boolean) : []),
-      `YOUR WORKBENCH IS OPEN (tools via "tool", one a step): web.search and web.open to check anything on the outside web, files.* for working files, memo to tell another desk news, cro.funnel / cro.size / cro.test for conversion work. A task that rests on a fact you have not checked starts with a tool call.`,
+      `YOUR WORKBENCH IS OPEN (ask for up to three reads and tools in ONE step with "reads" and "tools"; gather everything a task needs at once): web.search and web.open to check anything on the outside web, files.* for working files, memo to tell another desk news, cro.funnel / cro.size / cro.test for conversion work. A task that rests on a fact you have not checked starts with a tool call.`,
       ...((t.reads || 0) >= 12 ? [`YOU HAVE LOOKED ${t.reads} TIMES ON THIS ONE TASK without finishing it. No more reads or tools will be served for it. Decide NOW with what you already have: do the work and mark it done, park it with park_hours, or close it with cant_fix naming exactly what blocks it.`] : []),
       ...(t.source ? [`THE RESULT you asked for, ${t.source.note}:\n${t.source.text}`] : []),
     ].join("\n\n");
     t.source = null;
     const out = await think(WORK_SYSTEM, user, 5000, { tier: "hands", hot: true });
     if ((t.reads || 0) >= 12) {
-      if (out.read || out.tool) t.stuck = (t.stuck || 0) + 1;
+      if (out.read || out.tool || out.reads || out.tools) t.stuck = (t.stuck || 0) + 1;
       out.read = null;
       out.tool = null;
+      out.reads = null;
+      out.tools = null;
       if ((t.stuck || 0) >= 3 && out.status !== "done" && !out.park_hours && !out.cant_fix) {
         out.cant_fix = `task "${t.title.slice(0, 60)}" looped: ${t.reads} reads and no finish`;
       }
     }
-    if (out.read && out.read.page && hooks.readPage) {
-      const r = hooks.readPage(String(out.read.page).trim(), String(out.read.find || ""), 0, "corvid");
-      t.source = r.err
-        ? { note: `could not be read: ${r.err}`, text: "" }
-        : { note: `${r.page}, characters ${r.from} to ${r.from + r.text.length} of ${r.size}${r.more ? ", more follows (read again with find to move)" : ""}`, text: r.text };
-      log("work", `read ${out.read.page}${r.err ? `: ${r.err}` : ` (${r.text.length} chars)`}`);
-      out.status = "doing";
-      t.reads = (t.reads || 0) + 1;
-      if (t.reads <= 4) state.lastWorkAt = 0; // the source is in hand, use it on the very next tick (a task that keeps reading waits its turn)
-    }
-    // the workbench: one tool a step, its result rides in on the next one
-    if (!t.source && out.tool && out.tool.name && hooks.bench) {
-      const r = await hooks.bench("corvid", out.tool);
-      t.source = { note: r.note, text: r.text || "" };
-      log("work", `tool ${String(out.tool.name).slice(0, 20)}${r.err ? `: ${String(r.err).slice(0, 80)}` : ""}`);
-      out.status = "doing";
-      t.reads = (t.reads || 0) + 1;
-      if (t.reads <= 6) state.lastWorkAt = 0;
+    // looks: up to three reads and tools in one step, all handed back together
+    {
+      const got = await serveLooks("corvid", out, hooks.readPage);
+      if (got) {
+        t.source = got.source;
+        for (const L of got.logs) log("work", L);
+        out.status = "doing";
+        t.reads = (t.reads || 0) + 1;
+        if (t.reads <= 6) state.lastWorkAt = 0;
+      }
     }
     if (out.thought) state.lastThought = String(out.thought).slice(0, 800);
     t.status = out.status === "done" ? "done" : "doing";
