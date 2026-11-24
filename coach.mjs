@@ -16,6 +16,7 @@ const STATE_PATH = path.join(__dirname, "studio-coach.json");
 export const COACHED = ["corvid", "herald", "steward", "bard", "regent"];
 
 let state = load();
+state.running = false;
 function load() {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
@@ -78,6 +79,10 @@ export async function runCoach(inputs, { force = false } = {}) {
   if (state.running) return { ok: false, msg: "the coach is already at work" };
   if (!force && state.lastRunDay === day) return { ok: false, msg: "the coach already ran today" };
   state.running = true;
+  // one attempt a day, pass or fail: a review that errors must never be
+  // retried on a loop at full price. "Run the review now" forces another.
+  state.lastRunDay = day;
+  state.lastError = "";
   save();
   try {
     const prev = state.today;
@@ -99,7 +104,9 @@ export async function runCoach(inputs, { force = false } = {}) {
       if (a < 0 || b <= a) throw new Error("no JSON object in the reply");
       return JSON.parse(raw.slice(a, b + 1));
     };
-    const out = await callJSON({ who: "coach", model: MODELS.head, system: SYSTEM, user, maxTokens: 7000, priority: "owner" }, parse);
+    // bare: the coach gets the evidence above, not the desks' constitution
+    // (and not its own notes read back to it)
+    const out = await callJSON({ who: "coach", model: (process.env.COACH_MODEL || MODELS.hands).trim(), system: SYSTEM, user, maxTokens: 12000, priority: "owner", bare: true }, parse);
     const desks = {};
     for (const k of COACHED) {
       const d = (out.desks || {})[k] || {};
@@ -118,14 +125,15 @@ export async function runCoach(inputs, { force = false } = {}) {
     state.lastRunDay = day;
     return { ok: true, today };
   } catch (e) {
-    return { ok: false, msg: String(e?.message || e).slice(0, 200) };
+    state.lastError = String(e?.message || e).slice(0, 300);
+    return { ok: false, msg: state.lastError };
   } finally {
     state.running = false;
     save();
   }
 }
 export function coachState() {
-  return { lastRunDay: state.lastRunDay, running: Boolean(state.running), today: state.today, history: (state.history || []).slice(-14) };
+  return { lastRunDay: state.lastRunDay, running: Boolean(state.running), lastError: state.lastError || "", today: state.today, history: (state.history || []).slice(-14) };
 }
 // the owner's card: short enough to read on a phone
 export function coachCard(t) {

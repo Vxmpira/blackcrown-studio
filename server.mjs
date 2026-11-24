@@ -4480,7 +4480,11 @@ function coachInputs(board) {
       return `${k.toUpperCase()}\n yesterday: ${read(dir, coachDay(1)) || "no log"}\n today so far: ${read(dir, coachDay(0)) || "no log"}\n open tasks: ${open || "none"}`;
     })
     .join("\n");
-  return { scorecards, ledger: ledger || "nothing shipped", logs, board: String(board || "").slice(0, 11000) };
+  return { scorecards, ledger: ledger || "nothing shipped", logs, board: (() => {
+    const b = String(board || "");
+    const i = b.indexOf("BLOOM CREDITS");
+    return (i > 0 ? b.slice(i) : b).slice(0, 9000);
+  })() };
 }
 async function coachRun(force = false) {
   const r = await runCoach(coachInputs(await boardFeed().catch(() => "")), { force });
